@@ -24,7 +24,7 @@ docs/workflow/        # 工作流教程文章
 1. **放进项目**：先给你的项目 `git init`（Codex 每完成一步会自动 commit，没有 git 闭环会断），再把这些文件放进项目根目录。
 2. **改项目事实**：打开 `CLAUDE.md` 和 `AGENTS.md`，把末尾的项目事实换成你自己的——研究方向、baseline、主/辅指标、远程环境、artifact 目录、哪些结论必须有证据支撑。路由规则和硬门禁本身不用动。
 3. **装两个搜索工具**（可选但推荐）：
-   - `fast_context_search`：本地代码语义搜索，安装见 [面向小白的harness engineering实战（科研导向的infra搭建，本质是篇二创） (linux.do)](https://linux.do/t/topic/2260154/1)
+   - `fast_context_search`：本地代码语义搜索，安装见 [ACE 的平替：fast-context-mcp](https://linux.do/t/topic/1610998)
    - `smart-search-cli`：可保存证据的外部检索，安装见  [smartsearch](https://github.com/konbakuyomu/smartsearch)
 4. **跑一轮**：开 Claude 讨论需求 → 生成 spec → 批准后转成 CSV → 切 Codex `/goal @issues/xxx.csv` 执行。第一轮别挑复杂模块，选个 baseline 复现或简单实验，先验证这条链能不能闭环。
 

@@ -93,7 +93,7 @@ issues/TEMPLATE.csv                   # 任务 CSV 的字段模板（状态机 s
 
 除了上面这套配置，工作流还额外依赖两个搜索工具，需要单独安装：
 
-- **`fast_context_search`**：本地代码的语义搜索（自然语言定位逻辑、调用链），比纯 `grep` 更适合"我不知道在哪但知道大概在干嘛"的调研。安装见 [面向小白的harness engineering实战（科研导向的infra搭建，本质是篇二创） (linux.do)](https://linux.do/t/topic/2260154/1)
+- **`fast_context_search`**：本地代码的语义搜索（自然语言定位逻辑、调用链），比纯 `grep` 更适合"我不知道在哪但知道大概在干嘛"的调研。安装见 [ACE 的平替：fast-context-mcp](https://linux.do/t/topic/1610998)
 - **`smart-search-cli`**：可保存证据的外部检索（论文、官方文档、工具版本），检索结果能落盘到 `search_evidence/`。安装见  [smartsearch](https://github.com/konbakuyomu/smartsearch)
 
 ---
