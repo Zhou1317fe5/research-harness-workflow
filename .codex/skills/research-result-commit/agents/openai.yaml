@@ -1,0 +1,4 @@
+interface:
+  display_name: "Research Result Commit"
+  short_description: "Commit one experiment result set in research_workspace."
+  default_prompt: "Commit the current ExpID research outputs in research_workspace as one linked result commit."

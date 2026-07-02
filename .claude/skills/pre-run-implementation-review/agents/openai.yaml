@@ -1,0 +1,4 @@
+interface:
+  display_name: "Pre-run Implementation Review"
+  short_description: "Review implemented code before training or remote runs"
+  default_prompt: "Review the implemented code, validation evidence, and run command before allowing training, evaluation, or remote execution."

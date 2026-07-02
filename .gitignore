@@ -1,0 +1,17 @@
+# 密钥 / 本地配置（绝不提交）
+scripts/.env
+*.env
+.claude/settings.local.json
+.codex/settings.local.json
+
+# Python 缓存
+__pycache__/
+*.pyc
+
+# 系统 / 编辑器
+.DS_Store
+.idea/
+.vscode/
+
+# 实验产物（按需：research_workspace 建议单独成库时另设 .gitignore）
+# research_workspace/experiments/*/remote_artifacts/

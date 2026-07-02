@@ -1,0 +1,4 @@
+# Ignore actual .env file to prevent credential leaks
+.env
+__pycache__/
+*.pyc
