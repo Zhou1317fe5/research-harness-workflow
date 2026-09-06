@@ -1,4 +1,4 @@
 interface:
-  display_name: "Pre-run Implementation Review"
-  short_description: "Review implemented code before training or remote runs"
-  default_prompt: "Review the implemented code, validation evidence, and run command before allowing training, evaluation, or remote execution."
+  display_name: "Pre-run Scientific Review"
+  short_description: "Verify scientific implementation and data flow once before a run"
+  default_prompt: "Review the approved scientific intent, committed implementation, critical source-to-sink data flow, computation sinks, experiment identity, smoke evidence, and official command exactly once before allowing training or evaluation."

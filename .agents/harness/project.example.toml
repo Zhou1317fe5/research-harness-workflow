@@ -1,0 +1,45 @@
+# 复制为 project.toml，填写项目真实命令和输出约定；该文件应随项目代码提交。
+version = 1
+
+[[pipeline.stages]]
+name = "train"
+argv = ["python", "train.py", "--output-dir", "{output_root}"]
+log = "train.log"
+outputs = ["checkpoints/best.pt"]
+
+[[pipeline.stages]]
+name = "evaluate"
+argv = ["python", "evaluate.py", "--checkpoint", "{output_root}/checkpoints/best.pt", "--output", "{output_root}/summary.json"]
+log = "evaluate.log"
+requires = ["checkpoints/best.pt"]
+outputs = ["summary.json"]
+
+# 支持现有 JSON 或 JSONL 日志，路径相对于本次运行的 output_root。
+[adapter]
+progress_path = "progress.jsonl"
+progress_format = "jsonl_last"
+progress_count_field = "step"
+first_step_min_count = 1
+progress_finite_fields = ["loss"]
+summary_path = "summary.json"
+summary_format = "json"
+summary_required_fields = ["metric"]
+summary_finite_fields = ["metric"]
+
+[[artifacts]]
+path = "summary.json"
+required = true
+
+[[artifacts]]
+path = "train.log"
+required = false
+
+[[artifacts]]
+path = "evaluate.log"
+required = false
+
+# 可使用嵌套字段名，例如 metrics.accuracy；没有辅助指标时省略 secondary_metric。
+[records]
+summary_glob = "summary.json"
+primary_metric = "metric"
+dimensions = []

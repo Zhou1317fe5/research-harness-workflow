@@ -1,97 +1,193 @@
 ---
 name: pre-run-implementation-review
-description: Review implemented research code after local lightweight validation and before the first training, evaluation, remote run, or experiment-result generation. Use for PRERUN-REVIEW rows, train/eval launch gates, AutoDL/tmux runs, or any task where wrong code would waste training time or contaminate conclusions.
+description: Run isolated GPU smoke after local validation, then perform one scientific implementation review before official training, evaluation, remote run, or experiment-result generation.
 ---
 
-# Pre-run Implementation Review
+# Pre-run Scientific Implementation Review
+
+## Core-only Default
+
+PRERUN is an exception for scientific-contract risk, not a routine review stage. Ordinary
+documentation, bookkeeping, tests, launch binding, monitoring, cleanup, transport, retry,
+RunID/path changes, and L0-L2 implementation work do not create a PRERUN row and do not call a
+reviewer. Use the smallest matching route and proceed after targeted evidence.
+
+Only changes to model computation, data/label flow, loss, metric, checkpoint semantics,
+scientific arguments, computation sinks, or result attribution use the full sequence below.
+That sequence contains one smoke and one scientific review; it never expands into repeated
+review, hash/coverage review, or a closing scientific review.
 
 ## Purpose
 
-Use this as a one-time pre-run gate after code implementation and local lightweight validation, before launching training/eval/remote execution. The goal is to catch wrong implementation, broken data flow, wrong command binding, or invalid experiment setup before expensive runs start.
+Use this gate to catch research code that runs but implements the wrong method, carries the wrong data, or never consumes a configured value at the intended computation sink.
 
-This is not TDD, not per-file review, and not final scientific result review.
+For GPU-reachable scientific changes, use exactly this sequence:
 
-## Required Inputs
+```text
+implementation
+-> local lightweight validation
+-> isolated remote GPU few-step smoke
+-> one scientific implementation review
+-> official training/evaluation
+```
 
-Build a review packet from source artifacts, not from the main agent's confidence:
+GPU smoke proves runtime reachability. The scientific review proves intent, data flow, sink effect, and experiment identity. Neither substitutes for the other.
 
-- Original requirement, Spec, or CSV intent.
-- Current CSV row and the gated run row.
-- Current `git diff` or reviewed `pre_run_code_commit`.
-- Local validation evidence: `compileall`, unit tests, parameter-chain checks, config parsing, or smoke probes.
-- Exact train/eval/remote command to run, with secrets redacted.
-- Branch, commit, conda env, dataset, checkpoint, fold, shot, seed (按你的评测口径), output path.
-- Project constraints: canonical files, baseline fallback, metric policy, remote artifact rules.
+This is not TDD, per-file review, final result review, runtime orchestration review, or a prediction of whether the metric will improve.
 
-If any required input is missing, result is `blocked` unless the missing item is explicitly not applicable.
+## Risk Routing
 
-## Review Procedure
+Run `prerun_route.py` on the committed change manifest before creating review work:
 
-1. Verify intent alignment.
-   Check the implementation matches Spec/CSV intent and non-goals. Reject changes that implement a different mechanism, move the experimental target, or add unrelated behavior.
+```bash
+python <skill-dir>/scripts/prerun_route.py <change-manifest.json>
+```
 
-2. Verify code location.
-   Confirm behavior changes landed in active canonical files and scripts. Model behavior changes should land in your canonical files such as your canonical model files; v2 files are compatibility wrappers unless the task explicitly changes wrapper behavior.
+- `no_prerun`: documentation, state, test-only, formatting, or other non-runtime changes. Do not create a PRERUN row.
+- `micro_validation`: deterministic runtime-binding changes that preserve the scientific contract and pass production-reaching probes. Do not call a reviewer.
+- `smoke_validation`: process supervision, monitoring, scheduler plumbing, cleanup ownership, or artifact transport. Verify through a real production-launcher smoke; do not call a reviewer.
+- `targeted_review`: credential or destructive-lifecycle changes. Review only the adjacent safety invariant.
+- `full_review`: model, attention, loss, data, metric, checkpoint, scientific args, computation sink, computing entrypoint, result attribution, dependency-closure, or unknown changes. Require current-commit smoke and one `scientific_review`.
 
-3. Trace parameter data flow.
-   Follow important values from entry to sink:
-   `CLI/CSV command -> argparse/config -> train script -> pipeline/UNet/module config -> forward/loss/attention/eval sink`.
-   Check names, defaults, bool parsing, list/block parsing, dtype/device assumptions, and branch conditions.
+Commit identity alone never selects a reviewer. `entrypoint` means code that computes a scientific result, not a launcher that supervises it.
 
-4. Check runtime state.
-   Confirm configured modules expose expected state after setup:
-   selected blocks/layers are nonzero, modules are instantiated, attributes exist, parameters enter optimizer groups, loss components are connected, and disabled paths remain valid.
+## Formal Review Scope
 
-5. Check sink effect.
-   Ensure the implemented mechanism is actually read by the computation that matters: attention bias, gate, warmup, loss, mask, prototype, metric, or eval output. Do not accept config-file evidence alone.
+The scientific reviewer checks only:
 
-6. Require a minimal probe when cheap and relevant.
-   Use the smallest local or remote-safe probe that reaches the sink without full training:
-   config parse, model construction, selected-layer audit, one fake/real mini forward, 1-step smoke, or targeted diagnostic log.
-   Example checks: `active_layers > 0`, `last_warmup_weight is not None`, `loss_component is logged`, `gate_grad exists`, `selected_blocks` match intent.
+1. approved Spec/theory intent and explicit non-goals;
+2. active canonical implementation location and actual module instantiation;
+3. important values across `CLI/CSV -> argparse/config -> train/eval script -> pipeline/model/module -> forward/loss/attention/eval sink`;
+4. selected blocks/layers, optimizer groups, connected losses, dtype/device behavior, and disabled paths;
+5. sink effect: config presence is not evidence that computation consumes a value;
+6. baseline/disable behavior and unrelated scientific routes — **when the change claims equivalence (see Baseline-Equivalence Probe), the reviewer records the probe verdict; it does not decide equivalence by reading code**;
+7. dataset, mask/label preprocessing, episode sampling, checkpoint, benchmark/fold/shot/seed, metric computation, and result attribution;
+8. exact official command and reviewed code snapshot.
 
-7. Verify baseline and disable paths.
-   Feature-off or baseline behavior must still run. Check default values, fallback branches, and unrelated routes such as baseline are not silently changed.
+Do not allow a run with "probably correct" data flow. A critical value that reaches config but not the intended forward/loss/attention/eval sink is scientifically incorrect.
 
-8. Verify run command binding.
-   The command must run the reviewed branch/commit, use the expected script, and pass correct args. The run row's `commit_hash` or notes must point to the reviewed `pre_run_code_commit`, not later artifact/analysis commits.
+## Excluded Scaffolding
 
-9. Verify experiment validity.
-   Check benchmark, fold, shot, seed (按你的评测口径), checkpoint, dataset paths, output directory uniqueness, and metric policy. <主指标> is primary; <辅助指标> is auxiliary. Do not allow setup drift that would make results incomparable.
+Do not send these surfaces to a formal reviewer:
 
-10. Verify recoverability and secrecy.
-   Ensure tmux/session, EXP_ROOT, logs, artifact path, resume instructions, and review handoff are recorded. Never echo or write secrets from `scripts/.env`.
+- rrctl, tmux, PID/process ownership, cleanup, health polling, watchers, and schedulers;
+- CSV bookkeeping, RunID/path/profile changes, packet hashes, coverage manifests, and frozen ExecutionPlans;
+- artifact transport and closing review machinery;
+- predictions about final method quality or effect size.
 
-## Decision Rules
+Validate these with smoke, ordinary tests, health checks, or artifact verification. They cannot create another scientific review.
 
-- `pass`: all critical checks are satisfied, validation gaps are honest and non-blocking, and the run command is bound to the reviewed code snapshot.
-- `blocked`: intent, data flow, runtime state, sink effect, baseline fallback, command binding, or experiment validity is unclear or wrong.
+## Pre-review Smoke
 
-Do not allow a run with "probably correct" data flow. If a parameter reaches config but not the forward/loss/eval sink, block the run.
+For `full_review`, the final candidate commit must pass an isolated production-reaching GPU smoke before the reviewer is called:
+
+- 1 to 100 steps;
+- exact candidate commit and production entrypoint;
+- finite loss and zero exit;
+- isolated fail-on-collision output;
+- `official_metrics_disabled:true` and `artifact_ingest_disabled:true`, except the bounded Baseline-Equivalence Probe below.
+- thin rrctl readiness only: candidate commit, production command, GPU/environment, isolated RunID output, 1–100 step budget, disabled official metrics/ingest, and cleanup boundary;
+- no coverage manifest, reviewer packet/hash, scientific anchors, official artifact completeness, experiment ingest, `prerun_ready.py`, or reviewer before launch;
+- terminal cleanup on success, failure, and abort: delete checkpoint/optimizer/scheduler/large intermediates only within the bound smoke output root;
+- retain `console.log`, `status.json`, and `smoke_summary.json`; require `checkpoint_cleanup_completed:true` and `checkpoint_paths_remaining:[]`.
+
+Smoke failures stay in the implementation row. Fix and rerun smoke without creating `FIX-*` or `PRERUN-REVIEW-*` rows. A smoke on an older commit cannot validate a new scientific candidate.
+
+Local validation before smoke is risk graded, not exhaustive: compile affected Python files and run 1–3 directly relevant tests/probes for ordinary changes. Shared-core or high-risk changes may use their relevant regression set. Full-repository tests are reserved for release, breaking migration, broad shared-infrastructure changes, explicit user request, or a demonstrated gap that targeted regressions cannot cover.
+
+### Baseline-Equivalence Probe
+
+Required when the change claims any of: baseline-preserving, zero-init no-op, disabled-path equivalence, or reuse of a canonical implementation.
+
+Structural evidence does not establish equivalence. Zero residual, zero additivity, and matching counters are necessary, not sufficient: a path disabled elsewhere in the forward can still change the output while every new residual reads exactly zero.
+
+So the claim is settled by a number, not by reading code:
+
+- run the production entrypoint at step 0 on one fixed cell (single benchmark/fold/shot, fixed seed, small fixed episode count);
+- compare against the named reference under the same cell and post-processing;
+- record `reference_id`, `reference_weights_path`, `candidate_weights_path`, both metric values, the absolute difference, and the tolerance;
+- this is the only metric a smoke may compute; it is not an official result and is never ingested.
+
+Verdict feeds the `Baseline/disabled path` dimension directly:
+
+- within tolerance -> `correct`;
+- outside tolerance -> `incorrect`, and this is a blocker;
+- probe not runnable -> `not_evaluable`, and the official run does not start.
+
+`not_evaluable` is not a pass. A claim of equivalence that cannot be measured is an unverified claim.
+
+## Lean Packet
+
+Create one `prerun.scientific-review.v1` JSON packet containing only:
+
+- `review_mode`: `scientific_review` or `targeted_review`;
+- repository, reviewed commit, diff base, approved basis, implementation intent, and exact official command;
+- passing local validations;
+- current-commit `prerun.pre-review-smoke.v1` evidence for `scientific_review`;
+- critical values with expected source, sink, and production-reaching evidence;
+- experiment identity and output collision policy.
+
+Run the deterministic checker once:
+
+```bash
+python <skill-dir>/scripts/prerun_ready.py <packet.json>
+```
+
+`ready:false` means the implementation row lacks reviewable evidence. Fill the reported gap and rerun readiness before creating the single PRERUN row. Readiness is not an implementation review.
+
+The packet has no attempt, lineage, generation, resolution mode, frozen coverage, review-state, rrctl provenance, or reviewer-liveness fields.
+
+## One Reviewer
+
+Call one independent reviewer with only the lean packet, approved source, committed diff, and referenced evidence. Use an independent context such as `fork_turns=none` or an independent read-only exec. Do not send the main conversation or the main agent's conclusions.
+
+The reviewer must inspect the committed code and return all currently evaluable scientific findings in one response. Its result is exactly one of:
+
+- `scientifically_correct`: implementation, scientific data flow, sink effect, and experiment identity are correct; allow official run.
+- `scientifically_incorrect`: one or more reproducible scientific correctness blockers exist; do not run until fixed.
+- `not_evaluable`: name the exact missing scientific evidence; do not infer correctness from smoke or scaffolding.
+
+Reviewer quota, launcher failure, output-format failure, or inactivity does not create a retry state machine or another PRERUN row. Record the concrete capability gap once.
+
+## Blocker Repair
+
+When the result is `scientifically_incorrect`:
+
+1. keep the official run blocked;
+2. repair all listed blockers in the original implementation row;
+3. run a production-reaching probe for each affected source-to-sink path;
+4. rerun GPU smoke when scientific code, data flow, or a sink changed;
+5. have the main agent record blocker-to-fix-to-evidence closure;
+6. proceed when every blocker has reproducible closure evidence.
+
+Do not create a second formal reviewer, Attempt 2, resolution review, new lineage, new generation, or closing scientific review. If the main agent cannot verify closure, record `validation_gap` and stop the run rather than substituting runtime-management evidence.
 
 ## Output Format
 
-Write the review result into the CSV notes and review log using this structure:
-
 ```markdown
 ## PRERUN-REVIEW-N
-- Result: pass | blocked
+- Review mode: scientific_review | targeted_review
+- Reviewer: <id and independent mode>
+- Result: scientifically_correct | scientifically_incorrect | not_evaluable
 - Decision: allow_run | do_not_run
-- Gated run: <csv id or command>
+- Gated run: <row or command>
 - Code snapshot: <branch>/<pre_run_code_commit>
-- Intent: pass | issue
-- Code location: pass | issue
-- Parameter data flow: pass | issue
-- Runtime state: pass | issue | not_checked
-- Sink effect: pass | issue | not_checked
-- Baseline/disable path: pass | issue | not_applicable
-- Local validation: <commands and outcomes>
-- Minimal probe: <probe and key observation, or validation_gap with reason>
-- Run command binding: pass | issue
-- Experiment validity: pass | issue
-- Recoverability/secrecy: pass | issue
-- Blockers: <none or exact blockers>
-- Validation gaps: <none or honest gaps>
+- Approved basis: <Spec/requirement>
+- Intent alignment: correct | incorrect | not_evaluable
+- Canonical code location: correct | incorrect | not_evaluable
+- Critical data flow: correct | incorrect | not_evaluable
+- Computation sink effect: correct | incorrect | not_evaluable
+- Runtime scientific state: correct | incorrect | not_evaluable
+- Baseline/disabled path: correct | incorrect | not_applicable | not_evaluable  (equivalence claims: cite the Baseline-Equivalence Probe, never a code reading)
+- Experiment identity: correct | incorrect | not_evaluable
+- Local validation: <commands and literal outcomes>
+- GPU smoke: <RunID, command, steps, result, evidence>
+- Blockers: <none or source/evidence/why/fix target>
+- Validation gaps: <none or exact missing evidence>
 ```
 
-If blocked, insert or request fix work before the gated run. Do not start training/eval/remote execution until a later pre-run review passes.
+Write `pre_run_result:pass` only for `scientifically_correct` or after every reported blocker has been fixed and closed with production/sink evidence. The recorded `pre_run_code_commit` is the code used for the official run, not the CSV's eventual final commit.
+
+## Compatibility
+
+New actionable work uses only this single-review protocol. Attempt, lineage, generation, resolution mode, frozen coverage, review-state and reviewer-liveness fields are invalid inputs and have no executable helper path.

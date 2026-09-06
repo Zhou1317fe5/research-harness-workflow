@@ -1,0 +1,14 @@
+{
+  "profiles": {
+    "gpu": {
+      "kind": "ssh",
+      "ssh_argv": [
+        "ssh",
+        "-p",
+        "22",
+        "your-gpu-host"
+      ],
+      "password_env": "SSH_PASSWORD"
+    }
+  }
+}

@@ -3,235 +3,120 @@
 1. 当前会话中用户的明确要求
 2. 仓库自身的规则、文档与约定
 3. 相关 skill / protocol 的流程定义
-4. 本 `AGENTS.md` 的硬门禁与偏好
+4. 本文件的硬门禁与偏好
 
-`# 硬门禁` 一节下的规则无论走哪条路由都必须满足。审查、分析、解释类任务可不进入实现流程，但结论必须可追溯。
+只做审查、分析、解释或问答时不进入实现流程。命中 skill 时先读对应 `SKILL.md`；**skill 已经规定的执行细节不在本文件重复，以 skill 为准。**
 
----
+# 工作路由
 
-# 双柱架构
+- `mission <CSV|目录>`：执行合法 CSV；执行态持续到终态，或用户明确暂停、取消、改变边界。
+- `mission <approved spec>`：校验已提交且未改动后，由 `mission-approved-doc` 生成 `issues/<stem>/` 并执行。
+- `mission <draft spec|Markdown|自然语言>`：由 `mission-spec` 讨论、写 draft、取得明确批准。
+- `mission`、`continue`、`resume`、`继续`：由 `mission-recovery` 只扫描 `issues/`。
+- 普通任务目标和验收清楚时直接执行；多步任务维护 plan。
+- 分析、审查、解释、Q&A 直接回答。
 
-本项目的工作流由两根柱子支撑，AGENTS.md 是它们之上的路由层与硬约束层。
+**何时进 mission**：任务产生进入台账的新科研结论（新 ExpID、新指标、baseline 对照）时才进，走 CSV 全账。画图、选样例、论文正文、复用已有结果不进，直接执行并留一份 `result-summary.md`。不允许跑完整 PRERUN 却不建 CSV。
 
-| 柱子 | 职责 | 触发方式 |
-|------|------|----------|
-| **mission** | 自包含任务编排与执行引擎（批准文档转 CSV、闭环执行、持久化恢复） | `mission <doc-path\|csv-path\|描述>` |
-| **brainstorming** | 需求澄清、方案收敛与 spec 生成流程 | 按本文件路由判断 |
+需求未定时先澄清目标、约束和验收。`mission-spec` 每次只问一个仍会改变方案的问题；方案确定后尽快写 draft。未批准的 spec 禁止实现，批准后不再另写 implementation plan。
 
----
+# 实施纪律
 
-# 路由矩阵
+- 改动紧贴批准范围和现有代码模式，不混入无关重构、格式化或调试痕迹。
+- 先读即将修改的代码；使用结构化解析器处理 CSV、JSON、TOML 等格式。
+- 系统边界校验外部输入；shell、SQL 使用安全参数传递。
+- 不用 case 特化、固定答案或输出修补伪装 prompt、模型和测试能力。
+- 功能逻辑只写在 canonical 实现文件；兼容 wrapper 只维护向后兼容，不承载行为。
 
-```
-用户请求
-  │
-  ├─ 先判断任务复杂度
-  │   ├─ 简单明确 / 小修小补 / 明确文案 / 路径整理 / 低风险配置？
-  │   │   → 直接执行
-  │   └─ 新能力 / breaking / 架构变更 / 复杂科研实验设计 / 需求仍模糊？
-  │       → brainstorming → 产出 `docs/superpowers/specs/*.md` 或用户指定路径 → 用户批准 → mission <spec-doc.md> 转 CSV，或按用户要求直接实现
-  │
-  ├─ 已批准的 design doc / plan doc？
-  │   → mission <doc-path.md>
-  │
-  ├─ 已有 task CSV（`issues/*.csv` 或 `.mission/*.csv`）？
-  │   → mission <csv-path>
-  │
-  ├─ 复杂 bug / 长时 refactor（需持久化/恢复）？
-  │   → 轻量根因定位；必要时使用 `systematic-debugging`；可直接修复或交给 `mission <任务描述>`
-  │
-  ├─ 已有本轮 implementation plan，且用户要求按计划施工？
-  │   → 直接按计划执行
-  │
-  ├─ 功能开发 / bug 修复 / 行为变更？
-  │   → 直接实现 + 风险匹配的测试/验证；禁止 TDD/RED/test-first
-  │
-  ├─ 分析 / 审查 / 解释 / Q&A？
-  │   → 直接回答
-  │
-  └─ 简单明确的小任务？
-      → 直接执行 + update_plan
+# 验证
 
-任何代码变更后：相关测试 → 自检 diff/风险/证据 → commit
-```
+**不做 TDD / test-first / RED。** 科研代码的正确性由科学契约与数值证据判定，不由先写测试判定。这一条覆盖 skill 中任何 test-first 表述。
 
-- 用户要求 `continue nonstop` 时持续推进到验收或明确阻塞。
-- 分析代码问题和修复 bug 时启用 `sequential-thinking`。
+**本地**负责代码正确性、单元测试、编译、参数链路与配置解析；**真实训练启动、step 级验证、GPU 显存、loss/log/checkpoint 必须走远程**。
 
----
+远程执行统一经 **rrctl** 控制面，`fallback_allowed` 必须为 `false`：rrctl 不可用、readiness 失败或 launch 失败时停在当前 row，**不得回退临时 SSH/tmux 拼接冒充同一控制面**。生命周期、首步 gate、巡检口径与拉取策略见 `mission-csv-execute/references/remote-run.md`。
 
-# 硬门禁
+测试是 commit、push、PR 前的硬门禁。只报告实际运行过的命令、退出码和结果。测试范围分级、`validation_gap` 标注与 claim 终态规则见 `mission-csv-execute`。
 
-以下规则无论走哪条路由都不可违反。
+# 科研产物布局
 
-## CSV 执行闭环
-
-- AGENTS.md 面向 Codex 执行侧：输入 `issues/*.csv` 或 `.mission/*.csv` 时按 CSV 持续执行到闭环或明确 blocker；CSV 是唯一执行状态源，状态、证据、artifact、next_action 先写回 CSV，再改文件、验证、review、提交；`remote_state=running_remote` 是可恢复暂停点，不是完成。
-- 仅机器可判定的 CSV 格式 / 结构错误可自行修复并继续；修复不得改变任务语义，并在 CSV 或 review 记录证据。范围包括列数错位、引号/逗号转义、换行断裂、可由模板或同文件唯一推出的固定字段、状态枚举拼写。
-- Spec/CSV 前提错误必须停止并报告用户，不得自行改 Spec/CSV、不得写成 CSV blocker、不得继续执行。前提错误包括：intent 无法唯一映射脚本、required args 与脚本冲突、验收口径不可验证、refs/branch/commit 不可复现、指标口径不一致、baseline 回退缺失、字段与任务边界不符、模块插入位置 / 训练目标 / 损失定义 / 评估设置与理论意图冲突。
-- 停止报告必须指出：涉及路径与行/字段、实际证据、继续执行会如何污染结论或扩大错误、需要 Claude/用户最小澄清或改写的点。用户更新 specs 与 CSV 后，再通过同一个 `/goal @<csv>` 继续。
-
-## 验证
-
-- commit/push/PR 前必须运行相关测试并如实报告；功能开发、bug 修复、行为变更必须补齐风险匹配的验证证据（禁 TDD/RED/test-first 见路由矩阵）。
-- 本地负责代码正确性、单元测试、`compileall`、参数链路与配置解析；真实训练启动、`1 step` / `1000 step`、GPU 显存、loss/log/checkpoint 验证必须走 `scripts/.env` 指向的远程服务器。
-- 缺少目标验证时标注 `validation_gap`；不得把替代验证包装成目标通过，不得虚构命令、退出码或验证结果。
-- `pre-commit` 是推荐实践，非阻断项（除非用户/仓库明确要求）。
-
-## 训练 / 运行前代码实施审查
-
-- 含代码更改且后续会训练、评估、远程运行或生成实验结果的任务，必须在代码实施和本地轻量验证完成后、首次运行前做一次 pre-run implementation review。
-- 该审查只作为运行前门禁：不逐文件、逐小改动、逐 CSV row 审查，也不得变成 TDD/RED/test-first；输入包括需求 / Spec / CSV intent、diff 或代码快照、本地验证证据、待运行命令和关键项目约束。
-- 中等及以上代码改动、bug 修复、行为变更、mission/CSV 任务优先用独立 review sub-agent；不可用时记录 `validation_limited:same-model sub-agent unavailable` 并执行独立上下文 fallback review。
-- CSV / mission 任务在代码实施 + 本地验证 block 之后、首次运行 block 之前设置 `PRERUN-REVIEW-*`；它记录本次运行使用的 `pre_run_code_commit`，不是整个 CSV 的最终 commit。
-- 审查发现 blocker 时不得启动训练 / 运行；先修复、补跑相关轻量验证，并重新通过 pre-run review。
-
-## 安全与进程
-
-- 无用户授权不运行破坏性命令，例如 `git reset`、危险删除等。
-- 不硬编码密钥、凭证或 API Key；远程连接信息只读 `scripts/.env`，不回显密码，不写入脚本、CSV、review 或日志。
-- 参数化查询，不拼接不可信输入构造 shell / SQL；系统边界校验并清理外部输入。
-- 不终止非当前任务启动的进程。
-- 长生命周期进程最少新增、优先复用、结束即回收；启动前检查端口占用，启动后确认真实可访问。
-
-## 搜索分工
-
-### 核心原则
-代码库内部先语义后精确，代码库外部走可保存证据的搜索链路。
-
-### 使用场景
-
-#### 1. 本地代码语义理解：`fast_context_search`
-- 适用：探索性搜索、自然语言定位逻辑、理解业务逻辑 / 调用链路、跨模块查询、新任务开始前的代码调研和中文语义搜索。
-- 参数：快速粗查用 `tree_depth=1, max_turns=1`；默认用 `tree_depth=3, max_turns=3`；复杂调用链可用 `max_turns=5`；必要时用 `project_path` 指定项目根目录。
-
-#### 2. 精确字符串定位：`rg`
-- 已知函数名、类名、配置项、报错文本或固定 token 时，用 `rg` 精确定位。
-- 已知文件路径时直接阅读目标文件，不做额外探索。
-
-#### 3. 外部资料 / 论文 / 工具版本：`smart-search-cli` skill
-- 外部资料、论文、工具版本和当前信息统一走 `smart-search-cli` skill；具体命令、fetch、Context7/Exa 路由、Deep Research 细节以该 skill 为准。
-- 本项目覆盖规则：默认不做配置前置检查；`search` 返回空或明显无关时最多重试 3 次，仍为空则报告 `search_empty`。
-- 需要保存证据时使用 `--output`：单实验写入 `research_workspace/experiments/<ExpID>/analysis/search_evidence/`；路线级写入 `research_workspace/experiments/_cross_experiment/<RouteID>/search_evidence/`；模块 / 论文调研写入 `research_workspace/module_research/search_evidence/`。
-- API / SDK / framework / library 文档一律经 `smart-search-cli` skill 路由，不单独调用 Context7 MCP。
-
-## 人读产物语言
-
-- `reports/*.md` 与 `issues/*.review.md` 面向用户的标题、结论、风险、验证说明和剩余工作默认中文优先、中英对照。
-- `issues/*.csv`、`.mission/*.csv`、`reports/*.csv`、配置、数据和模型产物属于机器消费层，不作为历史改写目标翻译或重写。
-- 英文枚举、命令、路径、模型名、指标保持原 token，例如 `replay_ready`、`python -m compileall`、`DSDM`、`MAE`、`RMSE`。
-- 语言改写不得削弱 CSV 状态源语义，不得跳过实现、验证、review、提交闭环。
-
----
-
-# 提交约定
-
-## 前置条件
-
-- commit/push/PR 前满足硬门禁中的验证要求
-- merge 前至少完成自检：diff 范围、风险点、测试证据；重大变更按当前用户要求再决定是否额外 review。
-
-## 提交粒度
-
-- 一个逻辑变更一个提交，边界清晰可审查
-- 不混入无关格式化、调试痕迹
-- 先 `git status` 确认改动范围，只 add 相关文件
-
-## 双仓库提交
-
-- 主仓库提交包含源码、配置、脚本、测试、`docs/`、`issues/`；`research_workspace/` 由其自身仓库单独提交。
-- 远程结果落库或生成实验分析后，按 `research-result-commit` workflow 将当前 ExpID 相关研究产物合并为一个 `research_workspace` commit，并在适用时记录关联主仓库 branch + commit。
-
-## Commit Message
-
-格式：`<emoji> <type>(scope): summary`
-
-| 类型 | Emoji | 说明 |
-|------|-------|------|
-| init | 🎉 | 项目初始化 |
-| feat | ✨ | 新功能 |
-| fix | 🐞 | 错误修复 |
-| docs | 📃 | 文档变更 |
-| style | 🌈 | 代码格式化（不影响逻辑） |
-| refactor | 🦄 | 代码重构 |
-| perf | 🎈 | 性能优化 |
-| test | 🧪 | 测试相关 |
-| build | 🔧 | 构建系统或外部依赖 |
-| ci | 🐎 | CI 配置 |
-| chore | 🐳 | 辅助工具变动 |
-| revert | ↩ | 撤销提交 |
-
-- scope 用模块/目录，无明确范围可省略
-- summary 中文、动词开头、≤ 50 字、不加句号
-- **正文默认必写**，至少覆盖三点：
-  - `Why:` 为什么要改
-  - `Why this works:` 为什么这样改有效（验证证据 / 设计理由 / 根因修复）
-  - `Remaining:` 还剩什么工作、已知限制、后续建议
-- 破坏性变更：type 后加 `!` 或正文写 `BREAKING CHANGE: ...`
-
-推荐正文模板：
+**证据与认知分开。**
 
 ```text
-Why:
-- <问题 / 目标>
-
-Why this works:
-- <设计理由 / 验证结果 / 根因修复依据>
-
-Remaining:
-- <后续 issue / 已知缺口 / 下一步>
+remote_artifacts/<ExpID>/<RunID>/   原始证据。项目根，不进 Git，不作默认上下文，禁止递归批量读取
+research_workspace/
+  STATE.md                          当前在做什么，1–3 屏
+  CONCLUSIONS.md                    我们现在相信什么。C 编号 + OPEN/SUPPORTED/MIXED/REJECTED/SUPERSEDED
+  EXPERIMENTS.csv                   做过哪些实验，由 record.json 自动派生
+  experiments/<ExpID>/
+    record.json                     单实验机器事实，由 CSV + artifacts 投影，不手工维护
+    analysis/analysis.md            唯一结论文件，固定四段 Change / Result / Finding / Next
+    analysis/*.md                   诊断附件，不参与结论
 ```
 
+读取顺序：`STATE.md → CONCLUSIONS.md → EXPERIMENTS.csv → record.json → analysis.md`；只有需要核验具体实验时才读 `remote_artifacts/<ExpID>/`。`record.json` 中路径以项目根解析。
+
+研究产物最低关联：SpecID + ExpID + Branch + Commit；多次远程运行补 RunID。
+
+# 安全与进程
+
+- 未获授权不运行破坏性命令，不覆盖或丢弃用户改动，不使用 `git reset --hard`。
+- **凭据只传变量名或变量引用，永不传值**：`set -a; source <env file>; set +a` 后引用变量；控制面用 `password_env` 传变量名。不硬编码、提交或输出密钥、凭证、API Key。
+- **禁止整体打印含凭据的文件**（`cat`/`head`/`tail`/`sed -n`/`nl`）。会话记录把 stdout 永久落盘，一次打印即等于永久泄露；自制脱敏不算防护。确认存在性用 `echo "KEY=${KEY:+set}"`，看结构用 `grep -oE '^[A-Za-z_]+='`。
+- 非交互 SSH 下不假设 `python` / `conda` 在 `PATH`，远程 Python 命令必须显式激活环境。
+- 不终止非当前任务启动的进程。长生命周期进程尽量少开，启动前检查可复用实例，结束即回收。
+
+# 搜索分工
+
+- 本地代码语义理解、探索性定位、跨模块调用链：`fast_context_search`。
+- 已知函数名、类名、配置项、报错文本：`rg` 精确定位；已知路径直接读文件。
+- 外部资料、论文、工具版本、API/SDK 文档：`smart-search-cli`。
+
+# Git 与提交
+
+- 开始任务先记录 `git status` 和已暂存 patch，只 add 本任务路径。
+- 同一路径有用户已暂存 patch，或 index delta 无法精确隔离时，停止提交并报告 blocker。
+- 一个逻辑变更一个提交。提交前运行相关验证、检查 `git diff --check`、确认 staged 范围。
+- 使用 `<emoji> <type>(scope): 中文摘要`（≤50 字、动词开头、不加句号），正文写 `Why`、`Why this works`、`Remaining`。emoji：init 🎉 / feat ✨ / fix 🐞 / docs 📃 / style 🌈 / refactor 🦄 / perf 🎈 / test 🧪 / build 🔧 / ci 🐎 / chore 🐳 / revert ↩。
+- **代码仓库与科研工作区分别提交。**
+- merge 前完成 review；push/PR 前再次确认测试证据和工作树边界。
+
+# 沟通
+
+- 默认简体中文，可混用英文术语；代码标识符英文，注释中文。
+- 执行任务优先报告当前动作、已完成、下一步和阻塞；分析任务先给结论，再给依据和权衡。
+- 多步任务维护可见计划，同一时刻只保留一个 `in_progress`。
+
+# Skills
+
+- `mission`：spec、CSV、执行与恢复的统一入口。
+- `mission-spec`：需求讨论、canonical spec 和批准边界。
+- `mission-approved-doc`：approved spec 到 issues 工件。
+- `mission-csv-execute`：CSV 闭环执行、证据、review 与 handoff。
+- `mission-recovery`：只扫描 `issues/` 的恢复入口。
+- `pre-run-implementation-review`：运行前科学实施审查、风险分流与等价性探针。
+- `systematic-debugging`：根因不明或跨模块故障的定位辅助。
+- `humanizer-zh`：必装的自然语言处理 skill。
+- `smart-search-cli`：外部资料、论文与文档检索。
+- `remote-run-snippet`：从 intent 解析远程 train/eval 命令。
+- `research-result-commit`：当前 ExpID 研究产物的合并提交。
+- `lite-arch` / `lite-arch-recall`：建议安装的 ADR 记录与召回 skills。
+
 ---
 
-# 沟通偏好
+# 本项目补充
 
-## 语言
+> 以下两节是**每个项目必须自行填写**的部分，模板不预设内容。
+> 通用规则（上方全部章节）不需要改动。
 
-- 默认简体中文，可混用英文术语
-- 代码标识符英文，代码注释简体中文
+## 研究背景
 
-## 输出风格
+<一到两句：研究方向、基线方法、主指标。例如「X 模型 + Y 任务。基线为 Z。目标是在官方 evaluation setup 下提升 <主指标>，<辅助指标> 只作参考。」>
 
-- **执行类任务**：进度优先 — 当前动作、已完成、下一步、风险/阻塞、`path:line` 引用
-- **分析类任务**：结论优先 — 核心判断、依据与权衡、实施建议
-- **简单查询**：直接回答，不加框架
-- 多步任务（≥ 3 步）用 `update_plan` 维护可见任务列表，同一时刻仅一个 `in_progress`，完成即标记
-- 复杂内容后附简短总结并突出下一步，不重复输出完整计划
+## 路径
 
----
-
-# 技能注册表
-
-| 技能 | 用途 |
-|------|------|
-| `brainstorming` | 新能力、breaking change、架构变更、复杂科研实验设计或需求模糊时，收敛设计与验收口径 |
-| `mission` | 批准文档转 CSV、已有 CSV 执行、长任务持久化与恢复 |
-| `systematic-debugging` | 复杂 bug、根因不明或跨模块故障的根因定位辅助 |
-
-开始任务前优先判断是否有匹配的 skill。命中则读取其 `SKILL.md` 并按流程执行。
-
----
-
-# 项目背景
-
-- 基线：<你的 baseline 名称与简述>。
-- 方法：在可靠 baseline 上组合可插拔模块。
-- 目标：优先提升 **<你的主指标>**；<辅助指标> 只作辅助。
-
----
-
-# 项目事实
-
-- 科研工作区统一入口为 `research_workspace/`；新建研究文件前先判断归属目录，无法判断时先说明建议路径并等待确认。
-- 常用产物：Spec 在 `docs/superpowers/specs/<SpecID>.md`；执行清单在 `issues/<SpecID>.csv`；CSV schema 在 `issues/TEMPLATE.csv`；review 交接在 `issues/<SpecID>.review.md`。
-- `research_workspace/` 目录归属：根目录放长期入口和台账（`README.md`、`STATE.md`、`00-实验记录.md`、`11-模块规划.md`）；`experiments/<ExpID-or-RunDir>/` 放单次实验绑定产物，其 `analysis/` 子目录放该实验的分析 / 诊断 / next steps / root cause / 计划草案；`experiments/_cross_experiment/<RouteID>/` 放跨实验或路线级复盘；`commands/` 放远程命令与 shell 片段；`papers/` 放论文材料；`module_research/` 放模块论文 / 源码调研；`archive/` 放过时草案。
-- 远程训练 / 评估用 `tmux`；记录非敏感证据：hostname、branch、commit、GPU、conda env、session、EXP_ROOT、脚本与日志路径。
-- **Stop Trigger（运行健康检查）**：远程运行必须通过两层检查，任一触发必须立即记录到 CSV `notes` / `next_action` 或 `issues/<SpecID>.review.md`（不新增 `remote_state` 枚举）：
-  - **① 首步强制采样**（启动后 30s–2min 内，性质 = go/no-go）：进程存在 + log 出现 `step ≥ 1` + loss 有限值；训练阶段 GPU util 抽样 ≥ 30%；评估阶段单次 inference 耗时 ≤ 预算 × 3；checkpoint 路径已被创建。任一不满足 → 不要走开，先排查；不要标 `running_remote`，标 `dev_state=进行中` + `notes` 写"首步验证未通过"。首步采样归属：首条 remote row 负责"启动 + 首步 30s-2min 观察" + 更新自己的 `notes`（格式：`首步采样：通过 (step=1, loss=0.42, gpu_util=87%) | 未通过 (no step in log)`）+ `remote_state`（通过 → `running_remote`；未通过 → 保持空或标 `启动失败`）。
-  - **② 长期周期巡检**（整个生命周期，性质 = abort）：训练 log 出现 NaN / Inf / CUDA OOM；console log 持续 >5min 无增长；训练阶段 GPU util 持续 <30% 超过 10min；评估阶段日志停滞 >5min；nvidia-smi 无目标进程；Spec 定义的 Stop Condition（<你的项目特定停止条件>）。任一触发 → 立即停止追加，记录 `notes` / `review` 触发原因 + 时刻；恢复时先排查根因再决定是否续训。
-- 研究产物最低关联：SpecID + ExpID + Branch + Commit；多次远程运行补充 RunID。
-- 正式执行入口：`/goal @issues/<SpecID>.csv`；远程训练中的 `remote_state=running_remote` 只是恢复点。
-- CSV 状态枚举：`dev_state` 用中文"未开始 / 进行中 / 已完成"（不改英文以避免 schema breaking change）；`remote_state` 用英文 `not_applicable / running_remote / completed / artifacts_pulled` 等。
-- 科研声明必须有 artifacts 支撑；没有实际训练 / 评估证据时，不声称 <主指标>、Current Best 或实验完成。
-- 触及 <关键模块>、attention、batch size、baseline 回退时，先确认语义和验证路径，再改代码或写结论。
+- 远程连接使用 `.agents/harness/profiles.json`，凭据和环境只读 `.agents/harness/.env`（键：`SSH_PASSWORD` / `REMOTE_CONDA_ENV` / `REMOTE_CONDA_SH`）；
+  远程 Python 须显式激活环境。
+- <项目训练/评估脚本位置，如 `scripts/train_*.sh` / `scripts/eval_*.sh`>
+- <项目数据集路径、checkpoint 路径等>
+- <其他项目专有目录与工具>

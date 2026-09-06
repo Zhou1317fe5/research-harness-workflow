@@ -1,12 +1,14 @@
 # Approved Doc -> CSV 字段映射
 
+`issues/TEMPLATE.csv` 是本项目唯一固定的科研 28 列 CSV schema。本文件只说明 canonical approved spec 如何映射到该表头；显式外部 compatibility CSV 可保留官方 19 列，但新任务不得生成 19 列。
+
 ## 适用输入
 
-- `docs/superpowers/specs/*.md`
-- `docs/superpowers/plans/*.md`
-- 任何已获用户批准、且正文能清晰定义 scope / tasks / validation 的 Markdown 文档
+- `docs/specs/*.md`
+- frontmatter 通过 `mission-spec/scripts/validate_spec.py` 校验
+- `status: approved`，已提交且工作副本与 `HEAD` 一致
 
-## From design doc
+## From canonical spec
 
 | 章节 / 结构 | 提取内容 | CSV 字段 |
 |-------------|----------|----------|
@@ -16,23 +18,52 @@
 | `## Constraints` / `## Risks` | 关键约束与风险 | `priority`, `review_regression_requirements`, `notes` |
 | `## Testing` / `## Validation` / `## Success Criteria` | 验收口径 | `acceptance_criteria`, `test_mcp` |
 
-## From implementation plan
-
-| 结构 | 提取内容 | CSV 字段 |
-|------|----------|----------|
-| `### Task N` / `## Task N` | 阶段分组 | `phase`, `id` 前缀 |
-| `**Files:**` | 影响文件 | `refs`, `area` |
-| `- [ ] Step ...` | 原子工作项 | `title`, `description` |
-| `Run:` / `Expected:` | 验证命令 | `acceptance_criteria`, `review_initial_requirements` |
-| Commit / Review 说明 | 提交和回归边界 | `review_regression_requirements`, `notes` |
-
 ## Granularity rules
 
 1. 若计划文档已有 `Task` / `Step` 结构，优先按可独立提交的任务单元生成 issue
 2. 若只有设计文档，没有显式任务结构，则按独立模块、独立验证路径拆分 3-10 条 issue
 3. 一个 issue 只能对应一条清晰的验证路径；若两个工作项拥有不同失败路径或不同回归面，必须拆开
-4. 若任务包含代码更改且后续会训练、评估、远程运行或生成实验结果，在代码实施 + 本地轻量验证 block 后、首次运行 row 前插入 `PRERUN-REVIEW-01`
-5. 普通 issue 生成完毕后，固定追加 `REVIEW-01`；后续 review 轮次只由 `mission-csv-execute` 在发现缺口时追加
+4. 普通 issue 生成完毕后，固定追加 `REVIEW-01`；后续 review 轮次只由 `mission-csv-execute` 在发现缺口时追加
+
+## Claim / Evidence Ledger
+
+生成 issue 前先抽取可验证 claim；CSV 生成质量以 claim 覆盖为准，不以 issue 数量为准。
+
+| Spec 信号 | claim 类型 | 生成要求 |
+|-----------|------------|----------|
+| WHEN/MUST/SHALL/必需/必须 | 行为承诺 | 至少一个 issue 的 AC 显式覆盖 |
+| 状态枚举/字段定义/API schema | 契约承诺 | AC 写字段、状态、错误码或 schema 验证 |
+| 启动行为/注册/consumer/subscriber | 生产路径承诺 | 必须有接线 issue 或路径式 AC |
+| 真实发送/同步/迁移/副作用/provider | 真实集成承诺 | `evidence_required` 至少为 `integration`，受限时必须写 `validation_limited` |
+| mock/fake/dry-run/static 明确允许 | 受限证据承诺 | notes 写 `mock_allowed` / `limited_allowed`，review 不得升级声明 |
+| non-goal/future/deferred | 范围边界 | 不生成实现 issue；notes 写 `out_of_scope:<section>;<reason>` |
+
+每个普通 issue 的 `notes` 应压缩记录相关 claim，例如：
+
+```text
+claim_ledger:<stem>.claims.json; claims:CLAIM-001,CLAIM-004; evidence_level:integration; production_path:covered
+```
+
+`REVIEW-01` 的 `review_regression_requirements` 必须要求逐条读取 `<stem>.claims.json`，检查三件事：claim 是否覆盖、生产路径是否接上、证据等级是否支撑交付声明。若 CSV notes 出现 `claims:CLAIM-*` 但没有 `claim_ledger:<path>`，该 CSV 不完整，必须先补 ledger 再执行。
+
+### 闭环路径规则（HARD — 组件 issue 不能代替接线 issue）
+
+组件 issue 实现的是独立模块的内部逻辑。但 spec 的愿景通常还要求这些模块**被连接到生产路径**。以下情形必须生成独立的"接线 issue"，不能把接线行为当作某个组件 issue 的隐含产出：
+
+| 信号（在 spec 中看到） | 必须生成的独立 issue |
+|----------------------|---------------------|
+| "A 作为 B 的 consumer/handler/subscriber 运行" | 注册 A 到 B 的 dispatcher/registry |
+| "应用启动时拉起 X worker/scheduler" | 在 main.py / lifespan 中启动 X |
+| "agent 可调用 tool Y" | 把 Y 注册到 agent integration_tools |
+| "组件 C 的输出注入到 flow D" | 在 D 的执行路径中调用 C |
+| "真实 provider/adapter 替换 static placeholder" | 实现并注册真实 adapter（即使 mock 先行） |
+| "从 A 到 Z 的完整路径可跑通" | 端到端路径验证（fake provider 可接受，但链路必须通） |
+
+规则：
+- 接线 issue 的 `priority` 不低于它所连接的组件 issue 中最高的那个
+- 接线 issue 的 `acceptance_criteria` 必须是路径式的："WHEN production startup/flow runs THEN component X is reachable by its documented consumers"，而不是组件式的 "WHEN X input THEN Y output"
+- 如果 spec 明确说"v1 不接线 / 骨架即可"，可以不生成接线 issue，但必须在对应组件 issue 的 `notes` 中写明 `scope:skeleton_only;wiring_deferred_to:<reason>`
+- **REVIEW-01 的 regression requirements 必须包含至少一条路径级检查**："WHEN app starts / agent runs / flow executes THEN documented consumers can reach this component through the production path"
 
 ## Field inference rules
 
@@ -45,8 +76,6 @@
 ### `test_mcp`
 
 - 后端逻辑 / API：`AUTOSERVER`
-- 前端组件 / 页面：`AUTOFRONTEND`
-- 多步流程 / 跨页面交互：`AUTOE2E`
 - 契约 / schema / adapter：`CONTRACT`
 - 迁移 / 数据修复：`MIGRATION`
 - 难以自动化的体验验证：`MANUAL`
@@ -55,41 +84,24 @@
 
 - 默认留空
 - 若批准文档明确指定某个 skill，按文档写入
-- `PRERUN-REVIEW-N` 行固定写 `pre-run-implementation-review`
-- 不再为前端/UI任务自动注入固定 skill
+- `PRERUN-REVIEW` 行固定写 `pre-run-implementation-review`
 
 ### `required_mcp`
 
 - backend / infra：留空
-- 用户可见 UI：`chrome-devtools`
-- 多步交互：`chrome-devtools;playwright`
-- 强视觉 / 动效 / 氛围：`chrome-devtools;screenpipe`
-- 两者兼有：`chrome-devtools;playwright;screenpipe`
-
-## Pre-run Implementation Review Rows
-
-`PRERUN-REVIEW-N` 行用于在训练 / 运行前审查代码实施正确性，避免错误代码进入远程运行或实验结果链路。
-
-- 只在“代码更改之后还有训练、评估、远程运行或实验结果生成”时生成
-- 位置固定在代码实施 + 本地轻量验证 block 之后、首次训练 / 运行 row 之前；不是 CSV 尾部 review
-- 不按每个文件、每个小改动或每条普通 row 生成；同一代码快照只需要一次 pre-run review
-- 若 pre-run review 后又修改了影响运行的代码，必须在运行前新增或重跑 `PRERUN-REVIEW-N`
-- `area` 固定为 `review`
-- `priority` 固定为 `P0`
-- `test_mcp` 固定为 `manual`
-- `required_skills` 固定为 `pre-run-implementation-review`
-- `notes` 必须包含 `review_kind:pre_run_implementation`、`gated_run:<first-run-id>`，通过后追加 `pre_run_code_commit:<hash>` 与 `pre_run_result:pass`
-- 后续训练 / 运行 row 的 `commit_hash` 或 `notes` 必须引用同一个 `pre_run_code_commit`；后续 artifact / analysis / review commit 不得覆盖该含义
 
 ## Vision Review Rows
 
 `REVIEW-N` 行用于审计交付结果是否达成批准文档愿景。
 
 - `area` 固定为 `review`
+- `area` 固定为 `review`
 - `priority` 固定为 `P0`
 - `test_mcp` 固定为 `MANUAL`
 - `refs` 至少包含批准文档路径
 - `notes` 必须包含 `review_kind:vision`
+- `REVIEW-01` 由 CSV 生成阶段创建
+- `REVIEW-02` 及之后由执行阶段在发现缺口时追加
 - `REVIEW-01` 由 CSV 生成阶段创建
 - `REVIEW-02` 及之后由执行阶段在发现缺口时追加
 
@@ -99,3 +111,5 @@
 2. task / step 附带的运行命令和预期结果
 3. 设计文档中的 constraints / risks
 4. 关键文件 `ref: path:line`
+
+涉及代码实施后训练、评估、远程运行或实验结果生成时，生成阶段必须在首次 official run 前插入单个 `PRERUN-REVIEW-*`。该行记录 `gated_run`、`review_mode:scientific_review` 和 `pre_run_code_commit`；不生成 Attempt、lineage、generation、strict coverage 或 reviewer liveness。`SpecID/ExpID/RunID`、`remote_state`、artifact path、branch/commit 和 next_action 必须保留在 28 列字段中。

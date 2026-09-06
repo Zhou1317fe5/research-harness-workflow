@@ -1,6 +1,6 @@
 ---
 name: research-result-commit
-description: Commit completed remote experiment results in the nested research_workspace repository. Use after pulling remote artifacts, ingesting metrics, updating research_workspace/00-实验记录.md or research_workspace/STATE.md, generating experiment analysis/HEN/next-step/search-evidence files, or whenever current ExpID research outputs should be consolidated into one linked research_workspace commit.
+description: Commit completed remote experiment results in the nested research_workspace repository. Use after pulling remote artifacts, ingesting metrics, updating research_workspace/EXPERIMENTS.csv or research_workspace/STATE.md, generating experiment analysis/next-step/search-evidence files, or whenever current ExpID research outputs should be consolidated into one linked research_workspace commit.
 ---
 
 # Research Result Commit
@@ -23,16 +23,16 @@ Use this workflow to turn a completed experiment result ingest into one auditabl
    - Do not stage or commit `issues/`, `docs/`, source code, configs, scripts, or tests from this workflow.
 
 3. Select only files belonging to the current experiment result.
-   - Always consider `experiments/<ExpID>/`, `00-实验记录.md`, and `STATE.md`.
-   - Include other `research_workspace` files only when they are clearly tied to the current ExpID, such as command records, search evidence, analysis drafts, HEN reports, visualization notes, or next-step documents.
+   - Always consider `experiments/<ExpID>/`, `EXPERIMENTS.csv`, and `STATE.md`.
+   - Include other `research_workspace` files only when they are clearly tied to the current ExpID, such as command records, search evidence, analysis drafts visualization notes, or next-step documents.
    - Exclude unrelated dirty files and unrelated experiments, even if they are already present in `research_workspace`.
 
 4. Stage deliberately.
    - Use explicit `git add` paths, for example:
 
 ```bash
-cd <项目根目录>/research_workspace
-git add experiments/<ExpID> 00-实验记录.md STATE.md
+cd <PROJECT_ROOT>/research_workspace
+git add experiments/<ExpID> EXPERIMENTS.csv STATE.md
 git add <other-current-ExpID-research-files>
 git diff --cached --stat
 ```
@@ -49,7 +49,7 @@ Why:
 
 Why this works:
 - 当前 ExpID 的 artifacts/analysis/search evidence 保存结论证据
-- 00-实验记录.md 与 STATE.md 记录实验状态
+- EXPERIMENTS.csv 与 STATE.md 记录实验状态
 - 关联主仓库: <branch> @ <commit>
 
 Remaining:

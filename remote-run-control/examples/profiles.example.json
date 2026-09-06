@@ -1,0 +1,16 @@
+{
+  "profiles": {
+    "local-test": {
+      "kind": "local"
+    },
+    "remote-key": {
+      "kind": "ssh",
+      "ssh_argv": ["ssh", "host-alias"]
+    },
+    "remote-password": {
+      "kind": "ssh",
+      "ssh_argv": ["ssh", "host-alias"],
+      "password_env": "RRCTL_SSH_PASSWORD"
+    }
+  }
+}
