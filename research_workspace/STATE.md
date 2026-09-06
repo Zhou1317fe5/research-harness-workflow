@@ -1,32 +1,23 @@
-# STATE（当前真相）
+# STATE
 
-更新时间：YYYY-MM-DD
+> 更新：<日期> ｜ 本文件只回答**当前在做什么**，控制在 1–3 屏。
+> 跨实验判断在 `CONCLUSIONS.md`，实验索引在 `EXPERIMENTS.csv`，
+> 单实验事实在 `experiments/<ExpID>/record.json`，原始证据在项目根 `remote_artifacts/<ExpID>/`。
 
-本文件只维护**当前真相和索引**，不复制完整实验流水账。下一轮讨论或执行前，先读本文件，再按需追溯 Spec / Result / remote_artifacts。
+## Current Model
 
-## 当前主线
+| 项 | 值 |
+|---|---|
+| 当前最强可信结果 | |
+| baseline | |
+| 对照原点 | |
 
-| Key | Current Truth | Evidence |
-|-----|---------------|----------|
-| 当前最强可信路线 | <方案名 + 关键指标 + checkpoint/seed> | <证据路径> |
-| Baseline | <baseline 指标 + 复现口径> | <证据路径> |
-| 已废弃路线 | <路线名 + 废弃原因> | <证据路径> |
+## Current Bottleneck
 
-## 活跃假设
+1.
 
-| Priority | Hypothesis | Status | Next Evidence |
-|----------|------------|--------|---------------|
-| P0 | <可反驳的因果假设> | 待验证 / 部分验证 / 已证伪 | <下一步证据来源> |
-| P1 | | | |
+## Active Experiments
 
-## 下一步优先级
+## Next
 
-- **P0**：<最高优先级的下一步>
-- **P1**：<次优先>
-- **P2**：<备选>
-
-## 声明纪律
-
-- 没有真实训练/评估 artifacts，不声称指标提升或"实验完成"。
-- 单次运行的高点只能标 `tentative`，多 seed 稳定后才可写成 Current Best。
-- 失败实验也要进台账或废弃路径——"试过并失败"本身是防重复踩坑的证据。
+## 当前硬约束
