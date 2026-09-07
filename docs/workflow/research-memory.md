@@ -5,6 +5,17 @@
 会话钩子保存来源，agent 根据来源整理正式记录。当前决定、实证发现、推断和执行事实分别记账。
 本地文件与队列独立工作；Hindsight 是可选的检索副本。
 
+## Skill 与 Hindsight 的分工
+
+`research-memory` skill 指导 agent 读取本地来源、处理待确认项、维护结论及其适用范围。
+`.agents/skills` 是指向 `.codex/skills` 的发现入口；Claude 使用同步的 `.claude/skills`。
+执行所需步骤已完整写在对应的 SKILL.md 中。
+
+Hindsight 提供远端存取和语义召回。启用后，本地队列负责同步与重试；
+决定类型、生效状态和实验依据仍由 agent 按来源整理。
+
+本文件面向用户介绍配置与使用方式，阅读和配置完成后可按需保留。
+
 ## 入口与存储
 
 ```bash

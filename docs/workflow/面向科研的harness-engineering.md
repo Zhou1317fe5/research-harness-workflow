@@ -111,7 +111,7 @@ AI 很擅长事后解释：结果没提升，它能说"发现了有趣现象"；
 ## 三、装在哪、怎么开始
 
 **按项目安装，不装到全局。** 把仓库内容复制进你的项目目录，每个项目一份，互不干扰。
-详细步骤见 [README](../../README.md)。
+详细步骤见 [README](installation.md)。
 
 复制完项目里会有：
 
@@ -200,7 +200,7 @@ research_workspace/
 
 目标项目中的 `research_workspace/` 使用独立 Git 仓库，代码仓库忽略该目录。
 实验记录和跨实验分析沿科研仓库自己的历史积累；代码切换分支时仍能读取这些记录。
-初始化与旧项目停止跟踪的步骤见 [README](../../README.md#初始化独立科研仓库)。
+初始化与旧项目停止跟踪的步骤见 [README](installation.md#初始化独立科研仓库)。
 
 ### 配套脚本
 
@@ -218,7 +218,7 @@ research_workspace/
 ## 五、改成自己的
 
 工作流目录 `issues/`、`docs/specs/`、`research_workspace/`、`remote_artifacts/` 保持不动。
-项目接入时修改以下几处，具体示例见 [用户配置说明](../../.agents/harness/docs/configuration.md)：
+项目接入时修改以下几处，具体示例见 [用户配置说明](configuration.md)：
 
 - `.agents/harness/config/project.toml`：填写真实训练、评估命令，checkpoint 衔接、日志路径和产物清单。
   `adapter` 映射已有进度与结果字段，`records` 映射主指标、辅助指标及项目实际使用的运行维度，

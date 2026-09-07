@@ -17,7 +17,7 @@ python -m pip install -e .agents/harness/remote/rrctl
 ```
 
 远程主机应具备 SSH、Git、tmux 和可显式激活的 conda 环境。
-科研工作区的独立 Git 初始化见项目 [README](../../../README.md)。
+科研工作区的独立 Git 初始化见 [安装说明](installation.md#初始化独立科研仓库)。
 
 ## 1. 填写项目背景
 

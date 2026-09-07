@@ -11,7 +11,7 @@ metadata:
 
 ## 首次接入
 
-读取 `.agents/harness/config/project.toml`；尚未创建时，按 `.agents/harness/docs/configuration.md` 和 `config/project.example.toml` 配置。确认：
+读取 `.agents/harness/config/project.toml`；尚未创建时，从 `.agents/harness/config/project.example.toml` 复制并填写项目真实命令与输出约定。确认：
 
 - `pipeline.stages` 是项目实际可运行的 argv，支持 shell 脚本、Python 入口和其他可执行程序，目录不限于 `scripts/`。
 - 训练输出与评估输入指向同一 checkpoint；`requires` / `outputs` 声明必须存在的文件。
