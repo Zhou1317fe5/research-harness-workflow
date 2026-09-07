@@ -49,8 +49,18 @@ RAW_DIAGNOSTIC_TOKENS = (
 )
 SMOKE_SUMMARY_PATH = "smoke_summary.json"
 SMOKE_DELETE_GLOBS = [
-    "checkpoint-*",
-    "**/checkpoint-*",
+    "checkpoint*",
+    "**/checkpoint*",
+    "*.pt",
+    "**/*.pt",
+    "*.pth",
+    "**/*.pth",
+    "*.ckpt",
+    "**/*.ckpt",
+    "*.safetensors",
+    "**/*.safetensors",
+    "pytorch_model*.bin",
+    "**/pytorch_model*.bin",
     "optimizer*",
     "**/optimizer*",
     "scheduler*",
@@ -511,6 +521,7 @@ def _health(
         "progress_path",
         "progress_stale_seconds",
         "gpu_min_percent",
+        "gpu_utilization_policy",
         "low_gpu_limit_seconds",
         "fatal_patterns",
         "adapter_timeout_seconds",
@@ -539,6 +550,9 @@ def _health(
             or adapter_timeout < 1
         ):
             raise RunSpecBuildError(f"health.{phase}.adapter_timeout_seconds_invalid")
+        gpu_policy = item.get("gpu_utilization_policy", "advisory")
+        if not isinstance(gpu_policy, str) or gpu_policy not in {"required", "advisory", "disabled"}:
+            raise RunSpecBuildError(f"health.{phase}.gpu_utilization_policy_invalid")
         fatal_patterns = _string_list(
             item.get("fatal_patterns", []),
             f"health.{phase}.fatal_patterns",
@@ -577,6 +591,7 @@ def _health(
             "progress_path": item.get("progress_path"),
             "progress_stale_seconds": item.get("progress_stale_seconds"),
             "gpu_min_percent": item.get("gpu_min_percent"),
+            "gpu_utilization_policy": gpu_policy,
             "low_gpu_limit_seconds": item.get("low_gpu_limit_seconds"),
             "fatal_patterns": fatal_patterns,
             "adapter_argv": list(adapter_argv),
@@ -738,6 +753,7 @@ def build_runspec(request: dict[str, Any]) -> dict[str, Any]:
             )
         contract = {
             "progress_path": adapter_progress_path,
+            "progress_format": requested_contract.get("progress_format", "json"),
             "summary_path": SMOKE_SUMMARY_PATH,
             "progress_finite_fields": _string_list(
                 requested_contract.get("progress_finite_fields", []),
