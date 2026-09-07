@@ -15,13 +15,13 @@ Skills 按项目安装。已有同名文件时先合并，保留项目自己的�
 git clone https://github.com/Zhou1317fe5/research-harness-workflow.git /tmp/rhw
 cd /path/to/your-project
 cp -R /tmp/rhw/.agents /tmp/rhw/.claude /tmp/rhw/.codex .
-cp -R /tmp/rhw/issues /tmp/rhw/docs /tmp/rhw/remote-run-control .
+cp -R /tmp/rhw/issues /tmp/rhw/docs .
 cp /tmp/rhw/AGENTS.md /tmp/rhw/CLAUDE.md .
 mkdir -p research_workspace/experiments remote_artifacts
 cp /tmp/rhw/research_workspace/STATE.md /tmp/rhw/research_workspace/CONCLUSIONS.md research_workspace/
 cp /tmp/rhw/remote_artifacts/README.md remote_artifacts/
 cat /tmp/rhw/.gitignore >> .gitignore
-python -m pip install -e remote-run-control
+python -m pip install -e .agents/harness/remote/rrctl
 ```
 
 `.agents/harness/` 按功能组织公共实现；各子目录的职责见 [目录说明](.agents/harness/README.md)。旧版根目录 `scripts/`、`.claude/harness/`、
@@ -170,6 +170,7 @@ Hindsight 默认关闭。本地采集、整理与查询只需 Python 标准库�
   common/                          路径与配置解析
   pipeline/                        训练、评估执行器
   remote/                          rrctl 入口、RunSpec 与 adapters
+    rrctl/                         独立的远程控制 Python 包
   records/                         实验事实与索引
   memory/                          科研记忆与会话钩子
   docs/                            用户配置和使用说明
@@ -184,7 +185,6 @@ research_workspace/                 目标项目中的独立 Git 仓库
   EXPERIMENTS.csv                   自动生成的实验索引
   experiments/<ExpID>/record.json   单实验机器事实
   experiments/<ExpID>/analysis/analysis.md
-remote-run-control/                 rrctl 源码
 ```
 
 按 `STATE.md → CONCLUSIONS.md → EXPERIMENTS.csv → record.json → analysis.md` 阅读。
@@ -196,7 +196,7 @@ remote-run-control/                 rrctl 源码
 2. 按功能子目录更新 harness 调用路径，将旧平铺目录中的本地配置移入 `config/`，重新安装会话钩子。
 3. 从两套 skills 中移除旧的 `mission-doc-route`、`mission-long-task`、`exp-analysis-hen`、
    `exp-results-ingest-local`、`autodl-remote-run-snippet`、`autodl-remote-pull-manifest` 和 `remote-pull-manifest`。
-4. 用 `project.toml` 对接命令与日志，重新安装 rrctl 并生成后续运行的 RunSpec。旧运行继续使用其已保存的协议。
+4. 旧版根目录的 `remote-run-control/` 已迁入 `.agents/harness/remote/rrctl/`。使用旧目录做 editable 安装的环境，执行 `python -m pip install -e .agents/harness/remote/rrctl` 更新安装路径；`rrctl` 命令不变。用 `project.toml` 对接命令与日志，后续 RunSpec 沿用批准的运行范围。
 5. 将旧原始日志逐实验迁到 `remote_artifacts/`，更新相关引用。保留旧实验分析，不重写历史结论。
 
 新增 Git 忽略规则不会删除已经提交的日志，也不会缩小已有 Git 历史；历史清理需单独处理。

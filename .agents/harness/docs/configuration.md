@@ -13,7 +13,7 @@
 远程执行前在本地安装控制面：
 
 ```bash
-python -m pip install -e remote-run-control
+python -m pip install -e .agents/harness/remote/rrctl
 ```
 
 远程主机应具备 SSH、Git、tmux 和可显式激活的 conda 环境。
@@ -201,6 +201,11 @@ cp -n .agents/harness/config/research-memory.example.json .agents/harness/config
 旧版的 project.toml、profiles.json、.env、research-memory.json 移到 config/；
 保留现有值，不用示例覆盖它们。按本说明更新脚本路径，再运行新的钩子安装入口。
 research_workspace 与已有 .memory 队列保持原位置。
+
+旧根目录中的 remote-run-control 移到 `.agents/harness/remote/rrctl/`。
+如果当前 Python 环境以 editable 方式指向旧目录，需要按本文开头的新路径重新安装。
+包名 remote-run-control、Python 模块 remote_run_control 和 rrctl 命令均保持不变。
+连接配置仍在 config/，已保存运行的控制路径与恢复索引不随源码目录移动。
 
 若钩子没有运行，先检查宿主是否重启、项目是否受信任、Codex 的 /hooks 是否已批准新定义。
 若提示配置不存在，检查 config/ 中是否使用了实际文件名，而不是仅保留 .example 模板。

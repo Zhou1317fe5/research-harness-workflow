@@ -17,12 +17,17 @@ It does not schedule GPUs, interpret scientific metrics, update experiment ledge
 
 ## Install
 
+From the research workflow project root:
+
 ```bash
-python -m pip install -e remote-run-control
+python -m pip install -e .agents/harness/remote/rrctl
 rrctl --help
 ```
 
 The package has no runtime dependencies outside the Python standard library.
+It remains an independent Python package: the distribution is `remote-run-control`,
+the import name is `remote_run_control`, and the command is `rrctl`.
+Reinstall an editable installation if it points to the previous source directory.
 
 ## Profiles
 
@@ -85,6 +90,8 @@ Adapters run as isolated processes inside the project conda environment. Invalid
 The remote control directory is authoritative and contains immutable RunSpec/binding evidence, atomic `status.json`, append-only events/health, console output, recovery metadata, and the final artifact manifest. Bindings separate stable source identity (`source_content_sha256`) from transferred bytes (`transport_bundle_sha256`), so a retry cannot become new reviewed source merely because RunID or packaging changed. Local state under `~/.local/state/rrctl/runs/` is only a rebuildable index.
 
 ## Development
+
+Run these commands inside this package directory:
 
 ```bash
 python -m pip install -e .

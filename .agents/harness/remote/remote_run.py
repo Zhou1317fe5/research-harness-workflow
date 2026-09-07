@@ -36,7 +36,10 @@ def execute(spec_path: Path, *, profiles: Path | None, poll_seconds: float) -> i
     if spec.get("schema_version") != "rrctl.run.v1" or not isinstance(run_id, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", run_id):
         raise ValueError("expected a valid rrctl.run.v1 RunSpec")
     if shutil.which("rrctl") is None:
-        raise ValueError("rrctl is unavailable; install remote-run-control first")
+        raise ValueError(
+            "rrctl is unavailable; install with "
+            "python -m pip install -e .agents/harness/remote/rrctl"
+        )
     prefix = ["rrctl", "--json"]
     if profiles:
         prefix += ["--profiles", str(profiles.resolve())]

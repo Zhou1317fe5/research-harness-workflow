@@ -120,11 +120,11 @@ AI 很擅长事后解释：结果没提升，它能说"发现了有趣现象"；
 .agents/skills                     Codex 发现入口，链接到 .codex/skills
 CLAUDE.md  AGENTS.md                agent 读的规则
 .agents/harness/                    公共脚本与项目配置
+  remote/rrctl/                    rrctl 独立 Python 包
 issues/TEMPLATE.csv                 CSV 的列定义
 docs/specs/                         实验方案
 research_workspace/                 科研结论层
 remote_artifacts/                   原始日志和结果
-remote-run-control/                 rrctl 源码
 ```
 
 上手三步：

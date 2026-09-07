@@ -924,7 +924,7 @@ def require_rrctl(executable: str) -> str:
     if resolved is None:
         raise RunSpecBuildError(
             f"rrctl_unavailable: {executable}; install with "
-            "python -m pip install -e remote-run-control"
+            "python -m pip install -e .agents/harness/remote/rrctl"
         )
     return resolved
 
