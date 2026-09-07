@@ -51,13 +51,19 @@ def resolve_path(value: str, base_dir: Path, workdir: Path) -> Path:
     return (workdir / path).resolve()
 
 
-def validate_ledger(ledger_path: Path, csv_path: Path, referenced_claims: set[str]) -> list[str]:
+def validate_ledger(
+    ledger_path: Path,
+    csv_path: Path,
+    referenced_claims: set[str],
+    *,
+    require_terminal: bool = False,
+) -> list[str]:
     errors: list[str] = []
     if not ledger_path.is_file():
         return [f"claim ledger does not exist: {ledger_path}"]
     try:
         data = json.loads(ledger_path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError as exc:
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
         return [f"claim ledger is not valid JSON: {ledger_path}: {exc}"]
 
     if not isinstance(data, dict):
@@ -84,8 +90,13 @@ def validate_ledger(ledger_path: Path, csv_path: Path, referenced_claims: set[st
         if "covered_by" in claim and not isinstance(claim["covered_by"], list):
             errors.append(f"{claim_id} covered_by must be a list")
         status = claim.get("status")
-        if status not in CLAIM_STATUSES:
+        if not isinstance(status, str) or status not in CLAIM_STATUSES:
             errors.append(f"{claim_id} has invalid status: {status}")
+        if require_terminal and (
+            not isinstance(status, str)
+            or status not in {"verified", "not_run_by_preregistered_gate", "out_of_scope"}
+        ):
+            errors.append(f"claim_not_terminal:{claim_id}:{status}")
         if status == "not_run_by_preregistered_gate" and not _nonempty_evidence(
             claim.get("gate_evidence")
         ):

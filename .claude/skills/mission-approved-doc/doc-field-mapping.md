@@ -75,10 +75,10 @@ claim_ledger:<stem>.claims.json; claims:CLAIM-001,CLAIM-004; evidence_level:inte
 
 ### `test_mcp`
 
-- 后端逻辑 / API：`AUTOSERVER`
-- 契约 / schema / adapter：`CONTRACT`
-- 迁移 / 数据修复：`MIGRATION`
-- 难以自动化的体验验证：`MANUAL`
+- 本地命令、后端逻辑 / API、迁移 / 数据修复：`local_cli`
+- 真实远程训练 / 评估 / 运行：`remote_cli`
+- 契约 / schema / adapter：`contract`
+- 难以自动化的体验验证：`manual`
 
 ### `required_skills`
 
@@ -97,7 +97,7 @@ claim_ledger:<stem>.claims.json; claims:CLAIM-001,CLAIM-004; evidence_level:inte
 - `area` 固定为 `review`
 - `area` 固定为 `review`
 - `priority` 固定为 `P0`
-- `test_mcp` 固定为 `MANUAL`
+- `test_mcp` 固定为 `manual`
 - `refs` 至少包含批准文档路径
 - `notes` 必须包含 `review_kind:vision`
 - `REVIEW-01` 由 CSV 生成阶段创建

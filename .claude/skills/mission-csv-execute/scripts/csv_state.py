@@ -16,7 +16,7 @@ import tempfile
 from pathlib import Path
 from typing import Any, Callable
 
-from mission_completion import EXPECTED_FIELDS, REMOTE_STATES
+from mission_completion import EXPECTED_FIELDS, REMOTE_STATES, read_mission_csv
 
 
 SCHEMA = "mission.csv-state-update.v1"
@@ -53,17 +53,10 @@ def _canonical_json(value: Any) -> bytes:
 
 
 def _read_csv(path: Path) -> tuple[list[dict[str, str]], bool]:
-    raw = path.read_bytes()
-    has_bom = raw.startswith(b"\xef\xbb\xbf")
-    text = raw.decode("utf-8-sig")
-    reader = csv.DictReader(io.StringIO(text, newline=""))
-    if reader.fieldnames != FIELDS:
-        raise StateUpdateError(
-            f"schema_invalid: expected {len(FIELDS)} columns, got {reader.fieldnames}"
-        )
-    rows = list(reader)
-    if any(None in row for row in rows):
-        raise StateUpdateError("schema_invalid: at least one row has extra columns")
+    try:
+        _, rows, has_bom = read_mission_csv(path, allow_compat=True)
+    except (ValueError, csv.Error) as error:
+        raise StateUpdateError(str(error)) from error
     return rows, has_bom
 
 
@@ -83,6 +76,8 @@ def _validate_rows(rows: list[dict[str, str]]) -> None:
     }
     for row in rows:
         for field, allowed in enum_fields.items():
+            if field == "remote_state" and field not in row:
+                continue
             if row[field] not in allowed:
                 raise StateUpdateError(
                     f"enum_invalid: {row['id']}.{field}={row[field]!r}"
@@ -236,6 +231,10 @@ def _validate_claims(csv_path: Path, rows: list[dict[str, str]]) -> None:
             raise StateUpdateError(
                 f"claim_ledger_invalid: {path}: {error}"
             ) from error
+        if not isinstance(payload, dict) or not isinstance(payload.get("claims"), list):
+            raise StateUpdateError(
+                f"claim_ledger_invalid: {path}: expected object with claims array"
+            )
         ledger_ids = {
             item.get("claim_id")
             for item in payload.get("claims", [])
@@ -250,7 +249,7 @@ def _validate_claims(csv_path: Path, rows: list[dict[str, str]]) -> None:
 
 def _encode_csv(rows: list[dict[str, str]], has_bom: bool) -> bytes:
     output = io.StringIO(newline="")
-    writer = csv.DictWriter(output, fieldnames=FIELDS, lineterminator="\n")
+    writer = csv.DictWriter(output, fieldnames=list(rows[0]), lineterminator="\n")
     writer.writeheader()
     writer.writerows(rows)
     encoded = output.getvalue().encode("utf-8")
@@ -383,6 +382,9 @@ def apply_update(
         raise StateUpdateError("event_invalid: expected object or null")
 
     rows, has_bom = _read_csv(csv_path)
+    missing_fields = sorted(set(updates) - set(rows[0]))
+    if missing_fields:
+        raise StateUpdateError("set_field_not_in_csv: " + ",".join(missing_fields))
     _validate_rows(rows)
     matches = [row for row in rows if row["id"] == row_id]
     if len(matches) != 1:
@@ -465,7 +467,7 @@ def apply_update(
         # redundant bookkeeping calls.
         "row": dict(target),
         "rows_total": len(rows),
-        "columns": len(FIELDS),
+        "columns": len(rows[0]),
     }
 
 

@@ -8,6 +8,7 @@
 - Use its header order, column count, default row shape, and project status conventions.
 - This document is descriptive guidance only. If it conflicts with `issues/TEMPLATE.csv`, the template wins.
 - Do not use older mission-generic headers or raw hand-written CSV rows.
+- An explicitly supplied external 19-column compatibility CSV may be updated and checked in place; preserve its 19 columns. New repository Missions still use the canonical 28 columns, and recovery under `issues/` requires that schema.
 
 Current project header has 28 columns:
 
@@ -54,6 +55,7 @@ id,priority,phase,area,title,description,acceptance_criteria,test_mcp,required_s
 - Never hand-concatenate CSV rows. Unescaped English commas are a format bug, not a design decision.
 - Preserve UTF-8 text. Follow the encoding/newline style of `issues/TEMPLATE.csv`; do not add a BOM unless the template has one.
 - Every row must have exactly the template header fields. Extra fields, missing fields, or `None` overflow columns are invalid.
+- An `ingested` row must point to an existing local file or directory through `artifact_path` or an explicit `artifact_evidence:<path>` note. A free-text mention of artifacts or a nonexistent path is not ingestion evidence.
 - Malformed quoting, comma drift, line breaks inside unquoted fields, and typoed status enums are machine-detectable format errors and should be repaired without changing task semantics.
 
 Minimum structural check:

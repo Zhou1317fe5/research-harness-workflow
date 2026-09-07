@@ -13,8 +13,10 @@ from typing import Any
 
 from mission_completion import (
     CLOSED_STATES,
-    EXPECTED_FIELDS,
     TERMINAL_REMOTE_STATES,
+    claim_completion_errors,
+    ingest_completion_errors,
+    read_mission_csv,
 )
 
 
@@ -76,13 +78,8 @@ def _text_list(value: Any, field: str, errors: list[str]) -> list[str]:
 
 def _read_csv(path: Path, review_row_id: str, errors: list[str]) -> list[dict[str, str]]:
     try:
-        with path.open(encoding="utf-8-sig", newline="") as handle:
-            reader = csv.DictReader(handle)
-            if reader.fieldnames != EXPECTED_FIELDS:
-                _error(errors, "csv_schema_invalid", "csv_path", "header mismatch")
-                return []
-            rows = list(reader)
-    except (OSError, csv.Error) as exc:
+        _, rows, _ = read_mission_csv(path, allow_compat=True)
+    except (OSError, csv.Error, UnicodeError, ValueError) as exc:
         _error(errors, "csv_read_failed", "csv_path", str(exc))
         return []
 
@@ -102,22 +99,13 @@ def _read_csv(path: Path, review_row_id: str, errors: list[str]) -> list[dict[st
                     f"{row_id}.{field}",
                     f"expected {expected}",
                 )
-        remote_state = row.get("remote_state", "")
+        remote_state = row.get("remote_state", "not_applicable")
         if remote_state not in TERMINAL_REMOTE_STATES:
             _error(
                 errors,
                 "remote_state_not_terminal",
                 f"{row_id}.remote_state",
                 remote_state or "missing",
-            )
-        if remote_state == "ingested" and not (
-            row.get("artifact_path", "").strip() or "artifact" in row.get("notes", "")
-        ):
-            _error(
-                errors,
-                "ingest_evidence_missing",
-                f"{row_id}.artifact_path",
-                "ingested row needs artifact_path or artifact evidence tag",
             )
     if review_row_id not in ids:
         _error(errors, "review_row_missing", "review_row_id", review_row_id)
@@ -127,7 +115,7 @@ def _read_csv(path: Path, review_row_id: str, errors: list[str]) -> list[dict[st
 def _validate_claims(path: Path, errors: list[str]) -> None:
     try:
         ledger = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
         _error(errors, "claim_ledger_invalid", "claims_path", str(exc))
         return
     claims = ledger.get("claims") if isinstance(ledger, dict) else None
@@ -139,7 +127,9 @@ def _validate_claims(path: Path, errors: list[str]) -> None:
             _error(errors, "claim_invalid", f"claims[{index}]", "claim_id required")
             continue
         status = claim.get("status")
-        if status not in {"verified", "not_run_by_preregistered_gate", "out_of_scope"}:
+        if not isinstance(status, str) or status not in {
+            "verified", "not_run_by_preregistered_gate", "out_of_scope"
+        }:
             _error(
                 errors,
                 "claim_not_terminal",
@@ -252,6 +242,8 @@ def check_final_ready(payload: Any, *, workdir: Path | None = None) -> dict[str,
 
     if csv_path is not None and review_row_id:
         rows = _read_csv(csv_path, review_row_id, errors)
+        errors.extend(ingest_completion_errors(csv_path, rows, workdir=root))
+        errors.extend(claim_completion_errors(csv_path, rows, workdir=root))
         actual_run_ids = sorted(
             {row.get("run_id", "").strip() for row in rows if row.get("run_id", "").strip()}
         )

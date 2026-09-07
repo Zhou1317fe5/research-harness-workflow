@@ -5,7 +5,13 @@ from __future__ import annotations
 
 import argparse
 import csv
+import io
+import os
+import sys
+import tempfile
 from pathlib import Path
+
+from mission_completion import read_mission_csv
 
 
 COMPAT_FIELDNAMES = [
@@ -34,12 +40,7 @@ def _scope(rows: list[dict[str, str]]) -> str:
 
 def ensure_review_row(path: Path) -> bool:
     path = path.expanduser().resolve()
-    with path.open(encoding="utf-8-sig", newline="") as handle:
-        reader = csv.DictReader(handle)
-        if reader.fieldnames not in (COMPAT_FIELDNAMES, PROJECT_FIELDNAMES):
-            raise ValueError("CSV must use the standard 19-column header or project 28-column header")
-        fieldnames = list(reader.fieldnames)
-        rows = list(reader)
+    fieldnames, rows, has_bom = read_mission_csv(path, allow_compat=True)
     if any(row.get("id", "").startswith("REVIEW-") for row in rows):
         return False
 
@@ -54,7 +55,7 @@ def ensure_review_row(path: Path) -> bool:
             "title": "Review compatibility CSV against delivered work",
             "description": "Review every ordinary row's declared scope, acceptance data, delivered diff, and validation evidence.",
             "acceptance_criteria": "WHEN all ordinary rows are closed THEN run mechanical readiness and choose evidence-close unless unresolved L3/L4 risk, evidence conflict, or a suspected current-scope gap requires the independent capability ladder; WHEN current-scope gaps exist THEN append follow-up rows and another REVIEW row; WHEN no current-scope gaps remain THEN record Mission result separately from scientific outcome and close.",
-            "test_mcp": "MANUAL",
+            "test_mcp": "manual",
             "review_initial_requirements": "Verify all ordinary rows are closed before review.",
             "review_regression_requirements": "Review source CSV scope: " + _scope(rows),
             "dev_state": "未开始",
@@ -74,10 +75,22 @@ def ensure_review_row(path: Path) -> bool:
     if "remote_state" in fieldnames:
         review["remote_state"] = "not_applicable"
     rows.append(review)
-    with path.open("w", encoding="utf-8-sig", newline="") as handle:
-        writer = csv.DictWriter(handle, fieldnames=fieldnames, quoting=csv.QUOTE_ALL, lineterminator="\n")
-        writer.writeheader()
-        writer.writerows(rows)
+    output = io.StringIO(newline="")
+    writer = csv.DictWriter(output, fieldnames=fieldnames, lineterminator="\n")
+    writer.writeheader()
+    writer.writerows(rows)
+    content = output.getvalue().encode("utf-8-sig" if has_bom else "utf-8")
+    descriptor, temporary = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
+    try:
+        with os.fdopen(descriptor, "wb") as handle:
+            os.chmod(temporary, path.stat().st_mode & 0o777)
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
     return True
 
 
@@ -85,7 +98,11 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("csv_path", type=Path)
     args = parser.parse_args()
-    changed = ensure_review_row(args.csv_path)
+    try:
+        changed = ensure_review_row(args.csv_path)
+    except (OSError, UnicodeError, ValueError, csv.Error) as exc:
+        print(f"ensure_review_row: {exc}", file=sys.stderr)
+        return 2
     print("appended REVIEW-01" if changed else "review row already present")
     return 0
 

@@ -170,7 +170,7 @@ P0 → P1 → P2；优先能解阻塞/提供公共能力的任务；减少无意
 
 - `dev_state` → `进行中`
 - `review_initial_state` → `进行中`
-- 写回 CSV（UTF-8 BOM）
+- 写回 CSV（保留原文件的 UTF-8/BOM 编码）
 
 ## Step 3：上下文收集（最小必要）
 
@@ -232,7 +232,7 @@ P0 → P1 → P2；优先能解阻塞/提供公共能力的任务；减少无意
 - `dev_state` → `已完成`
 - `git_state` → `已提交`
 - `notes` 追加 `done_at:<date>` + `skills_used:<...>` + 验收证据摘要
-- 写回 CSV（UTF-8 BOM）
+- 写回 CSV（保留原文件的 UTF-8/BOM 编码）
 
 ## Step 8：Git 提交
 

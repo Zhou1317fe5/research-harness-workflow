@@ -15,7 +15,7 @@
 - review 不实现功能；review 只审计、记录、追加可执行工作
 - review 行必须包含任务专属 claim/evidence 检查项；如果 `review_regression_requirements` 仍是纯通用套话，先回读 `source_doc`、当前 CSV 和交付证据，补齐该行后再执行 review
 - 若任意行 `notes` 包含 `claims:CLAIM-*` 但没有可读的 `claim_ledger:<path>`，CSV 不完整；先在 artifact root 补齐 `<csv-basename>.claims.json` 并写回 `claim_ledger:<csv-basename>.claims.json`，不得把 claim id 当作可审计证据
-- 若输入 CSV 原本没有 review 行，按硬规则 33 合成 `REVIEW-01`；这类 review 只引用 `source_csv` 和确实存在的 sidecar，不补造 `source_doc`、claim ledger 或 outcome contract
+- 若输入 CSV 原本没有 review 行，运行 `ensure_review_row.py` 合成 `REVIEW-01`；这类 review 只引用 `source_csv` 和确实存在的 sidecar，不补造 `source_doc`、claim ledger 或 outcome contract
 
 ## Review 输入
 

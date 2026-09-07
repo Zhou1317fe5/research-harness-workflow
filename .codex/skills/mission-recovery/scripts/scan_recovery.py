@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import json
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -22,6 +23,8 @@ def _load_completion():
     if spec is None or spec.loader is None:
         raise RuntimeError(f"cannot load completion contract: {path}")
     module = importlib.util.module_from_spec(spec)
+    if str(path.parent) not in sys.path:
+        sys.path.insert(0, str(path.parent))
     spec.loader.exec_module(module)
     return module
 
@@ -54,7 +57,11 @@ def scan(repo_root: Path) -> dict[str, Any]:
                 )
             else:
                 complete.append(relative)
-    candidates.sort(key=lambda item: (-item["mtime_ns"], item["path"]))
+    candidates.sort(
+        key=lambda item: (
+            item["kind"] != "directory", -item["mtime_ns"], item["path"]
+        )
+    )
     return {
         "schema_version": SCHEMA_VERSION,
         "candidates": candidates,

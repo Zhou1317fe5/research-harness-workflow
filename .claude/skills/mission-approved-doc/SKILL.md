@@ -180,7 +180,7 @@ claim_ledger:<stem>.claims.json; claims:CLAIM-001,CLAIM-002; claim_coverage:X/Y;
 | `title` | `Review documented vision against delivered work` |
 | `description` | `Compare approved-spec claims with delivered behavior, evidence level, CSV state, validation evidence, and review log; use evidence-close unless closing risk requires an independent reviewer.` |
 | `acceptance_criteria` | `WHEN all non-review issues before this row are closed THEN run mechanical readiness and choose evidence-close for L0-L2 or an unchanged commit already covered by independent scientific PRERUN; WHEN unresolved L3/L4 risk, evidence conflict or a suspected current-scope gap exists THEN try reviewer-subagent, codex-exec-independent, then self-review; WHEN a current-scope gap or overstated claim is found THEN append follow-up issues and REVIEW-02; WHEN no current-scope gaps remain THEN close the CSV while recording Mission result separately from scientific outcome.` |
-| `test_mcp` | `MANUAL` |
+| `test_mcp` | `manual` |
 | `required_skills` | 留空 |
 | `required_mcp` | 留空，除非文档本身要求浏览器或外部验证 |
 | `review_initial_requirements` | `Verify all prior non-review rows are closed before running this review.` |

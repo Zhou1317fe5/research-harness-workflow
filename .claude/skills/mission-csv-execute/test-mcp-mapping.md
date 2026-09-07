@@ -2,16 +2,14 @@
 
 `test_mcp` 只表示**主验证模式**。
 `required_mcp` 才表示**必须实际调用的验证工具**。
-两者必须同时看，不能再用 `AUTOE2E+tool` 这种混合写法。
+两者必须同时看，不把工具名拼进验证模式。
 
 | test_mcp | 主验证目标 | 默认 required_mcp | 典型 runner / 辅助工具 |
 |----------|------------|-------------------|--------------------------|
-| `AUTOSERVER` | 后端单测/API 验证 | 留空 | `pytest` / 项目测试运行器 |
-| `AUTOFRONTEND` | 前端视觉、布局、状态验证 | `chrome-devtools` | `npm test` / 前端测试运行器 |
-| `AUTOE2E` | 多步用户旅程与端到端流程 | `chrome-devtools;playwright` | `playwright` / `cypress` runner |
-| `CONTRACT` | Schema/API 契约验证 | 留空 | 项目自定义 contract runner |
-| `MIGRATION` | 数据迁移验证 | 留空 | `alembic` + DB 查询验证 |
-| `MANUAL` | 无法自动化的人工验收 | 按场景填写；UI 相关至少 `chrome-devtools` | 在 notes 写 `manual_test:<steps>` |
+| `local_cli` | 本地单测、API、前端流程或迁移验证 | 按场景填写 | `pytest` / `npm test` / `playwright` / 项目测试运行器 |
+| `remote_cli` | 真实远程训练、评估或运行验证 | 按远程执行合同填写 | `rrctl` + 项目 adapter |
+| `contract` | Schema/API 契约验证 | 留空 | 项目自定义 contract runner |
+| `manual` | 无法自动化的人工验收 | 按场景填写；UI 相关至少 `chrome-devtools` | 在 notes 写 `manual_test:<steps>` |
 
 ## 前端 issue 额外规则
 
