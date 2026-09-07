@@ -194,14 +194,19 @@ research_workspace/
 它靠正则匹配表头插行来更新，结构上就容易乱。而每个实验一个 `record.json`、格式固定，
 出错空间小得多。
 
-**实验之间的关系靠 `record.json` 的 `parent` 字段**记录 —— 这个实验是从哪个实验改来的、
-是对照还是复现。有了它就不用另外维护一张关系图。
+`record.json` 目前预留了 `parent`、`relation`、评测协议和 baseline 字段，
+生成器尚未接入这些关系的结构化来源，因此会保留空值。实验关系还不能靠派生索引完整还原，
+也不能通过手改 `record.json` 补齐；跨实验判断暂时记录在 `CONCLUSIONS.md` 中。
+
+目标项目中的 `research_workspace/` 使用独立 Git 仓库，代码仓库忽略该目录。
+实验记录和跨实验分析沿科研仓库自己的历史积累；代码切换分支时仍能读取这些记录。
+初始化与旧项目停止跟踪的步骤见 [README](../../README.md#初始化独立科研仓库)。
 
 ### 配套脚本
 
 - `.agents/harness/records/experiment_records.py` —— 从 CSV 和证据生成 `record.json`，再汇总成 `EXPERIMENTS.csv`。
   它**不会替你判断哪一组是对照组** —— 那是判断，不是能从文件里读出来的事实，
-  所以这类字段会留空并列进 `_pending`，等你补。
+  所以这类字段会留空并列进 `_pending`，等待补齐来源协议与投影逻辑。
 - `.agents/harness/remote/build_rrctl_runspec.py` —— 构造远程运行请求并做契约校验。
 - `.agents/harness/pipeline/run_pipeline.py` —— 按配置依次执行训练和评估，检查 checkpoint 与结果文件。
 - `.agents/harness/remote/remote_run.py` —— 串联 rrctl 的 ready、launch、wait 和 pull。

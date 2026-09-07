@@ -19,7 +19,9 @@ Use this workflow to turn a completed experiment result ingest into one auditabl
 2. Inspect both repository boundaries.
    - In the main repository, note the associated branch and commit when the experiment depends on current main-repo code or workflow:
      `git branch --show-current` and `git rev-parse --short HEAD`.
-   - In `research_workspace`, run `git status --short` and `git diff --stat`.
+   - Run `git -C research_workspace rev-parse --show-toplevel`. Its resolved path must be exactly `<PROJECT_ROOT>/research_workspace`, with its own Git metadata. A successful Git command alone does not establish independence: Git searches parent directories.
+   - If it resolves to the code repository, do not stage or commit research files through this skill. Follow the README's independent-repository initialization or migration steps first. A template checkout may distribute tracked examples; it is not an initialized project research repository.
+   - In the verified research repository, run `git status --short` and `git diff --stat`.
    - Do not stage or commit `issues/`, `docs/`, source code, configs, scripts, or tests from this workflow.
 
 3. Select only files belonging to the current experiment result.
