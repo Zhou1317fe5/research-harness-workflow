@@ -14,7 +14,7 @@
    - 已闭环历史行保持只读；有真实远程证据的 `running_remote` legacy run 可按原路径完成；没有真实证据的 `running_remote` fail closed。
    - 禁止从标题、ExpID 或旧运行记录推断 actionable row 继续 legacy；禁止批量改写历史 row。
    - `remote_route.py` 输出的 `fallback_allowed` 必须为 `false`；rrctl 不可用、readiness 失败或 launch 失败时停在当前 row，不得静默回退 legacy。
-6. rrctl 路由下使用 `remote-run-snippet` 对接 `.agents/harness/project.toml` 中的训练与评估命令。历史 legacy 运行仅按已有、已批准的行内协议收尾，重试迁移 rrctl。
+6. rrctl 路由下使用 `remote-run-snippet` 对接 `.agents/harness/config/project.toml` 中的训练与评估命令。历史 legacy 运行仅按已有、已批准的行内协议收尾，重试迁移 rrctl。
 7. 若由用户手动粘贴远程命令：写入 CSV `notes` 和 `issues/<stem>/<stem>.review.md`，标记 `remote_state=running_remote`，在该可恢复暂停点停止。
 8. 若具备明确 SSH 权限、远程凭据和用户授权：Codex 可直接连接服务器运行命令；启动后仍需记录 remote session、命令、branch/commit、`pre_run_code_commit`、预期输出路径，并标记 `remote_state=running_remote`。
 9. 恢复时按 command owner 分流：
@@ -36,9 +36,9 @@
 
    ```bash
    printf '%s' '<mission.rrctl-request.v1 JSON>' \
-     | python .agents/harness/build_rrctl_runspec.py - \
+     | python .agents/harness/remote/build_rrctl_runspec.py - \
          --output issues/<stem>/runs/<RunID>/runspec.json \
-         --project-config .agents/harness/project.toml \
+         --project-config .agents/harness/config/project.toml \
          --check-rrctl
    ```
 
@@ -47,7 +47,7 @@
    builder 通过 stdin 解析本身就是 request JSON/转义检查；解析失败时原地修正输入，不写失败 request 文件。新增或修改 adapter、adapter contract、JSON/JSONL 输出格式或 required fields 时，必须在 GPU launch 前用代表性本地 fixture 跑实际 adapter：
 
    ```bash
-   python .agents/harness/validate_rrctl_adapter_fixture.py \
+   python .agents/harness/remote/validate_adapter.py \
      issues/<stem>/runs/<RunID>/runspec.json <fixture-output-root>
    ```
 

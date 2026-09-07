@@ -1,0 +1,13 @@
+{
+  "project_id": "your-project",
+  "sources": [
+    "research_workspace/STATE.md",
+    "research_workspace/CONCLUSIONS.md",
+    "research_workspace/experiments/*/analysis/analysis.md",
+    "research_workspace/experiments/*/record.json",
+    "research_workspace/analysis/*.md"
+  ],
+  "context_chars": 6500,
+  "max_items": 8,
+  "hindsight_enabled": false
+}

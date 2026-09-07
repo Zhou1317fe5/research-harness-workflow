@@ -7,4 +7,4 @@ import sys
 if __name__ == "__main__":
     harness = Path(__file__).resolve().parents[4] / ".agents" / "harness"
     sys.path.insert(0, str(harness))
-    runpy.run_path(str(harness / "remote_run.py"), run_name="__main__")
+    runpy.run_path(str(harness / "remote" / "remote_run.py"), run_name="__main__")

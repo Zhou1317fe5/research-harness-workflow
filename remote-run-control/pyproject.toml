@@ -21,9 +21,6 @@ package-dir = {"" = "src"}
 [tool.setuptools.packages.find]
 where = ["src"]
 
-[tool.pytest.ini_options]
-addopts = "-q"
-testpaths = ["tests"]
 
 [tool.ruff]
 line-length = 100

@@ -9,4 +9,19 @@ remote_artifacts/*
 *.ckpt
 issues/**/readiness*.json
 
-.agents/harness/profiles.json
+.agents/harness/config/profiles.json
+
+# 目标项目的科研记录使用独立 Git 仓库；本模板已跟踪的示例仍用于分发。
+/research_workspace/
+
+# 本机连接配置和隔离验证材料。
+/.codex/config.toml
+/.codex/hooks.json
+/.mcp.json
+/.claude/settings.local.json
+/temp/
+/docs/reviews/
+/.agents/harness/.memory/
+/.agents/harness/config/research-memory.json
+/.ruff_cache
+/.pytest_cache

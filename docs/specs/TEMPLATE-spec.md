@@ -76,7 +76,7 @@ experiment_type: <baseline_reproduction | probe | method | ablation | seed_audit
 |------|-----|
 | Train Intent | NOT RUN locally |
 | Eval Intent | NOT RUN locally |
-| Wrapper | scripts/<train_eval_wrapper>.sh |
+| Project Config | .agents/harness/config/project.toml |
 | Expected Runtime | NOT RUN locally |
 | Artifact Path | research_workspace/experiments/<ExpID>/remote_artifacts/ |
 | Required Args | NOT RUN locally |

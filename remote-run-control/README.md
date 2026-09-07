@@ -88,9 +88,8 @@ The remote control directory is authoritative and contains immutable RunSpec/bin
 
 ```bash
 python -m pip install -e .
-pytest
 ruff check .
 python -m build
 ```
 
-Core tests use only dummy workloads and generic protocol fields. Project-specific completion semantics belong in project adapter tests.
+This distribution contains runtime code and contract validators. Project-specific completion semantics belong in project adapters.

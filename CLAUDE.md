@@ -115,7 +115,7 @@ research_workspace/
 
 ## 路径
 
-- 远程连接使用 `.agents/harness/profiles.json`，凭据和环境只读 `.agents/harness/.env`（键：`SSH_PASSWORD` / `REMOTE_CONDA_ENV` / `REMOTE_CONDA_SH`）；
+- 远程连接使用 `.agents/harness/config/profiles.json`，凭据和环境只读 `.agents/harness/config/.env`（键：`SSH_PASSWORD` / `REMOTE_CONDA_ENV` / `REMOTE_CONDA_SH`）；
   远程 Python 须显式激活环境。
 - <项目训练/评估脚本位置，如 `scripts/train_*.sh` / `scripts/eval_*.sh`>
 - <项目数据集路径、checkpoint 路径等>

@@ -199,27 +199,27 @@ research_workspace/
 
 ### 配套脚本
 
-- `.agents/harness/experiment_records.py` —— 从 CSV 和证据生成 `record.json`，再汇总成 `EXPERIMENTS.csv`。
+- `.agents/harness/records/experiment_records.py` —— 从 CSV 和证据生成 `record.json`，再汇总成 `EXPERIMENTS.csv`。
   它**不会替你判断哪一组是对照组** —— 那是判断，不是能从文件里读出来的事实，
   所以这类字段会留空并列进 `_pending`，等你补。
-- `.agents/harness/build_rrctl_runspec.py` —— 构造远程运行请求并做契约校验。
-- `.agents/harness/run_pipeline.py` —— 按配置依次执行训练和评估，检查 checkpoint 与结果文件。
-- `.agents/harness/remote_run.py` —— 串联 rrctl 的 ready、launch、wait 和 pull。
-- `.agents/harness/rrctl_adapters/` —— 远程 adapter，默认只有通用的一个。
-  项目专属的登记在 `rrctl_project_adapters.py`，不用改主程序。
+- `.agents/harness/remote/build_rrctl_runspec.py` —— 构造远程运行请求并做契约校验。
+- `.agents/harness/pipeline/run_pipeline.py` —— 按配置依次执行训练和评估，检查 checkpoint 与结果文件。
+- `.agents/harness/remote/remote_run.py` —— 串联 rrctl 的 ready、launch、wait 和 pull。
+- `.agents/harness/remote/adapters/` —— 远程 adapter，默认只有通用的一个。
+  项目专属的登记在 `project_adapters.py`，不用改主程序。
 
 ---
 
 ## 五、改成自己的
 
 工作流目录 `issues/`、`docs/specs/`、`research_workspace/`、`remote_artifacts/` 保持不动。
-项目接入时修改以下几处，具体示例见 [README](../../README.md#首次接入改配置必要时补少量输出)：
+项目接入时修改以下几处，具体示例见 [用户配置说明](../../.agents/harness/docs/configuration.md)：
 
-- `.agents/harness/project.toml`：填写真实训练、评估命令，checkpoint 衔接、日志路径和产物清单。
+- `.agents/harness/config/project.toml`：填写真实训练、评估命令，checkpoint 衔接、日志路径和产物清单。
   `adapter` 映射已有进度与结果字段，`records` 映射主指标、辅助指标和 seed / fold 等维度，
   无需修改实验记录脚本。
-- `.agents/harness/profiles.json`：填写远程连接。密码只通过 `password_env` 引用变量名。
-- `.agents/harness/.env`：保存凭据和远程环境设置。此文件与 `profiles.json` 均不提交。
+- `.agents/harness/config/profiles.json`：填写远程连接。密码只通过 `password_env` 引用变量名。
+- `.agents/harness/config/.env`：保存凭据和远程环境设置。此文件与 `profiles.json` 均不提交。
 - `AGENTS.md`、`CLAUDE.md` 末尾：同步填写“研究背景”和“路径”，说明 baseline、评测口径及项目入口。
 
 项目已有日志目录可以保留，只需让本次运行的输出归入独立的 `output_root`，并配置相对路径。
