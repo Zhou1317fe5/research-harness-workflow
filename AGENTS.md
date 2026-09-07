@@ -95,7 +95,7 @@ research_workspace/
 - `mission-csv-execute`：CSV 闭环执行、证据、review 与 handoff。
 - `mission-recovery`：只扫描 `issues/` 的恢复入口。
 - `pre-run-implementation-review`：运行前科学实施审查、风险分流与等价性探针。
-- `systematic-debugging`：根因不明或跨模块故障的定位辅助。
+- `systematic-debugging`：可选的故障定位辅助；根因不明或跨模块排查时按需使用，不是执行或提交的前置条件。
 - `humanizer-zh`：必装的自然语言处理 skill。
 - `smart-search-cli`：外部资料、论文与文档检索。
 - `remote-run-snippet`：从 intent 解析远程 train/eval 命令。

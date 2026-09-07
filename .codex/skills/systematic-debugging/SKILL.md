@@ -1,17 +1,15 @@
 ---
 name: systematic-debugging
-description: Use when encountering any bug, test failure, or unexpected behavior, before proposing fixes
+description: Optional structured debugging for unclear root causes, repeated failed fixes, or cross-module faults. Use when requested or when targeted inspection is insufficient; not a prerequisite for routine fixes, validation, or commits.
 ---
 
 # Systematic Debugging
 
 ## Overview
 
-Random fixes waste time and create new bugs. Quick patches mask underlying issues.
+Use this optional workflow when the failure mechanism is still unclear. A known cause with a direct fix can use targeted validation without loading this skill.
 
 **Core principle:** ALWAYS find root cause before attempting fixes. Symptom fixes are failure.
-
-**Violating the letter of this process is violating the spirit of debugging.**
 
 ## The Iron Law
 
@@ -23,13 +21,7 @@ If you haven't completed Phase 1, you cannot propose fixes.
 
 ## When to Use
 
-Use for ANY technical issue:
-- Test failures
-- Bugs in production
-- Unexpected behavior
-- Performance problems
-- Build failures
-- Integration issues
+Use for failures that need structured investigation, such as an unclear integration fault, repeated unsuccessful fixes, or a defect spanning several components.
 
 **Use this ESPECIALLY when:**
 - Under time pressure (emergencies make guessing tempting)
@@ -38,10 +30,7 @@ Use for ANY technical issue:
 - Previous fix didn't work
 - You don't fully understand the issue
 
-**Don't skip when:**
-- Issue seems simple (simple bugs have root causes too)
-- You're in a hurry (rushing guarantees rework)
-- Manager wants it fixed NOW (systematic is faster than thrashing)
+Installation and invocation are optional. Missing this skill does not block ordinary work, testing, or commits.
 
 ## The Four Phases
 
@@ -90,11 +79,11 @@ You MUST complete each phase before proceeding to the next.
    ```bash
    # Layer 1: Workflow
    echo "=== Secrets available in workflow: ==="
-   echo "IDENTITY: ${IDENTITY:+SET}${IDENTITY:-UNSET}"
+   echo "IDENTITY=${IDENTITY:+set}"
 
    # Layer 2: Build script
    echo "=== Env vars in build script: ==="
-   env | grep IDENTITY || echo "IDENTITY not in environment"
+   echo "IDENTITY=${IDENTITY:+set}"
 
    # Layer 3: Signing script
    echo "=== Keychain state: ==="

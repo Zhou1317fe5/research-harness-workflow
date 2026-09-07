@@ -163,7 +163,7 @@ skills 的分工不按宿主分，按阶段分：
 - `pre-run-implementation-review` —— 跑 GPU 前的科学审查
 - `remote-run-snippet` —— 按项目配置组织训练与评估，交给 rrctl 运行、监控和拉取
 - `research-result-commit` —— 研究产物合并提交
-- `systematic-debugging` —— 根因不明时的定位辅助
+- `systematic-debugging` —— 可选的故障定位辅助，不是工作流前置依赖
 
 ### 结论层
 
