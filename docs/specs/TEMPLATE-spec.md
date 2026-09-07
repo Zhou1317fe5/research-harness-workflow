@@ -26,7 +26,7 @@ experiment_type: <baseline_reproduction | probe | method | ablation | seed_audit
 
 - **STATE.md 关联**：<引用 `research_workspace/STATE.md` 活跃假设 Pn 的精确文字；若属新路线起点，写"无（新路线起点）"并说明理由（不属于任何活跃假设、不在已废弃路径列表内）>
 - **触发证据**：<ExpID / artifact 路径 / per-class 信号 / 失败 log 行号 / 跨领域出处 paper（URL 或 bib 条目）>
-- **本轮要回答的问题**：<一句话，必须能被"是 / 否"或具体数字回答；不写"探索 X 模块"，写"X 模块能否把 <fold/shot/主指标> 从 a 提到 b"或"<关键模块> 距离加权能否降低前景-背景混淆">
+- **本轮要回答的问题**：<在指定评测协议下，改动 X 能否将主指标从 a 提到 b，或减少某类可量化误差>
 - **非目标**：<本轮明确不做的内容；越具体越好>
 
 ## 2. Idea Source
@@ -65,7 +65,7 @@ experiment_type: <baseline_reproduction | probe | method | ablation | seed_audit
 
 ## 7. 训练与评估计划
 
-- Dataset / Fold / Shot：<例如 <你的数据集 fold/shot>>
+- Dataset / Evaluation Protocol：<数据来源、划分及评测口径；项目专用维度按实际配置填写>
 - Train：<脚本、checkpoint、关键参数>
 - Eval：<脚本、checkpoint、关键参数>
 - 记录：ExpID / RunID / Commit / Branch 必须写入 CSV 和实验记录。
@@ -78,15 +78,14 @@ experiment_type: <baseline_reproduction | probe | method | ablation | seed_audit
 | Eval Intent | NOT RUN locally |
 | Project Config | .agents/harness/config/project.toml |
 | Expected Runtime | NOT RUN locally |
-| Artifact Path | research_workspace/experiments/<ExpID>/remote_artifacts/ |
+| Artifact Path | remote_artifacts/<ExpID>/<RunID>/ |
 | Required Args | NOT RUN locally |
-| Command Owner | Codex |
+| Command Owner | 执行 agent |
 
 - 若本轮不训练，保留 `NOT RUN locally` 并说明原因。
-- 若使用 `train_batch_size > 1`，`Required Args` 必须包含 `--bank_batch_aware` 或说明不适用。
-- Claude 只填写训练/评估 intent 和约束；不需要预选具体 `scripts/train_*.sh` 或 `scripts/eval_*.sh`。
-- Codex 执行 CSV 时必须读取本节、检查 `scripts/`，生成可复制的一键远程运行命令，并把命令写回 CSV `notes` 或 review log。
-- 若 intent 无法唯一映射到脚本，Codex 必须记录 blocker 或向用户确认，不能自行猜测 train/eval 脚本。
+- 训练、评估命令及参数从项目配置的 `pipeline.stages` 解析，填写实际入口与约束。
+- 执行 agent 通过 rrctl 构造远程命令，并把命令写回 CSV `notes` 或 review log。
+- intent 无法唯一映射到项目入口时，记录缺失配置或澄清运行范围。
 
 ## 9. Research Contract（实验前冻结，开始后不改）
 
@@ -98,10 +97,10 @@ experiment_type: <baseline_reproduction | probe | method | ablation | seed_audit
 
 ### 9.2 实验假设与信号（远程证据可判定）
 
-- **Hypothesis**：<可被反驳的因果陈述；不写"该模块能提升性能"，写"<关键模块> 分支距离加权应该降低前景-背景混淆，从而提升 <fold/shot/主指标>"。模糊陈述视为未写。>
-- **Success Signal**：<具体指标 + 阈值 + split。示例：val <主指标> ≥ 当前 baseline + 1.0（<dev split> 1-shot, seed 0）。>
+- **Hypothesis**：<可被反驳的机制判断，例如改动 X 减少指定误差，从而改善主指标；写明预期证据>
+- **Success Signal**：<具体指标、阈值和评测范围，例如验证集主指标 ≥ baseline + 预定增量，seed 0>
 - **Failure Signal**：<**独立定义**，不是"未达到 Success"的反面。示例：NaN / OOM / <指标反向恶化阈值> / <持续低于预期阈值>。必须事先想清楚"什么样的现象会让你判定方法失败"。>
-- **Metric & Split**：<<主指标> / <辅助指标>；1-shot / 5-shot；<dev split> / fold1 / ... ；val / test；seed 列表。>
+- **Metric & Split**：<主指标、辅助指标、数据划分、评测协议与重复运行设置>
 - **Stop Condition**：
   - 默认承继：CLAUDE.md `项目事实` 节的 Stop Trigger（首步采样 + 长期巡检），无需在本节复述。
   - 本轮特定信号：<如 <指标持续低于阈值>、<指标恶化超过阈值>、特定 ablation loss 持续上升等；没有写"无"。>
@@ -128,8 +127,9 @@ experiment_type: <baseline_reproduction | probe | method | ablation | seed_audit
 
 ## 10. 结果分析模板
 
-> 本节只保留空模板；实验完成后的真实分析写入 `research_workspace/experiments/<ExpID>/analysis/result-<ExpID>.md`。
+> 本节只保留空模板；实验完成后的真实分析写入 `research_workspace/experiments/<ExpID>/analysis/analysis.md`。
 
-- Evidence：<待填>
-- Interpretation：<待填>
+- Change：<待填>
+- Result：<待填>
+- Finding：<待填>
 - Next：<待填>

@@ -61,7 +61,7 @@ The scientific reviewer checks only:
 4. selected blocks/layers, optimizer groups, connected losses, dtype/device behavior, and disabled paths;
 5. sink effect: config presence is not evidence that computation consumes a value;
 6. baseline/disable behavior and unrelated scientific routes — **when the change claims equivalence (see Baseline-Equivalence Probe), the reviewer records the probe verdict; it does not decide equivalence by reading code**;
-7. dataset, mask/label preprocessing, episode sampling, checkpoint, benchmark/fold/shot/seed, metric computation, and result attribution;
+7. dataset and label preprocessing, sampling policy, checkpoint, benchmark settings, random seed, metric computation, and result attribution;
 8. exact official command and reviewed code snapshot.
 
 Do not allow a run with "probably correct" data flow. A critical value that reaches config but not the intended forward/loss/attention/eval sink is scientifically incorrect.
@@ -103,7 +103,7 @@ Structural evidence does not establish equivalence. Zero residual, zero additivi
 
 So the claim is settled by a number, not by reading code:
 
-- run the production entrypoint at step 0 on one fixed cell (single benchmark/fold/shot, fixed seed, small fixed episode count);
+- run the production entrypoint at step 0 on one fixed evaluation setting (dataset, project parameters, fixed seed, and small fixed sample count);
 - compare against the named reference under the same cell and post-processing;
 - record `reference_id`, `reference_weights_path`, `candidate_weights_path`, both metric values, the absolute difference, and the tolerance;
 - this is the only metric a smoke may compute; it is not an official result and is never ingested.
@@ -126,6 +126,8 @@ Create one `prerun.scientific-review.v1` JSON packet containing only:
 - current-commit `prerun.pre-review-smoke.v1` evidence for `scientific_review`;
 - critical values with expected source, sink, and production-reaching evidence;
 - experiment identity and output collision policy.
+
+Project-specific evaluation dimensions belong to the experiment configuration and critical-value evidence. They are not universal required packet fields.
 
 Run the deterministic checker once:
 

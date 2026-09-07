@@ -32,8 +32,6 @@ EXPERIMENT_FIELDS = (
     "benchmark",
     "dataset",
     "checkpoint",
-    "fold",
-    "shot",
     "seed",
     "metric_policy",
     "output_path",

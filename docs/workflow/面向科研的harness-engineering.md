@@ -216,7 +216,7 @@ research_workspace/
 项目接入时修改以下几处，具体示例见 [用户配置说明](../../.agents/harness/docs/configuration.md)：
 
 - `.agents/harness/config/project.toml`：填写真实训练、评估命令，checkpoint 衔接、日志路径和产物清单。
-  `adapter` 映射已有进度与结果字段，`records` 映射主指标、辅助指标和 seed / fold 等维度，
+  `adapter` 映射已有进度与结果字段，`records` 映射主指标、辅助指标及项目实际使用的运行维度，
   无需修改实验记录脚本。
 - `.agents/harness/config/profiles.json`：填写远程连接。密码只通过 `password_env` 引用变量名。
 - `.agents/harness/config/.env`：保存凭据和远程环境设置。此文件与 `profiles.json` 均不提交。
