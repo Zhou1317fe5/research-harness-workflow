@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import re
 import subprocess
 import sys
@@ -106,6 +107,69 @@ def committed_diff_paths(
     return sorted({line.strip() for line in result.stdout.splitlines() if line.strip()})
 
 
+def _finite_number(value: Any) -> bool:
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        return False
+    try:
+        return math.isfinite(value)
+    except OverflowError:
+        return False
+
+
+def validate_baseline_equivalence(raw: dict[str, Any], errors: list[str]) -> None:
+    """等价性由同一固定评估设置下的有限数值决定，不能只自报 passed。"""
+    required = raw.get("baseline_equivalence_required", False)
+    prefix = "pre_review_smoke.baseline_equivalence_probe"
+    if not isinstance(required, bool):
+        add_error(errors, "baseline_equivalence_invalid", "baseline_equivalence_required must be boolean")
+    probe = raw.get("baseline_equivalence_probe")
+    if probe is None and required is False:
+        return
+    if not isinstance(probe, dict):
+        add_error(errors, "baseline_equivalence_missing", f"{prefix} must be an object")
+        return
+    for field in (
+        "reference_id", "reference_weights_path", "candidate_weights_path", "metric_name"
+    ):
+        require_text(probe, field, prefix, errors)
+
+    setting = probe.get("evaluation_setting")
+    if not isinstance(setting, dict):
+        add_error(errors, "baseline_equivalence_invalid", f"{prefix}.evaluation_setting must be an object")
+    else:
+        for field in ("dataset", "post_processing"):
+            require_text(setting, field, f"{prefix}.evaluation_setting", errors)
+        if not isinstance(setting.get("parameters"), dict):
+            add_error(errors, "baseline_equivalence_invalid", f"{prefix}.evaluation_setting.parameters must be an object")
+        seed = setting.get("seed")
+        if not isinstance(seed, int) or isinstance(seed, bool):
+            add_error(errors, "baseline_equivalence_invalid", f"{prefix}.evaluation_setting.seed must be an integer")
+        count = setting.get("sample_count")
+        if not isinstance(count, int) or isinstance(count, bool) or count < 1:
+            add_error(errors, "baseline_equivalence_invalid", f"{prefix}.evaluation_setting.sample_count must be positive")
+    evidence = probe.get("evidence_paths")
+    if not isinstance(evidence, list) or not evidence or any(
+        not isinstance(item, str) or not item.strip() for item in evidence
+    ):
+        add_error(errors, "baseline_equivalence_evidence_missing", f"{prefix}.evidence_paths must name the measured comparison")
+
+    numeric_fields = ("reference_metric", "candidate_metric", "absolute_difference", "tolerance")
+    invalid = [field for field in numeric_fields if not _finite_number(probe.get(field))]
+    for field in invalid:
+        add_error(errors, "baseline_equivalence_nonfinite", f"{prefix}.{field} must be a finite number")
+    if invalid:
+        return
+    difference = abs(probe["candidate_metric"] - probe["reference_metric"])
+    reported = probe["absolute_difference"]
+    tolerance = probe["tolerance"]
+    if reported < 0 or tolerance < 0:
+        add_error(errors, "baseline_equivalence_invalid", f"{prefix} difference and tolerance must be nonnegative")
+    if not math.isclose(reported, difference, rel_tol=1e-9, abs_tol=1e-12):
+        add_error(errors, "baseline_equivalence_difference_mismatch", f"{prefix}.absolute_difference must equal abs(candidate_metric-reference_metric)")
+    if difference > tolerance:
+        add_error(errors, "baseline_equivalence_outside_tolerance", f"{prefix} measured difference {difference} exceeds tolerance {tolerance}")
+
+
 def validate_smoke(
     packet: dict[str, Any], commit: str, errors: list[str], warnings: list[str]
 ) -> None:
@@ -118,6 +182,13 @@ def validate_smoke(
             errors,
             "pre_review_smoke_schema_invalid",
             f"pre_review_smoke.schema_version must be {SMOKE_SCHEMA}",
+        )
+
+    computation_kind = raw.get("computation_kind", "training")
+    if not isinstance(computation_kind, str) or computation_kind not in {"training", "inference"}:
+        add_error(
+            errors, "pre_review_smoke_computation_kind_invalid",
+            "pre_review_smoke.computation_kind must be training or inference",
         )
 
     disposition = raw.get("disposition")
@@ -189,8 +260,14 @@ def validate_smoke(
             "pre_review_smoke_steps_invalid",
             "pre_review_smoke.completed_steps must be within the step budget",
         )
+    if computation_kind == "inference":
+        if raw.get("finite_outputs") is not True:
+            add_error(errors, "pre_review_smoke_boundary_invalid", "pre_review_smoke.finite_outputs must be true for inference")
+        if raw.get("finite_loss") is not None:
+            add_error(errors, "pre_review_smoke_numerical_contract_invalid", "pre_review_smoke.finite_loss must be omitted or null for inference")
+    elif raw.get("finite_loss") is not True:
+        add_error(errors, "pre_review_smoke_boundary_invalid", "pre_review_smoke.finite_loss must be true for training")
     for field in (
-        "finite_loss",
         "production_entrypoint_reached",
         "isolated_output",
         "official_metrics_disabled",
@@ -233,6 +310,7 @@ def validate_smoke(
             "pre_review_smoke_retained_evidence_invalid",
             "pre_review_smoke.retained_evidence_paths must include console.log, status.json, and smoke_summary.json",
         )
+    validate_baseline_equivalence(raw, errors)
 
 
 def validate_local_validation(packet: dict[str, Any], errors: list[str]) -> None:

@@ -81,15 +81,29 @@ Validate these with smoke, ordinary tests, health checks, or artifact verificati
 
 For `full_review`, the final candidate commit must pass an isolated production-reaching GPU smoke before the reviewer is called:
 
-- 1 to 100 steps;
+- 1 to 100 production steps: training steps or inference batches, with the unit and fixed input selection recorded in evidence;
 - exact candidate commit and production entrypoint;
-- finite loss and zero exit;
+- zero exit and a numerical check matching the computation: training requires finite loss; inference requires finite model outputs;
 - isolated fail-on-collision output;
 - `official_metrics_disabled:true` and `artifact_ingest_disabled:true`, except the bounded Baseline-Equivalence Probe below.
 - thin rrctl readiness only: candidate commit, production command, GPU/environment, isolated RunID output, 1–100 step budget, disabled official metrics/ingest, and cleanup boundary;
 - no coverage manifest, reviewer packet, scientific anchors, official artifact completeness, experiment ingest, `prerun_ready.py`, or reviewer before launch;
 - terminal cleanup on success, failure, and abort: delete checkpoint/optimizer/scheduler/large intermediates only within the bound smoke output root;
 - retain `console.log`, `status.json`, and `smoke_summary.json`; require `checkpoint_cleanup_completed:true` and `checkpoint_paths_remaining:[]`.
+
+The smoke object declares `computation_kind:training|inference`. Omission keeps the existing
+training contract and requires `finite_loss:true`. A loss-free inference path instead records
+`computation_kind:inference` and `finite_outputs:true`; omit `finite_loss` or set it to null.
+Check the actual numerical model outputs before argmax, thresholding, or another operation
+that can hide NaN/Inf. The evidence must identify the checked outputs and production call.
+Do not invent a zero loss. Absence of a training loss does not make a GPU smoke
+`not_applicable`; that disposition is reserved for code without a GPU production path.
+
+Inference keeps `production_entrypoint_reached:true`, the bounded step budget, disabled
+official metrics/ingest, isolated output, and terminal cleanup requirements. When inference
+creates no checkpoints, verify the bound output root is free of checkpoint/optimizer/scheduler
+and large intermediate files, then record the completed cleanup and empty remaining list.
+Pretrained input weights belong outside the smoke cleanup root.
 
 Smoke failures stay in the implementation row. Fix and rerun smoke without creating `FIX-*` or `PRERUN-REVIEW-*` rows. A smoke on an older commit cannot validate a new scientific candidate.
 
@@ -103,10 +117,42 @@ Structural evidence does not establish equivalence. Zero residual, zero additivi
 
 So the claim is settled by a number, not by reading code:
 
-- run the production entrypoint at step 0 on one fixed evaluation setting (dataset, project parameters, fixed seed, and small fixed sample count);
+- run the production entrypoint before any parameter update on one fixed evaluation setting (dataset, project parameters, fixed seed, and small fixed sample count); for inference, use the same frozen weights and bounded batches;
 - compare against the named reference under the same cell and post-processing;
 - record `reference_id`, `reference_weights_path`, `candidate_weights_path`, both metric values, the absolute difference, and the tolerance;
 - this is the only metric a smoke may compute; it is not an official result and is never ingested.
+
+For an equivalence claim, set `pre_review_smoke.baseline_equivalence_required:true` and attach
+`baseline_equivalence_probe` in that same smoke object:
+
+```json
+{
+  "reference_id": "named canonical reference",
+  "reference_weights_path": "reference weights path",
+  "candidate_weights_path": "candidate weights path",
+  "metric_name": "metric used by the fixed comparison",
+  "reference_metric": 0.25,
+  "candidate_metric": 0.25,
+  "absolute_difference": 0.0,
+  "tolerance": 0.000001,
+  "evaluation_setting": {
+    "dataset": "fixed evaluation dataset",
+    "parameters": {},
+    "seed": 0,
+    "sample_count": 1,
+    "post_processing": "identical post-processing for both paths"
+  },
+  "evidence_paths": ["path to measured comparison evidence"]
+}
+```
+
+The numbers above illustrate the schema, not a result or recommended tolerance. Choose the
+tolerance from the approved numerical contract. The shared evaluation setting must apply to
+both reference and candidate, and the evidence must show both production invocations.
+Readiness checks finite values, the reported absolute difference, and the tolerance; a failed
+or missing required probe returns to the implementation row. A supplied probe is checked even
+when the requirement flag is false. Existing training packets without an equivalence claim
+keep their previous contract.
 
 Verdict feeds the `Baseline/disabled path` dimension directly:
 
