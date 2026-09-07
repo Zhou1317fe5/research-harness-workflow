@@ -109,8 +109,10 @@ Pilot RunSpec 使用 `execution_purpose:pilot`；不得用 `official` 表示 `pi
    - `ready` + advisory：同一已审查 commit 下，效果型 scientific gate false/pending、RunID/paths/profile/transport/monitoring、contract 或非安全 conformance 漂移仍推进。
    - `implementation_review_required`：当前 `reviewed_commit` 不等于 `implementation_reviewed_commit`；先审查新代码快照。
    - `blocked`：manifest identity/status、late-binding provenance 或状态合同无效；不得启动。
-4. rrctl 只报告 control/manifest 事实，不预测科研效果，也不触发 scientific reviewer。效果型 gate false/pending 只记 advisory，以最终官方指标判断效果；correctness/安全/归属检查不降级。
+4. rrctl 只报告 control/manifest 事实，不预测科研效果，也不触发 scientific reviewer。在已批准 plan 的 `scientific_gates.<name>.kind` 中将纯效果预测明确标为 `effect_prediction`；这类 gate false/pending 只记 advisory，以最终官方指标判断效果。预注册停止门使用 `preregistered_stop`，正确性、安全和归属门分别使用 `correctness`、`safety`、`attribution`，继续保留阻止或跳过后续阶段的约束。未声明 kind 的旧门按 `preregistered_stop` 兼容，未知 kind 报错，不根据描述文本猜测是否可放行。
 5. source commit 在首次传输与结果归属时核对。不要把 rrctl binding 变化当 launch gate。
+
+`stage_flow.py -` 从 stdin 接收 request；无需在 artifact root 落盘阶段请求。
 6. `stage_flow.py` 返回建议而不写 CSV、plan 或 manifest。只有 Mission 执行器应用 state patch，因此 CSV/plan/rrctl/review 四类状态职责保持分离。
 
 ### Schema-aware CSV 状态更新

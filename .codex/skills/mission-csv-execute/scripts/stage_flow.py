@@ -14,6 +14,7 @@ from typing import Any
 REQUEST_SCHEMA = "mission.stage-flow.v2"
 STATE_SCHEMA = "mission.execution-state.v2"
 STAGE_STATES = {"pending", "running", "succeeded", "failed", "skipped"}
+GATE_KINDS = {"effect_prediction", "preregistered_stop", "correctness", "safety", "attribution"}
 
 
 def _load_prerun_core():
@@ -206,6 +207,14 @@ def _validate_request(
             "expected reviewed 40-character commit",
         )
     plan = request.get("execution_plan")
+    if isinstance(plan, dict):
+        for gate, config in plan.get("scientific_gates", {}).items():
+            kind = config.get("kind", "preregistered_stop")
+            if not isinstance(kind, str) or kind not in GATE_KINDS:
+                _error(
+                    errors, "scientific_gate_kind_invalid",
+                    f"execution_plan.scientific_gates.{gate}.kind", str(kind),
+                )
     stages = state.get("stages")
     if not isinstance(stages, dict):
         _error(errors, "type_invalid", "mission_state.stages", "expected object")
@@ -458,7 +467,15 @@ def advance_stage(request: Any) -> dict[str, Any]:
             )
 
         scientific_gate = graph[stage_id].get("scientific_gate")
-        if scientific_gate is not None:
+        advisory_gate = (
+            scientific_gate is not None
+            and plan["scientific_gates"][scientific_gate].get("kind") == "effect_prediction"
+        )
+        if advisory_gate:
+            if gate_results.get(scientific_gate) is not True:
+                status = "false" if scientific_gate in gate_results else "pending"
+                validation["_advisories"].append(f"scientific_gate_{status}:{scientific_gate}")
+        elif scientific_gate is not None:
             if scientific_gate not in gate_results:
                 return _result(
                     validation,
@@ -539,10 +556,11 @@ def _read_json(path: Path) -> Any:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("request", type=Path)
+    parser.add_argument("request", help="JSON request path, or - for stdin")
     args = parser.parse_args()
     try:
-        result = advance_stage(_read_json(args.request))
+        request = json.loads(sys.stdin.read()) if args.request == "-" else _read_json(Path(args.request))
+        result = advance_stage(request)
     except (OSError, UnicodeError, json.JSONDecodeError, RuntimeError) as error:
         result = {
             "schema_version": REQUEST_SCHEMA,
