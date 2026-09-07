@@ -53,7 +53,7 @@
 
    它必须覆盖 `first_step/periodic/completion`，并确认 completion 输出 `complete:true`。这样在远程 mutation 前捕获 JSONL 解析、literal dotted key、缺字段和 adapter 输出协议错误。fixture 不替代真实 smoke；它只阻止控制契约错误进入 GPU。
 
-5. official RunSpec `source.commit` 等于已通过 gate 的 `pre_run_code_commit`；`prerun.gate-provenance.v2` 只记录 `pre_run_code_commit/review_mode/review_result/reviewer_id/blocker_closure_evidence`，不写 attempt/lineage/generation。smoke RunSpec 等于 route candidate commit，使用绑定 RunID 的独立 fail-on-collision 输出，强制 `anchors=[]`、无 gate provenance、只保留最小 progress/health 和 `smoke_summary.json`，不发布指标、不 ingest；不得构造或检查 coverage manifest、review packet/hash、scientific anchors 或 official artifact completeness。
+5. official RunSpec `source.commit` 等于已通过 gate 的 `pre_run_code_commit`；`prerun.gate-provenance.v2` 只记录 `pre_run_code_commit/review_mode/review_result/reviewer_id/blocker_closure_evidence`，不写 attempt/lineage/generation。smoke RunSpec 等于 route candidate commit，使用绑定 RunID 的独立 fail-on-collision 输出，强制 `anchors=[]`、无 gate provenance、只保留最小 progress/health 和 `smoke_summary.json`，不发布指标、不 ingest；不得构造或检查 coverage manifest、review packet、scientific anchors 或 official artifact completeness。
 6. 远端 mutation 前运行：
 
    ```bash
@@ -67,7 +67,7 @@
    rrctl --json launch issues/<stem>/runs/<RunID>/runspec.json
    ```
 
-   `launch` 只有通过 first-step gate 才算成功。成功后立即在 CSV notes 与 review execution log 记录 `command_owner:rrctl`、RunID、RunSpec SHA256、profile 名、session、control root、output root、`pre_run_code_commit`、launch JSON 证据和不含凭据的 resume 命令，并设置 `remote_state=running_remote`。
+   `launch` 只有通过 first-step gate 才算成功。成功后立即在 CSV notes 与 review execution log 记录 `command_owner:rrctl`、RunID、profile 名、session、control root、output root、`pre_run_code_commit`、launch JSON 证据和不含凭据的 resume 命令，并设置 `remote_state=running_remote`。
 8. periodic unhealthy 或 Stop Trigger 不自动转换为 abort：**健康检查负责报告事实，不自动取得停止权**。**硬故障仅包括**：目标进程确认消失、显存 OOM、最新 progress 出现 NaN/Inf、明确未恢复的 fatal traceback，以及 Spec 明确声明的 Stop Condition；确认命中并记录证据后才显式执行 `rrctl abort <RunID> --yes`。单次低 GPU、单次日志延迟、checkpoint 写盘、旧日志历史错误、PID/cmdline 漂移、tmux 短暂不可见或一次检查失败只记 `degraded`，不得停止训练；至少连续两次复核仍异常才升级诊断。`rrctl wait` 返回一次结构化 attention，远端 workload 保持运行。禁止直接 `pkill`、`pgrep -f | kill` 或仅按 tmux 名终止。
 9. launch 通过首步 gate 后，长训练在当前会话使用**一个前台阻塞调用**等待终态：
 
@@ -85,7 +85,7 @@
 - `preregistered_read_only_probe`：不改模型状态的预注册只读探针。
 
 Pilot RunSpec 使用 `execution_purpose:pilot`；不得用 `official` 表示 `pilot_only` 运行。
-10. official run 在前台 `rrctl wait` 返回 terminal completed 后执行 `rrctl pull`；只拉 RunSpec `artifacts` 中的最小结果集，`artifact_pull_policy.on_demand` 不会被默认拉取。pull 的 manifest、size、SHA 与原子目标验证通过后才设置 `remote_state=artifacts_pulled`。pre-review smoke 不进入 official artifact ingest：成功、失败或 abort 后都必须由 RunSpec `output_cleanup` 删除绑定 output root 内的 checkpoint/optimizer/scheduler/大型文件，保留 control root 的 `console.log/status.json` 与 output root 的 `smoke_summary.json`，并验证 `checkpoint_cleanup_completed:true`、`checkpoint_paths_remaining:[]` 后才写 smoke evidence。
+10. official run 在前台 `rrctl wait` 返回 terminal completed 后执行 `rrctl pull`；只拉 RunSpec `artifacts` 中的最小结果集，`artifact_pull_policy.on_demand` 不会被默认拉取。pull 的 manifest、size 与原子目标验证通过后才设置 `remote_state=artifacts_pulled`。pre-review smoke 不进入 official artifact ingest：成功、失败或 abort 后都必须由 RunSpec `output_cleanup` 删除绑定 output root 内的 checkpoint/optimizer/scheduler/大型文件，保留 control root 的 `console.log/status.json` 与 output root 的 `smoke_summary.json`，并验证 `checkpoint_cleanup_completed:true`、`checkpoint_paths_remaining:[]` 后才写 smoke evidence。
 失败、abort 或 periodic attention 时可执行 `rrctl pull <RunID> --diagnostic`。快照位于该 RunID 的 `diagnostics/<snapshot-id>/`，只包含受大小限制的日志、状态和已有进度；不标记正式结果已拉取，也不进入指标入账。
 
 11. **禁止为"等跑完"建立本地常驻进程**：不得创建 systemd user unit、nohup 守护、后台 `rrctl wait` 包装或任何本地 watcher 去跨会话等待远端终态。rrctl 是 daemonless 设计，`rrctl wait` 是当前会话内的前台阻塞调用；远端已由 tmux 承载，会话结束不影响它。本地常驻只增加故障面，不增加可靠性。
@@ -102,15 +102,15 @@ Pilot RunSpec 使用 `execution_purpose:pilot`；不得用 `official` 表示 `pi
 ### 多阶段 ExecutionPlan 推进
 
 1. 多阶段计划在每个新代码 commit 首次运行前先执行 change route；仅 `targeted_review/full_review` 完成正式 PRERUN，`no_prerun/micro_validation/smoke_validation` 直接继承或用 probe evidence 推进。retry 和后续 stage 不重复审查同一变更。
-2. CSV 仍是 Mission 状态唯一来源。状态保存 `implementation_reviewed_commit`，推进时与当前 plan 的 `reviewed_commit`、已拉取 rrctl manifest 和可用的效果型 scientific gate 结果一起传给 `stage_flow.py`；默认不重复比较冻结 contract/hash。
+2. CSV 仍是 Mission 状态唯一来源。状态保存 `implementation_reviewed_commit`，推进时与当前 plan 的 `reviewed_commit`、已拉取 rrctl manifest 和可用的效果型 scientific gate 结果一起传给 `stage_flow.py`；默认不重复比较冻结 contract。
 3. `stage_flow.py` 是无状态推进建议器：
    - `ready`：只实例化下一个已审查 RunSpec；Mission 在 rrctl launch 成功后自行更新 CSV。
    - `retry`：使用当前 materialized binding 重试，`requires_new_prerun:false`、`reviewer_delta:0`；binding 漂移写 advisory。
-   - `ready` + advisory：同一已审查 commit 下，效果型 scientific gate false/pending、RunID/paths/profile/transport/monitoring、contract/hash 或非安全 conformance 漂移仍推进。
+   - `ready` + advisory：同一已审查 commit 下，效果型 scientific gate false/pending、RunID/paths/profile/transport/monitoring、contract 或非安全 conformance 漂移仍推进。
    - `implementation_review_required`：当前 `reviewed_commit` 不等于 `implementation_reviewed_commit`；先审查新代码快照。
-   - `blocked`：manifest identity/status/SHA、late-binding provenance 或状态合同无效；不得启动。
+   - `blocked`：manifest identity/status、late-binding provenance 或状态合同无效；不得启动。
 4. rrctl 只报告 control/manifest 事实，不预测科研效果，也不触发 scientific reviewer。效果型 gate false/pending 只记 advisory，以最终官方指标判断效果；correctness/安全/归属检查不降级。
-5. source commit 在首次传输与结果归属时核对；artifact SHA 在 pull/ingest 时核对。不要在每个 stage/retry 重算三摘要或把 rrctl binding 变化当 launch gate。
+5. source commit 在首次传输与结果归属时核对。不要把 rrctl binding 变化当 launch gate。
 6. `stage_flow.py` 返回建议而不写 CSV、plan 或 manifest。只有 Mission 执行器应用 state patch，因此 CSV/plan/rrctl/review 四类状态职责保持分离。
 
 ### Schema-aware CSV 状态更新

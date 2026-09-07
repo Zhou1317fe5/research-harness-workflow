@@ -12,7 +12,6 @@ from typing import Any
 
 EXECUTION_PLAN_SCHEMA = "prerun.execution-plan.v2"
 COMMIT_RE = re.compile(r"^[0-9a-f]{40}$")
-SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 VALUE_TYPES = {"string", "integer", "number", "boolean", "object", "array"}
 PLAN_FIELDS = {
@@ -432,14 +431,6 @@ def validate_execution_plan(value: Any) -> dict[str, Any]:
         errors,
     )
     _text(binding.get("release"), "plan.rrctl_binding.release", errors)
-    conformance = binding.get("conformance_digest")
-    if not isinstance(conformance, str) or not SHA256_RE.fullmatch(conformance):
-        _error(
-            errors,
-            "sha256_invalid",
-            "plan.rrctl_binding.conformance_digest",
-            "expected 64 lowercase hexadecimal characters",
-        )
     rules = plan.get("critical_surface_rules", [])
     if not isinstance(rules, list) or any(
         not isinstance(item, str) or not item for item in rules
@@ -593,16 +584,6 @@ def materialize_stage(
             )
             continue
         manifest_digest = manifest.get("manifest_sha256")
-        if not isinstance(manifest_digest, str) or not SHA256_RE.fullmatch(
-            manifest_digest
-        ):
-            _error(
-                errors,
-                "manifest_sha256_invalid",
-                f"manifests.{source}.manifest_sha256",
-                "expected 64 lowercase hexadecimal characters",
-            )
-            continue
         identity_valid = True
         for selector, expected in sorted(field["identity"].items()):
             identity_parts = _pointer_parts(

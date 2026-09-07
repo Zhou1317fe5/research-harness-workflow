@@ -15,7 +15,7 @@ reviewer. Use the smallest matching route and proceed after targeted evidence.
 Only changes to model computation, data/label flow, loss, metric, checkpoint semantics,
 scientific arguments, computation sinks, or result attribution use the full sequence below.
 That sequence contains one smoke and one scientific review; it never expands into repeated
-review, hash/coverage review, or a closing scientific review.
+review, coverage review, or a closing scientific review.
 
 ## Purpose
 
@@ -71,7 +71,7 @@ Do not allow a run with "probably correct" data flow. A critical value that reac
 Do not send these surfaces to a formal reviewer:
 
 - rrctl, tmux, PID/process ownership, cleanup, health polling, watchers, and schedulers;
-- CSV bookkeeping, RunID/path/profile changes, packet hashes, coverage manifests, and frozen ExecutionPlans;
+- CSV bookkeeping, RunID/path/profile changes, coverage manifests, and frozen ExecutionPlans;
 - artifact transport and closing review machinery;
 - predictions about final method quality or effect size.
 
@@ -87,7 +87,7 @@ For `full_review`, the final candidate commit must pass an isolated production-r
 - isolated fail-on-collision output;
 - `official_metrics_disabled:true` and `artifact_ingest_disabled:true`, except the bounded Baseline-Equivalence Probe below.
 - thin rrctl readiness only: candidate commit, production command, GPU/environment, isolated RunID output, 1–100 step budget, disabled official metrics/ingest, and cleanup boundary;
-- no coverage manifest, reviewer packet/hash, scientific anchors, official artifact completeness, experiment ingest, `prerun_ready.py`, or reviewer before launch;
+- no coverage manifest, reviewer packet, scientific anchors, official artifact completeness, experiment ingest, `prerun_ready.py`, or reviewer before launch;
 - terminal cleanup on success, failure, and abort: delete checkpoint/optimizer/scheduler/large intermediates only within the bound smoke output root;
 - retain `console.log`, `status.json`, and `smoke_summary.json`; require `checkpoint_cleanup_completed:true` and `checkpoint_paths_remaining:[]`.
 

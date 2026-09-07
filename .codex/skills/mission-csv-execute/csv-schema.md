@@ -135,7 +135,6 @@ Keep commonly used `notes` tags stable:
 | `legacy_responsible_component:<owner>` | Required component/owner responsible for the legacy exception. |
 | `readiness_result:<pass\|failed>` | Deterministic packet readiness result before reviewer invocation. |
 | `readiness_gap:<diagnostic>` | Actionable readiness failure; return to the implementation row and fill the missing evidence. |
-| `packet_sha256:<sha>` | Digest of the normalized structured review packet. |
 | `scientific_reviewer_gap:<reason>` | One recorded capability gap when the independent scientific reviewer is unavailable; do not create retry rows. |
 | `pre_run_code_commit:<hash>` | Code snapshot reviewed before training/eval/remote run. |
 | `pre_run_result:pass` | Pre-run review allowed the gated run. |

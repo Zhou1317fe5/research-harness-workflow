@@ -95,7 +95,7 @@ CSV 的 artifact root 按以下顺序确定：
 `PRERUN-REVIEW-*` 行还必须满足：
 
 - 已读取并遵循 `pre-run-implementation-review` skill，或 CSV 明确指定了更专用的 pre-run review skill
-- 已用该 skill 的 `scripts/prerun_ready.py` 验证结构化 packet，记录 `readiness_result:pass` 与 `packet_sha256:<sha>`；readiness failure 时该行不满足闭环条件
+- 已用该 skill 的 `scripts/prerun_ready.py` 验证结构化 packet，记录 `readiness_result:pass`；readiness failure 时该行不满足闭环条件
 - 已执行唯一一次独立 scientific review，并记录 `review_agent_mode:<mode>`；该 scientific gate 与 closing review 的布尔 `review_independence` 字段分离
 - review 结论已经写入 review log 的 `Pre-run Implementation Review` 段落
 - notes 或 review log 已记录 reviewer id、`review_mode:scientific_review|targeted_review` 与 `pre_run_code_commit`
@@ -296,7 +296,7 @@ P0 → P1 → P2；优先能解阻塞/提供公共能力的任务；减少无意
 python <pre-run-skill-dir>/scripts/prerun_ready.py <packet.json>
 ```
 
-- `ready:true`：记录 `readiness_result:pass; packet_sha256:<sha>`，创建并执行唯一 PRERUN row。
+- `ready:true`：记录 `readiness_result:pass`，创建并执行唯一 PRERUN row。
 - `ready:false`：不要调用 reviewer；回到原 implementation row 补齐实现、source-to-sink evidence、command binding 或 smoke 证据后重跑 readiness。
 - readiness failure 不写 formal blocker，不新增 PRERUN 编号。
 
@@ -305,7 +305,7 @@ python <pre-run-skill-dir>/scripts/prerun_ready.py <packet.json>
 1. 只调用一次独立 reviewer：优先 `fork_turns=none` 的 direct reviewer，其次独立只读 `codex exec`。prompt 只携带 lean packet、批准源、committed diff 和 packet 引用的原始证据。
 2. reviewer 必须继续检查所有当前可判定的科学维度，一次性返回全部 findings，不得在发现首个 blocker 后停止。
 3. reviewer 只检查批准意图/原理、canonical 实现位置、模块实例化、参数/数据流、optimizer/loss 连接、computation sink、baseline/disabled path、dataset/checkpoint/metric identity、command 和结果归属。
-4. rrctl、tmux、PID、cleanup、health、scheduler、artifact transport、RunID/path/profile、bookkeeping/hash/coverage 和效果预测不属于 scientific review。
+4. rrctl、tmux、PID、cleanup、health、scheduler、artifact transport、RunID/path/profile、bookkeeping/coverage 和效果预测不属于 scientific review。
 5. 输出只有：
    - `scientifically_correct / allow_run`；
    - `scientifically_incorrect / do_not_run`；

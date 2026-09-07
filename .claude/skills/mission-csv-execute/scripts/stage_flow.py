@@ -135,14 +135,6 @@ def _validate_manifest(
             f"{path}.plan_id",
             f"expected {plan['plan_id']}",
         )
-    digest = manifest.get("manifest_sha256")
-    if not isinstance(digest, str) or not CORE.SHA256_RE.fullmatch(digest):
-        _error(
-            errors,
-            "manifest_sha256_invalid",
-            f"{path}.manifest_sha256",
-            "expected 64 lowercase hexadecimal characters",
-        )
 
 
 def _validate_request(
@@ -213,21 +205,6 @@ def _validate_request(
             "mission_state.implementation_reviewed_commit",
             "expected reviewed 40-character commit",
         )
-    for field in (
-        "reviewed_execution_plan_sha256",
-        "reviewed_review_snapshot_sha256",
-        "reviewed_semantic_fingerprint",
-        "validated_rrctl_binding_sha256",
-    ):
-        digest = state.get(field)
-        if not isinstance(digest, str) or not CORE.SHA256_RE.fullmatch(digest):
-            _error(
-                errors,
-                "sha256_invalid",
-                f"mission_state.{field}",
-                "expected 64 lowercase hexadecimal characters",
-            )
-
     plan = request.get("execution_plan")
     stages = state.get("stages")
     if not isinstance(stages, dict):
@@ -289,27 +266,6 @@ def _validate_request(
         _error(errors, "type_invalid", "retry", "expected object or null")
 
     return state, errors
-
-
-def _contract_change_reason(
-    state: dict[str, Any], validation: dict[str, Any]
-) -> str | None:
-    if (
-        state.get("reviewed_semantic_fingerprint")
-        != validation["semantic_fingerprint"]
-    ):
-        return "semantic_contract_changed"
-    if (
-        state.get("reviewed_review_snapshot_sha256")
-        != validation["review_snapshot_sha256"]
-    ):
-        return "review_snapshot_changed"
-    if (
-        state.get("validated_rrctl_binding_sha256")
-        != validation["rrctl_binding_sha256"]
-    ):
-        return "rrctl_conformance_revalidation"
-    return None
 
 
 def advance_stage(request: Any) -> dict[str, Any]:
@@ -397,27 +353,6 @@ def advance_stage(request: Any) -> dict[str, Any]:
             result["requires_scientific_review"] = True
             return result
 
-    contract_change = (
-        _contract_change_reason(state, validation)
-        if validation.get("_change_route") is None
-        else None
-    )
-    if contract_change == "rrctl_conformance_revalidation":
-        return _result(
-            validation,
-            "conformance_revalidation",
-            reason_codes=[contract_change],
-            rrctl_binding_sha256=validation["rrctl_binding_sha256"],
-        )
-    if contract_change:
-        return _result(
-            validation,
-            "implementation_review_required",
-            reason_codes=[contract_change],
-            review_mode="scientific_review",
-            requires_scientific_review=True,
-        )
-
     graph = plan["stage_graph"]
     stages = state["stages"]
     manifests = request["manifests"]
@@ -471,34 +406,10 @@ def advance_stage(request: Any) -> dict[str, Any]:
                 reason_codes=["stage_materialization_failed"],
                 stage_id=stage_id,
             )
-        expected = {
-            "execution_plan_sha256": validation["execution_plan_sha256"],
-            "semantic_fingerprint": validation["semantic_fingerprint"],
-            "template_sha256": materialized["template_sha256"],
-            "run_spec_sha256": materialized["run_spec_sha256"],
-        }
-        changed_retry_fields = sorted(
-            field for field, value in expected.items() if retry.get(field) != value
-        )
-        if changed_retry_fields:
-            return _result(
-                validation,
-                "blocked",
-                errors=[
-                    "retry_binding_changed: retry: "
-                    + ",".join(changed_retry_fields)
-                ],
-                reason_codes=["retry_binding_changed"],
-                stage_id=stage_id,
-            )
         return _result(
             validation,
             "retry",
-            reason_codes=[
-                "retry_with_current_binding"
-                if changed_retry_fields
-                else "idempotent_retry"
-            ],
+            reason_codes=["idempotent_retry"],
             stage_id=stage_id,
             template_sha256=materialized["template_sha256"],
             run_spec_sha256=materialized["run_spec_sha256"],
