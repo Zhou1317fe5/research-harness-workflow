@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """从 Mission CSV 与 remote_artifacts 投影出 record.json，再派生 EXPERIMENTS.csv。
 
-设计原则：只写证据支持的字段。无法从 CSV 或 artifacts 推出的（parent、protocol、
-baseline 身份、outcome）一律留 null 并列入 `_pending`，不猜、不编。
+设计原则：只写证据支持的字段。单 Run 指标和明确一致的协议直接投影；
+无法从 CSV 或 artifacts 推出的字段保留待补状态，不猜聚合、baseline 或 outcome。
 """
 from __future__ import annotations
 
@@ -28,7 +28,7 @@ ARTIFACTS = REPO_ROOT / "remote_artifacts"
 EXPERIMENTS = REPO_ROOT / "research_workspace" / "experiments"
 LEDGER = REPO_ROOT / "research_workspace" / "EXPERIMENTS.csv"
 
-# 无法从机器可读来源推出、必须由人填写的字段
+# 默认待补字段；从机器事实明确投影后移除对应项。
 PENDING_FIELDS = ("parent", "metrics.protocol", "metrics.baseline_id", "outcome")
 
 
@@ -89,11 +89,17 @@ def read_runs(exp_id: str, settings: dict | None = None) -> list[dict]:
             if isinstance(metric, bool) or not isinstance(metric, (int, float)) or not math.isfinite(metric):
                 raise ValueError(f"summary primary metric is not finite: {summary}")
             auxiliary = settings.get("secondary_metric")
+            dimensions = {k: dotted_value(data, k, "summary") for k in settings.get("dimensions", [])}
+            protocol = data.get("protocol")
+            if protocol is not None and (not isinstance(protocol, str) or not protocol.strip()):
+                raise ValueError(f"summary protocol must be non-empty text: {summary}")
             runs.append({
+                **dimensions,
                 "run_id": run_root.name,
                 "summary_path": summary.relative_to(REPO_ROOT).as_posix(),
                 "eval_dir": summary.parent.relative_to(REPO_ROOT).as_posix(),
-                **{k: dotted_value(data, k, "summary") for k in settings.get("dimensions", [])},
+                "dimensions": dimensions,
+                "protocol": protocol,
                 "metric": metric,
                 "metric_aux": dotted_value(data, auxiliary, "summary") if auxiliary else None,
                 "weights_path": data.get("checkpoint_path"),
@@ -105,6 +111,13 @@ def read_runs(exp_id: str, settings: dict | None = None) -> list[dict]:
 def build_record(exp_id: str, proj: dict | None, settings: dict | None = None) -> dict:
     runs = read_runs(exp_id, settings)
     proj = proj or {}
+    protocols = {run["protocol"] for run in runs}
+    protocol = next(iter(protocols)) if len(protocols) == 1 and None not in protocols else None
+    # 多 Run 没有聚合契约时不能自动取均值或最好成绩。
+    ours_metric = runs[0]["metric"] if len(runs) == 1 else None
+    pending = [field for field in PENDING_FIELDS if field != "metrics.protocol" or protocol is None]
+    if ours_metric is None:
+        pending.append("metrics.ours_metric")
     record = {
         "exp_id": exp_id,
         "parent": None,
@@ -116,18 +129,18 @@ def build_record(exp_id: str, proj: dict | None, settings: dict | None = None) -
             "mission_csv": sorted(proj.get("csv", [])) or None,
         },
         "metrics": {
-            "protocol": None,
+            "protocol": protocol,
             "baseline_id": None,
             "baseline_run_id": None,
             "baseline_metric": None,
-            "ours_metric": None,
+            "ours_metric": ours_metric,
             "delta_metric": None,
         },
         "runs": runs,
         "outcome": "pending",
         "artifact_path": f"remote_artifacts/{exp_id}/" if (ARTIFACTS / exp_id).exists() else None,
         "next_action": proj.get("next_action") or None,
-        "_pending": list(PENDING_FIELDS),
+        "_pending": pending,
         "_generated_by": ".agents/harness/records/experiment_records.py",
     }
     return record
@@ -180,7 +193,7 @@ def cmd_derive(args) -> int:
         print("没有 record.json，先跑 build")
         return 1
     with LEDGER.open("w", encoding="utf-8", newline="") as fh:
-        w = csv.DictWriter(fh, fieldnames=list(rows[0]))
+        w = csv.DictWriter(fh, fieldnames=list(rows[0]), lineterminator="\n")
         w.writeheader()
         w.writerows(rows)
     print(f"EXPERIMENTS.csv 派生 {len(rows)} 行 -> {LEDGER.relative_to(REPO_ROOT)}")
