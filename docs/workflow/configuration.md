@@ -170,6 +170,7 @@ cp -n .agents/harness/config/research-memory.example.json .agents/harness/config
 | sources | STATE、CONCLUSIONS、实验分析、record.json、research_workspace/analysis/*.md |
 | context_chars | 默认 6500，可设 1000–16000 |
 | max_items | 默认 8，可设 1–30 |
+| hooks_enabled | 默认 true；设为 false 立即暂停当前项目的自动采集，包括宿主已加载的回调；手工 CLI 保留 |
 | hindsight_enabled | 默认 false，仅使用本地功能时保持关闭 |
 
 会话开始、恢复、压缩后和新消息到达时加载本地上下文。文件变化在下一次生命周期回调或 scan 时采集。

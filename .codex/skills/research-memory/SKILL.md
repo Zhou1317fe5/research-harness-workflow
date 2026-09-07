@@ -109,5 +109,7 @@ python .agents/harness/memory/research_memory.py scan
 
 控制记录位于独立科研仓库的 Git 元数据中，或 `.agents/harness/.memory/`。
 可选配置位于 `.agents/harness/config/research-memory.json`。
+需要暂停当前项目的自动采集时，在此配置设置 `"hooks_enabled": false`（默认 `true`）。
+已被宿主加载的回调也会立即返回空结果，不采集、扫描或恢复事务；手工 CLI 仍可使用。
 Hindsight 默认关闭；启用后 `recall` 返回远端候选，`sync` 推进本地待同步队列。
 候选内容仍按本地正式条目的状态、协议和证据范围使用。

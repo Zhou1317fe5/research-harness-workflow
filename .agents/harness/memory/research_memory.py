@@ -151,7 +151,8 @@ class Memory:
         self.config_path = self.root / ".agents/harness/config/research-memory.json"
         project_id = re.sub(r"[^A-Za-z0-9._-]+", "-", self.root.name).strip("-._") or "project"
         self.config = {"project_id": project_id[:128], "sources": DEFAULT_SOURCES,
-                       "context_chars": 6500, "max_items": 8, "hindsight_enabled": False}
+                       "context_chars": 6500, "max_items": 8, "hindsight_enabled": False,
+                       "hooks_enabled": True}
         if self.config_path.is_file():
             supplied = json.loads(self.config_path.read_text())
             if not isinstance(supplied, dict) or set(supplied) - set(self.config):
@@ -164,8 +165,9 @@ class Memory:
         for key, low, high in (("context_chars", 1000, 16000), ("max_items", 1, 30)):
             if type(self.config[key]) is not int or not low <= self.config[key] <= high:
                 raise MemoryError(f"无效的 {key} 配置")
-        if type(self.config["hindsight_enabled"]) is not bool:
-            raise MemoryError("hindsight_enabled 必须是布尔值")
+        for key in ("hindsight_enabled", "hooks_enabled"):
+            if type(self.config[key]) is not bool:
+                raise MemoryError(f"{key} 必须是布尔值")
         if not isinstance(self.config["sources"], list) or len(self.config["sources"]) > 64:
             raise MemoryError("sources 必须是最多 64 项的数组")
         self.config["sources"] = [source_name(x) for x in self.config["sources"]]
@@ -401,7 +403,11 @@ class Memory:
             if path.name != "analysis.md" or path.stat().st_size > MAX_FILE:
                 continue
             path = self.safe_path(path.relative_to(self.root).as_posix())
-            text = path.read_text()
+            try:
+                text = path.read_text()
+            except (OSError, UnicodeError):
+                # 主循环会登记不可解析来源；附件预读不能中断其他文件的采集。
+                continue
             links = re.findall(r"\]\(([^)]+\.md)(?:#[^)]*)?\)|`([^`\n]+\.md)`", text)
             for pair in links:
                 link = next((x for x in pair if x), "")
@@ -629,7 +635,8 @@ class Memory:
                                    for s in ("pending", "waiting", "recorded", "discarded")},
                     "interrupted": [t["id"] for t in state["transactions"].values() if t["state"] != "completed"],
                     "sync_worker_error": state.get("sync_worker_error"),
-                    "hindsight_enabled": self.config["hindsight_enabled"], "store": str(self.store)}
+                    "hindsight_enabled": self.config["hindsight_enabled"],
+                    "hooks_enabled": self.config["hooks_enabled"], "store": str(self.store)}
 
     @staticmethod
     def sections(text):
@@ -688,6 +695,8 @@ class Memory:
                     raise MemoryError("不同类型的结论不能互相取代")
                 if field(old, "Protocol") != record.get("protocol", ""):
                     raise MemoryError("不同评测协议的结论不能互相取代")
+                if record["kind"] == "decision" and field(old, "Status") == "ACTIVE" and record["status"] != "ACTIVE":
+                    raise MemoryError("生效用户决定只能由新的生效用户决定取代")
                 if field(old, "Status") == "SUPERSEDED" and field(old, "Superseded by") != record["id"]:
                     raise MemoryError("旧条目已经被取代，请核对当前生效条目")
                 if re.search(r"(?m)^Status:", old):
@@ -700,6 +709,7 @@ class Memory:
         writes = {"research_workspace/CONCLUSIONS.md": text}
         state_path = self.safe_path("research_workspace/STATE.md")
         state_text = state_path.read_text() if state_path.exists() else "# STATE\n"
+        original_state = state_text
         for record in transaction["records"]:
             slot = record.get("state_slot")
             if not slot:
@@ -731,7 +741,18 @@ class Memory:
                     else:
                         section = "\n\n| 项 | 值 |\n|---|---|\n" + row + "\n" + section
             state_text = state_text[:start.end()] + section + state_text[end:]
-        if any(r.get("state_slot") for r in transaction["records"]):
+        replaced = {cid for record in transaction["records"] for cid in record.get("supersedes", [])}
+        start = re.search(r"(?m)^## Current Model[ \t]*$", state_text)
+        if replaced and start:
+            following = re.search(r"(?m)^## ", state_text[start.end():])
+            end = start.end() + following.start() if following else len(state_text)
+            section = state_text[start.end():end]
+            # 撤回或改判没有新的有效 slot 时，移除本工具留下的旧指针。
+            section = "".join(line for line in section.splitlines(keepends=True)
+                              if not ("<!-- research-memory-slot:" in line and any(
+                                  f"](CONCLUSIONS.md#{cid.lower()})" in line for cid in replaced)))
+            state_text = state_text[:start.end()] + section + state_text[end:]
+        if state_text != original_state:
             writes["research_workspace/STATE.md"] = state_text
         return writes
 
@@ -753,7 +774,9 @@ class Memory:
                       "processed_at": transaction["processed_at"]})
         if event["actor"] in {"user", "assistant"}:
             self._event_job(state, event["id"])
-        elif event["actor"] == "document":
+        elif (event["actor"] == "document"
+              and state["documents"].get(event["source"], {}).get("event_id") == event["id"]):
+            # 历史版本只更新自身处理状态，不覆盖当前文档版本的远端身份。
             source = self.get(event["id"])
             if source.get("text") and not source["truncated"]:
                 self._job(state, "document:" + event["source"], source["text"], {
@@ -1049,7 +1072,8 @@ def main():
     try:
         memory = Memory(args.repo_root, args.store)
         if args.command == "hook":
-            result = hook(memory, read_json_input(), args.action, args.host)
+            # 宿主可能仍持有已移除的回调；在读取 payload 和接触队列前即时停用。
+            result = hook(memory, read_json_input(), args.action, args.host) if memory.config["hooks_enabled"] else {}
         elif args.command == "capture":
             payload = read_json_input()
             result = {"event_id": memory.capture(args.actor, payload["text"],
