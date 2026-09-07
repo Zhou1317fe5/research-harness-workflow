@@ -54,10 +54,21 @@ def commit_paths(repo: Path, paths: list[Path], message: str) -> str:
     if overlap:
         raise RuntimeError("task path already has staged changes: " + ", ".join(overlap))
     before = index_patch(repo)
-    _git(repo, "add", "--", *task_paths)
+    new_paths = [
+        item.decode(errors="surrogateescape")
+        for item in _git(
+            repo, "ls-files", "--others", "--exclude-standard", "-z", "--", *task_paths
+        ).stdout.split(b"\0")
+        if item
+    ]
     try:
+        # --only 直接读取已跟踪路径；新文件只登记 intent，失败时可精确撤回。
+        if new_paths:
+            _git(repo, "add", "--intent-to-add", "--", *new_paths)
         _git(repo, "commit", "--only", "-m", message, "--", *task_paths)
     except Exception:
+        if new_paths:
+            _git(repo, "update-index", "--force-remove", "--", *new_paths)
         if index_patch(repo) != before:
             raise RuntimeError("commit failed and index delta could not be preserved exactly")
         raise
