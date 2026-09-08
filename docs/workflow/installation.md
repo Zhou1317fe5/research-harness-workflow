@@ -25,6 +25,8 @@
 
 模板自带任务执行相关技能。中文方案与交付说明还需要在 agent 环境中安装 humanizer-zh；代码语义检索和资料查询分别使用 fast_context_search、smart-search-cli，需要另行配置。接入时可先让 agent 检查这些工具和技能是否可用，再补齐缺少的部分。
 
+使用 Codex 执行长任务时，可以在 Goal 模式中引用准备好的 CSV。先确认当前版本支持 /goal；入口不可用时，按 [OpenAI Docs](https://developers.openai.com/codex/use-cases/follow-goals) 检查版本和功能设置。具体执行方式见[日常使用指南](usage.md#用-goal-模式执行-csv)。
+
 ## 安装工作流
 
 以下命令中的项目目录需要替换。已有同名文件时，复制命令保留原文件；随后仍需合并项目规则和配置，跳过复制不代表已经完成适配。
