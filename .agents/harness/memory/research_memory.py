@@ -224,18 +224,28 @@ class Memory:
 
     def reference(self, value):
         """只校验引用身份与存在性；原始证据不进入采集路径。"""
-        if not isinstance(value, str) or len(value) > 1000:
+        if (not isinstance(value, str) or len(value) > 1000
+                or "\\" in value or any(c in value for c in "\r\n\0")):
             raise MemoryError("证据引用必须是有界的项目相对路径")
         relative = value.split("#", 1)[0]
-        if relative.startswith("remote_artifacts/"):
-            path = PurePosixPath(relative)
-            if ".." in path.parts or "\\" in relative:
-                raise MemoryError("证据路径越界")
-            target = self.root / relative
-            if not target.resolve().is_relative_to(self.root) or not target.is_file():
-                raise MemoryError("证据引用不存在或越界")
-        elif not self.safe_path(relative).is_file():
-            raise MemoryError("记录引用不存在")
+
+        def allowed(path):
+            parts = path.parts
+            return (not path.is_absolute() and ".." not in parts and bool(parts)
+                    and (parts[0] in {"research_workspace", "remote_artifacts", "issues"}
+                         or parts[:2] == ("docs", "reviews"))
+                    and not any(part == ".git" or part == ".env" or part.startswith(".env.")
+                                for part in parts))
+
+        # 引用可以指向结构化证据；只有主动采集来源才受 Markdown 格式限制。
+        path = PurePosixPath(relative)
+        if not allowed(path):
+            raise MemoryError("证据引用必须位于科研、原始产物、任务或审查目录，且不能指向凭据或 Git 内部文件")
+        target = self.root / relative
+        resolved = target.resolve()
+        if (not resolved.is_relative_to(self.root) or not target.is_file()
+                or not allowed(PurePosixPath(resolved.relative_to(self.root).as_posix()))):
+            raise MemoryError("证据引用不存在或越界")
         return value
 
     def _index_event(self, state, event):
