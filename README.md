@@ -5,14 +5,11 @@
 
 ## 文档
 
-工作流介绍、使用与配置方法集中在 [docs/workflow](docs/workflow/README.md)：
+[docs/workflow](docs/workflow/README.md) 按三个主题介绍工作流：
 
-- [安装与使用](docs/workflow/installation.md)
-- [用户配置](docs/workflow/configuration.md)
-- [科研记录与 Hindsight](docs/workflow/research-memory.md)
-- [Harness 目录](docs/workflow/harness-layout.md)
-- [rrctl 控制面](docs/workflow/remote-run-control.md)
-- [科研工作流介绍](docs/workflow/面向科研的harness-engineering.md)
+- [功能、理念与流程](docs/workflow/README.md)
+- [项目接入与配置](docs/workflow/installation.md)
+- [日常使用指南](docs/workflow/usage.md)
 
 ## 项目组成
 
