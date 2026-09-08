@@ -195,7 +195,9 @@ The reviewer must inspect the committed code and return all currently evaluable 
 - `scientifically_incorrect`: one or more reproducible scientific correctness blockers exist; do not run until fixed.
 - `not_evaluable`: name the exact missing scientific evidence; do not infer correctness from smoke or scaffolding.
 
-Reviewer quota, launcher failure, output-format failure, or inactivity does not create a retry state machine or another PRERUN row. Record the concrete capability gap once.
+Treat quota errors, launcher failures, and silence before any scientific verdict as review-service failures. A `running` status alone is not evidence of progress. After a bounded wait appropriate to the review size, stop the unresponsive execution, record the concrete failure, and, when another independent execution context is available, redispatch the same packet once. Keep the candidate commit, evidence, review scope, and single PRERUN row unchanged. Continue within existing task authorization.
+
+This replaces a failed execution of the same review; it does not request another scientific opinion. A returned scientific verdict, including `not_evaluable`, ends service recovery and must be handled on its merits. Formatting problems in an available verdict can be normalized without repeating the review. If the replacement also fails, record the capability gap once and continue independent work; do not loop, infer a pass, or weaken the scientific gate. Any user-authorized exception belongs in the project's run record, with the unfulfilled review requirement stated explicitly.
 
 ## Blocker Repair
 
