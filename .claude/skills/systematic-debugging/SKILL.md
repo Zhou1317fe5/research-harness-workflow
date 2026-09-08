@@ -52,6 +52,8 @@ You MUST complete each phase before proceeding to the next.
    - Does it happen every time?
    - If not reproducible → gather more data, don't guess
 
+   For stochastic research failures, preserve the failing input identities, sampler position, and RNG states at the failing step. Reusing an initial seed with one isolated batch does not recreate random draws consumed by earlier steps. Capture a bounded prefix or failure snapshot before changing algorithms.
+
 3. **Check Recent Changes**
    - What changed that could cause this?
    - Git diff, recent commits

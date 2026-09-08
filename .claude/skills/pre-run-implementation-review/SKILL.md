@@ -113,6 +113,8 @@ Local validation before smoke is risk graded, not exhaustive: compile affected P
 
 Required when the change claims any of: baseline-preserving, zero-init no-op, disabled-path equivalence, or reuse of a canonical implementation.
 
+When scientific computation changes, bind each side to its actual implementation as well as its weights. A reference label or entry file is insufficient if it still instantiates the changed candidate; evidence must identify the reference computation actually executed.
+
 Structural evidence does not establish equivalence. Zero residual, zero additivity, and matching counters are necessary, not sufficient: a path disabled elsewhere in the forward can still change the output while every new residual reads exactly zero.
 
 So the claim is settled by a number, not by reading code:
