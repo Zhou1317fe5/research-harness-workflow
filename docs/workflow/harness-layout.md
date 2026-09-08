@@ -28,5 +28,10 @@ python .agents/harness/memory/install_memory_hooks.py
 python -m pip install -e .agents/harness/remote/rrctl
 ```
 
+一键入口会在远程操作前检查 PATH 中的 `rrctl` 是否支持 `pull --diagnostic`，
+并在整个运行中使用同一个可执行文件。更新工作流后应重新安装项目中的控制包；
+旧安装可能沿用相同版本号却缺少新能力。需要隔离时，在独立虚拟环境安装并将其
+`bin` 目录放到 PATH 前端。
+
 旧版平铺路径已迁移到上述目录。使用旧版的目标项目应一并更新调用路径，
 将本地配置移入 config/，再重新安装会话钩子。

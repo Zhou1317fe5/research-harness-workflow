@@ -30,17 +30,34 @@ def rrctl_call(argv: list[str], repo_root: Path) -> subprocess.CompletedProcess:
     return subprocess.run(argv, capture_output=True, text=True, check=False)
 
 
+def resolve_rrctl() -> str:
+    executable = shutil.which("rrctl")
+    install_hint = "python -m pip install -e .agents/harness/remote/rrctl"
+    if executable is None:
+        raise ValueError(f"rrctl is unavailable; install with {install_hint}")
+    try:
+        # 同一版本号也可能来自旧安装；在任何远程操作前检查所需能力。
+        capability = subprocess.run(
+            [executable, "pull", "--help"], capture_output=True, text=True,
+            check=False, timeout=10,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise ValueError(f"rrctl capability check timed out: {executable}") from exc
+    if capability.returncode or "--diagnostic" not in capability.stdout.split():
+        raise ValueError(
+            f"rrctl at {executable} does not support pull --diagnostic; "
+            f"install this repository's control package with {install_hint} "
+            "and place that environment first in PATH"
+        )
+    return executable
+
+
 def execute(spec_path: Path, *, profiles: Path | None, poll_seconds: float) -> int:
     spec = json.loads(spec_path.read_text(encoding="utf-8"))
     run_id = spec.get("run_id")
     if spec.get("schema_version") != "rrctl.run.v1" or not isinstance(run_id, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", run_id):
         raise ValueError("expected a valid rrctl.run.v1 RunSpec")
-    if shutil.which("rrctl") is None:
-        raise ValueError(
-            "rrctl is unavailable; install with "
-            "python -m pip install -e .agents/harness/remote/rrctl"
-        )
-    prefix = ["rrctl", "--json"]
+    prefix = [resolve_rrctl(), "--json"]
     if profiles:
         prefix += ["--profiles", str(profiles.resolve())]
     for stage, arguments in (
