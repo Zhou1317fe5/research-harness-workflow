@@ -328,14 +328,23 @@ git -C research_workspace rev-parse --show-toplevel
 
 最后一条应返回当前项目的 `research_workspace` 目录。已有独立科研仓库就继续使用它，保留原来的记录。代码和科研仓库分别提交、分别推送。
 
-接着安装记录入口：
+### 配置自动记录
+
+在项目根目录运行：
 
 ```bash
 python .agents/harness/memory/install_memory_hooks.py
 python .agents/harness/memory/research_memory.py status
 ```
 
-默认会配置 Codex 和 Claude Code。只用一种时，加 `--host codex` 或 `--host claude`。安装后重启所用工具；Codex 还需要在 `/hooks` 中检查并信任新定义，项目本身也要受信任。
+命令会在当前项目中生成或更新以下本地配置：
+
+- `.codex/hooks.json`
+- `.claude/settings.local.json`
+
+只用一种 agent 时，加 `--host codex` 或 `--host claude`。安装后重启所用工具，将项目设为受信任；Codex 还需在 `/hooks` 中检查并信任新定义。
+
+这两个配置文件保留在本机，沿用 Git 忽略规则。新项目、新机器，或项目路径、Python 环境改变后，重新运行安装命令。
 
 到这里，本地科研记录就具备接入条件了。想调整项目名称或收集范围时，再复制可选配置：
 
@@ -359,21 +368,85 @@ cp -n .agents/harness/config/research-memory.example.json .agents/harness/config
 
 ## 可选 Hindsight
 
-实验记录积累多了以后，可以加上 Hindsight 辅助检索。先把服务装好，再把当前项目连过去。
+按下面四步启用当前项目的 Hindsight 同步与召回。
+
+### 第一步：准备运行中的 Hindsight 服务
 
 **官方安装仓库：[vectorize-io/hindsight](https://github.com/vectorize-io/hindsight)**
 
-仓库的 [Quick Start](https://github.com/vectorize-io/hindsight#quick-start) 提供安装与启动步骤。服务可用后，为项目准备 memory bank，再把 `research-memory.json` 中的 `hindsight_enabled` 改成 true。
+已经有可用服务时，可以沿用它。还没有时，按仓库的 [Quick Start](https://github.com/vectorize-io/hindsight#quick-start) 或[官方部署教程](https://hindsight.vectorize.io/developer/installation)选择 Docker 等方式安装并启动，完成服务端要求的模型和存储配置。
+
+服务启动后，为当前项目准备 memory bank，取得 API/MCP 地址和访问凭据。
+
+### 第二步：开启当前项目的连接
+
+从项目根复制本地配置；已有文件时保留原值：
+
+```bash
+cp -n .agents/harness/config/research-memory.example.json .agents/harness/config/research-memory.json
+cp -n .agents/harness/config/.env.example .agents/harness/config/.env
+chmod 600 .agents/harness/config/.env
+```
+
+在 `research-memory.json` 中设置下面三个字段，其他已经填写的来源和预算配置保留：
+
+```json
+{
+  "project_id": "your-project",
+  "hooks_enabled": true,
+  "hindsight_enabled": true
+}
+```
+
+将 `your-project` 换成稳定的项目名称。`hooks_enabled` 控制自动收集，`hindsight_enabled` 控制项目是否使用 Hindsight；只用本地记录时，后者保持 false。
 
 连接信息仍填在本地 `.env`：
 
 | 变量 | 填什么 |
 |---|---|
-| HINDSIGHT_API_KEY | 服务凭据 |
-| HINDSIGHT_MCP_URL | 对应 memory bank 的 MCP 地址 |
+| HINDSIGHT_API_KEY | 用于访问 Hindsight 服务的凭据 |
+| HINDSIGHT_MCP_URL | 对应 memory bank 的 HTTP MCP 地址，通常包含 `/mcp/<bank-id>/` |
 | HINDSIGHT_API_URL、HINDSIGHT_BANK_ID | 不使用 MCP_URL 时，填写服务基础地址和 bank ID |
 
-两种地址写法选一种。不同项目使用不同的 `project_id`；需要隔离时使用不同 memory bank。不开启这项服务，本地记录和查询也能继续使用。
+两种地址写法选一种。当前客户端允许本机 localhost/127.0.0.1 的 HTTP 地址，远程服务使用 HTTPS。访问 Hindsight 的凭据与服务端调用模型所用的凭据用途不同，按部署方式分别配置。
+
+不同项目使用不同的 `project_id`；需要隔离时使用不同 memory bank。使用项目自带客户端连接，无需新增全局 MCP 配置。
+
+### 第三步：生成并启用本机 hooks
+
+如果前面的科研记录步骤还没有做，在这个项目中运行：
+
+```bash
+python .agents/harness/memory/install_memory_hooks.py
+```
+
+命令会生成 `.codex/hooks.json` 和 `.claude/settings.local.json`。只使用 Codex 时可加 `--host codex`，只使用 Claude Code 时可加 `--host claude`。
+
+重启所用工具，完成项目及 hooks 的信任设置；Codex 在 `/hooks` 中检查新定义。已经完成前面的自动记录配置时，可沿用现有 hooks。
+
+### 第四步：检查启用结果
+
+先查看本地状态：
+
+```bash
+python .agents/harness/memory/research_memory.py status
+```
+
+确认 `hooks_enabled`、`hindsight_enabled` 都为 true，再检查实际收集与连接。
+
+在启用 hooks 的会话中产生一条正常科研消息后，再查看状态，核对是否有新的来源事件。已经有待同步来源时，可以手工推进同步，并试一次查询：
+
+```bash
+set -a
+source .agents/harness/config/.env
+set +a
+python .agents/harness/memory/research_memory.py sync --limit 4
+python .agents/harness/memory/research_memory.py recall "当前研究方案"
+```
+
+手工命令需要先加载 `.env`；生成的 hooks 会在执行时自行加载这个文件。查看查询返回的 `hindsight` 部分：应当启用，且没有 `error_type`。刚接入或没有相关记忆时，`results` 为空是正常情况。
+
+最后用项目里已有的一条明确来源核对同步和召回，以来源已被采集、同步完成且能召回对应内容作为接入检查结果。
 
 ## 6. 用一次小任务检查接入结果
 
