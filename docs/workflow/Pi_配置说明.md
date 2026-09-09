@@ -2,8 +2,6 @@
 
 选择 Pi 使用本工作流时，先完成本页的全局环境配置，再从科研项目根目录启动 Pi。项目文件、远程实验和 Research Memory 的接入步骤见[项目接入与配置](installation.md)。
 
-本地准备 Node.js 22+、npm 和 Python 3.11+。如果使用 WSL，Pi、下面的 packages 和 smart-search 都安装在同一个 WSL 环境。
-
 没有安装 Pi 时，先运行：
 
 ```bash
@@ -23,7 +21,7 @@ pi --version
 | `@ff-labs/pi-fff` | 本地模糊文件搜索、内容搜索和文件补全 | `/fff-health`、`/fff-mode` |
 | `@cortexkit/pi-magic-context` | 当前会话的 Historian、压缩与 session-history | 官方 setup 向导、`/ctx-status` |
 
-下面均为全局安装，不加 `-l`：
+下面均为全局安装：
 
 ```bash
 pi install npm:pi-mcp-adapter
@@ -56,7 +54,7 @@ pi
 /mcp
 ```
 
-如果 Codex 已经配好了 fast-context，可在 setup 中导入现有 Codex 配置；不需要重新填写一份凭据。新环境按 [fast-context 官方仓库](https://github.com/SammySnake-d/fast-context-mcp)安装服务并填写启动参数。项目自带的 `.pi/mcp.json` 已登记 Context7 的官方 HTTP MCP 入口。用 `/mcp` 查看服务，再让 Pi 调用 fast-context 查找一个项目文件、调用 Context7 查询一份库文档，确认实际可用。
+如果 Codex 已经配好了 fast-context，可在 setup 中导入现有 Codex 配置；不需要重新填写一份凭据。新环境按 [fast-context 官方仓库](https://github.com/SammySnake-d/fast-context-mcp)安装服务并填写启动参数。用 `/mcp` 查看服务，再让 Pi 调用 fast-context 查找一个项目文件，确认实际可用。
 
 Hindsight 的正式接入由项目 Research Memory 管理，不需要通过这里新增全局 Hindsight 工具。已有的全局 Hindsight MCP 可以保留作手动诊断，但不作为科研记忆的正式写入入口。
 
@@ -99,11 +97,11 @@ Magic Context 按“只管理当前会话上下文”的方式配置。全局安
 npx @cortexkit/magic-context@latest setup --harness pi
 ```
 
-向导中为 Historian 选择便宜或高额度模型，例如 `newapi/gemini-3.8-flash`。这是 Pi 中已配置的 `provider/model` 示例，可以换成自己可用的模型。
+向导中为 Historian 选择便宜或高额度模型，例如 `gpt-5.6-luna`。这是 Pi 中已配置的 `provider/model` 示例，可以换成自己可用的模型。
 
 | 向导项目 | 选择 |
 | --- | --- |
-| Historian | 便宜或高额度模型，例如 `newapi/gemini-3.8-flash` |
+| Historian | 便宜或高额度模型，例如 `gpt-5.6-luna` |
 | Dreamer | No |
 | Sidekick | No |
 | Embedding | 可以先任选一项，下一步统一关闭 |
@@ -124,7 +122,7 @@ nano ~/.config/cortexkit/magic-context.jsonc
 
   "historian": {
     "pi": {
-      "model": "newapi/gemini-3.8-flash"
+      "model": "gpt-5.6-luna"
     }
   },
 
