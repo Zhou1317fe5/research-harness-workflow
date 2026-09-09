@@ -192,7 +192,26 @@ The packet has no attempt, lineage, generation, resolution mode, frozen coverage
 Call one independent reviewer with only the lean packet, approved source, committed diff, and referenced evidence.
 
 <!-- reviewer-launcher:start -->
-Prefer a direct independent reviewer with `fork_turns=none`; otherwise use an independent read-only `codex exec`.
+Use `pi-sub-agent` in single-agent mode with the project-owned read-only profile.
+Pass the unchanged Reviewer instructions from this skill, the lean packet,
+approved source, committed diff, and referenced evidence as the complete task.
+The profile only supplies a neutral execution context; it does not define review rules.
+
+```json
+{
+  "agent": "scientific-reviewer",
+  "agentScope": "project",
+  "confirmProjectAgents": false,
+  "cwd": "<repo_root>",
+  "task": "<unchanged Reviewer instructions plus the approved review inputs>"
+}
+```
+
+Use this invocation after the project and supplied task are trusted under the
+existing workflow. The child must have a fresh session and only read-only tools;
+its active tools must exclude `advisor`, shell execution, writing and delegation.
+Do not use parallel or chain mode. The project Memory extension skips child
+sessions. Verify these launcher capabilities before relying on the result.
 <!-- reviewer-launcher:end -->
 
 Do not send the main conversation or the main agent's conclusions.

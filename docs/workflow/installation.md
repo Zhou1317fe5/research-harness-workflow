@@ -15,7 +15,7 @@ Hindsight 可以在本地流程跑顺后再接。已有项目的升级和科研�
 
 ## 先准备好这些东西
 
-本地需要 Python 3.11+，以及能在项目里工作的 Codex 或 Claude Code。项目也要有 Git 历史；如果还是一个普通目录，先初始化 Git 并保存已有代码，后面才能关联每次实验所用的版本。
+本地需要 Python 3.11+，以及能在项目里工作的 Codex、Claude Code 或 Pi。选择 Pi 时，按 [Pi 安装与配置](Pi_配置说明.md)准备全局 packages、模型、MCP 和会话压缩。项目也要有 Git 历史；如果还是一个普通目录，先初始化 Git 并保存已有代码，后面才能关联每次实验所用的版本。
 
 远程实验这边，rrctl 的本地控制端和远程主机使用 Linux。远程要有 Python 3.11+、SSH、Git、tmux、conda，以及项目自己的依赖和数据。使用密码登录时，本地还需要 sshpass。
 
@@ -35,7 +35,7 @@ Hindsight 可以在本地流程跑顺后再接。已有项目的升级和科研�
 | rrctl | 源码随模板提供，需要安装 Python 包 | 启动、等待和收集远程实验结果 | `python -m pip install -e .agents/harness/remote/rrctl` |
 | Humanizer-zh | 本项目要求准备的外部 skill | 整理中文方案和交付说明 | [op7418/Humanizer-zh](https://github.com/op7418/Humanizer-zh) |
 | fast-context-mcp | 可选 MCP | 找相关模块、理解已有实现与调用链 | [SammySnake-d/fast-context-mcp](https://github.com/SammySnake-d/fast-context-mcp) |
-| smart-search | 可选 CLI 和 skill | 搜索论文、工具文档并获取来源 | [konbakuyomu/smartsearch](https://github.com/konbakuyomu/smartsearch) |
+| smart-search | 可选 CLI | 搜索论文、工具文档并获取来源 | [blxzer77/smart-search](https://github.com/blxzer77/smart-search) |
 | lite-arch / lite-arch-recall | 可选 skill | 记录架构取舍，修改设计前召回已有决定 | [flowing-water1/lite-arch](https://github.com/flowing-water1/lite-arch) |
 | Hindsight | 可选服务 | 辅助检索历史科研材料 | [vectorize-io/hindsight](https://github.com/vectorize-io/hindsight) |
 
@@ -53,14 +53,15 @@ npx skills add https://github.com/op7418/Humanizer-zh.git
 
 选用 fast-context-mcp 时，在所用 agent 的 MCP 设置中登记。启动命令、参数和认证方式按[所选仓库](https://github.com/SammySnake-d/fast-context-mcp)的 README 填写。然后让 agent 用 `fast_context_search` 查一个已知功能的位置，确认能返回当前项目的相关文件。
 
-选用 smart-search 时，安装后使用它自己的向导配置搜索服务，并安装 `smart-search-cli` skill：
+选用 smart-search 时，按官方仓库安装 CLI，再使用它自己的向导配置搜索服务；不另装对应的 Pi / Codex skill：
 
 ```bash
 smart-search setup
+smart-search --version
 smart-search doctor --format json
 ```
 
-向导中填写所选服务的地址、凭据和模型等信息，具体选项以[仓库说明](https://github.com/konbakuyomu/smartsearch)为准。`doctor` 用来检查当前配置是否可用。搜索服务的设置由 smart-search 管理，与项目的 GPU 连接配置分开。
+向导中填写所选服务的地址、凭据和模型等信息，具体选项以[仓库说明](https://github.com/blxzer77/smart-search)为准。`doctor` 用来检查当前配置是否可用。搜索服务的设置由 smart-search 管理，与项目的 GPU 连接配置分开。
 
 lite-arch 是可选项。按[仓库说明](https://github.com/flowing-water1/lite-arch)安装 `lite-arch` 和 `lite-arch-recall` 两个技能目录，重启 agent 后检查是否可用。还没有架构记录的新项目，首次召回没有结果是正常的；后续有明确的架构决定时再记录。
 
@@ -116,7 +117,7 @@ cat /tmp/research-harness-template/.gitignore >> .gitignore
 python -m pip install -e .agents/harness/remote/rrctl
 ```
 
-复制时保留 `.agents/skills` 的符号链接。原有训练代码继续放在原处。
+复制时保留 `.agents/skills` 的符号链接。Pi 用户还需按 [Pi 配置说明](Pi_配置说明.md)复制模板的 `.pi/`，保留其中指向共享脚本的链接。原有训练代码继续放在原处。
 
 这一步结束后，先认识几个以后会经常看到的位置：
 

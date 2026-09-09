@@ -302,7 +302,7 @@ python <pre-run-skill-dir>/scripts/prerun_ready.py <packet.json>
 
 ## Reviewer 执行
 
-1. 只调用一次独立 reviewer：优先 `fork_turns=none` 的 direct reviewer，其次独立只读 `codex exec`。prompt 只携带 lean packet、批准源、committed diff 和 packet 引用的原始证据。
+1. 只调用一次独立 reviewer：使用当前已加载的 `pre-run-implementation-review` skill 中的 reviewer launcher。prompt 只携带 lean packet、批准源、committed diff 和 packet 引用的原始证据。
 2. reviewer 必须继续检查所有当前可判定的科学维度，一次性返回全部 findings，不得在发现首个 blocker 后停止。
 3. reviewer 只检查批准意图/原理、canonical 实现位置、模块实例化、参数/数据流、optimizer/loss 连接、computation sink、baseline/disabled path、dataset/checkpoint/metric identity、command 和结果归属。
 4. rrctl、tmux、PID、cleanup、health、scheduler、artifact transport、RunID/path/profile、bookkeeping/coverage 和效果预测不属于 scientific review。

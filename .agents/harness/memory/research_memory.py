@@ -1076,7 +1076,7 @@ def main():
     watch.add_argument("source")
     hooks = commands.add_parser("hook")
     hooks.add_argument("--action", choices=["context", "prompt", "stop", "scan", "sync", "checkpoint"], required=True)
-    hooks.add_argument("--host", choices=["codex", "claude"], default="codex")
+    hooks.add_argument("--host", choices=["codex", "claude", "pi"], default="codex")
     hooks.add_argument("--binding", default="research-memory-v1")
     args = parser.parse_args()
     try:
