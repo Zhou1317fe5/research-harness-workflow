@@ -225,6 +225,15 @@ class LifecycleTests(unittest.TestCase):
         self.memory.state_path.unlink()
         self.assertEqual(self.memory.search(history=True, include_resolved=True), [])
 
+    def test_quarantine_excludes_legacy_derived_records_from_default_recall(self):
+        event = self.memory.capture("assistant", "后台生成的摘要")
+        self.memory.workspace.mkdir()
+        (self.memory.workspace / "CONCLUSIONS.md").write_text(
+            f"# Conclusions\n\n### C001\nType: finding\nStatus: SUPPORTED\nScope: fixture\nSource: {event}\n")
+        self.memory.quarantine([event], "已确认的后台来源")
+        self.assertEqual(self.memory.records(), [])
+        self.assertEqual(self.memory.records(history=True)[0]["processing_state"], "quarantined")
+
     def test_sync_never_submits_legacy_raw_jobs(self):
         self.decision("采用配置 A")
         with self.memory.locked() as state:

@@ -711,6 +711,8 @@ class Memory:
             source = _state["events"].get(record["source_event"], {})
             if source.get("quarantined"):
                 record["processing_state"] = "quarantined"
+                if not history:
+                    continue
             if record["kind"] == "decision" and record["status"] == "ACTIVE" and (
                     source.get("actor") != "user" or source.get("disposition") != "recorded" or not expected):
                 record["processing_state"] = "unverified_source"
