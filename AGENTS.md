@@ -68,9 +68,15 @@ research_workspace/
 
 # 搜索分工
 
-- 本地代码语义理解、探索性定位、跨模块调用链：`fast_context_search`。
-- 已知函数名、类名、配置项、报错文本：`rg` 精确定位；已知路径直接读文件。
-- 外部资料、论文、工具版本、API/SDK 文档：`smart-search-cli`。
+- 本地代码语义理解、探索性定位、跨模块调用链：优先使用 `fast_context_search`。
+- 文件名、目录或路径的模糊发现：
+  - Pi 使用 `fffind`，利用 fuzzy matching、frecency 和 Git 状态排序。
+  - Codex/Claude 使用自身可用的文件查找工具。
+- 已知函数名、类名、配置项或报错文本的内容搜索：
+  - Pi 使用 `ffgrep`。
+  - Codex/Claude 使用 `rg` 精确定位。
+- 已知路径直接读取文件；`fffind` 只用于路径发现，不用于搜索文件内容。
+- 外部资料、论文、工具版本和 API/SDK 文档统一使用 `smart-search-cli`（命令为 `smart-search`）。
 
 # Git 与提交
 

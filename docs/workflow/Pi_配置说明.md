@@ -13,11 +13,11 @@ pi --version
 
 | 包 | 用途 | 配置入口 |
 | --- | --- | --- |
-| `pi-mcp-adapter` | 接入 fast-context、Context7 等通用 MCP | `/mcp setup`、`/mcp` |
+| `pi-mcp-adapter` | 接入 fast-context等通用 MCP | `/mcp setup`、`/mcp` |
 | `@juicesharp/rpiv-ask-user-question` | 向用户展示结构化问题与选项 | 安装后默认可用 |
 | `@narumitw/pi-goal` | 长任务目标保持与继续执行 | `/goal` |
 | `@juicesharp/rpiv-advisor` | 主 Executor 按需咨询更强的模型 | `/advisor` |
-| `pi-sub-agent` | 启动独立子代理，包括 Scientific Reviewer | `/sub-agent-settings` |
+| `pi-sub-agent` | 启动独立子代理，包括 Scientific Reviewer | `/sub-agent-settings`；项目 Agent 看 `.pi/agents/` |
 | `@ff-labs/pi-fff` | 本地模糊文件搜索、内容搜索和文件补全 | `/fff-health`、`/fff-mode` |
 | `@cortexkit/pi-magic-context` | 当前会话的 Historian、压缩与 session-history | 官方 setup 向导、`/ctx-status` |
 
@@ -81,7 +81,20 @@ Hindsight 的正式接入由项目 Research Memory 管理，不需要通过这�
 
 普通软件项目使用包原始策略；本科研工作流会自动使用科研专用触发策略。因此不要把科研 guidance 写到全局 `advisor.json`。Advisor 用于方案、冲突、困难 Debug 和实验解释等决策，Scientific Reviewer 仍通过独立子代理执行。
 
-`pi-sub-agent` 在项目中通过 `/sub-agent-settings` 配置。找到项目提供的 `scientific-reviewer`，选择所需模型和 thinking level。未指定时，子代理继承主 Pi 模型。项目已经提供只读 profile 和 Reviewer task 的传递规则，不需要另写一份科研审查 prompt。
+配置 Scientific Reviewer 时，直接编辑 `.pi/agents/scientific-reviewer.md` 的 YAML frontmatter，填写所需的模型和 thinking level。未填写时分别继承主 Pi 会话的模型和 thinking level。例如：
+
+```yaml
+---
+name: scientific-reviewer
+description: Read-only isolated execution of the supplied review task
+tools: read, grep, find, ls
+# 可选：不填写则继承主 Pi 会话配置
+# model: provider/model-id
+# thinking: high
+---
+```
+
+项目已经提供只读 profile 和 Reviewer task 的传递规则，不需要另写一份科研审查 prompt。
 
 `pi-fff` 建议保持默认 `tools-and-ui` 模式。它增加 `fffind`、`ffgrep`、`fff-multi-grep` 和 FFF 文件补全，同时保留 Pi 原有工具。需要显式指定时，可以这样启动：
 
