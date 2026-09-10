@@ -13,6 +13,7 @@ import sys
 import tempfile
 from pathlib import Path
 from typing import Any
+from csv_state import file_lock
 
 
 STATE_SCHEMA = "mission.csv-state-update.v1"
@@ -238,6 +239,12 @@ def _rewrite_references(root: Path, replacements: dict[str, str]) -> list[str]:
 
 
 def compact(csv_path: Path, research_root: Path, *, apply: bool, require_full: bool) -> dict[str, Any]:
+    csv_path = csv_path.expanduser().resolve()
+    with file_lock(csv_path.with_name("." + csv_path.name + ".lock")):
+        return _compact_locked(csv_path, research_root, apply=apply, require_full=require_full)
+
+
+def _compact_locked(csv_path: Path, research_root: Path, *, apply: bool, require_full: bool) -> dict[str, Any]:
     root = csv_path.parent
     rows = _load_rows(csv_path)
     ready = _closing_ready(rows)

@@ -8,13 +8,13 @@
 2. 查找最近风险路由：`no_prerun/micro_validation/smoke_validation` 绑定 base/candidate；`full_review` 的 smoke row 绑定 candidate 与用户授权，official row 绑定已通过的 `PRERUN-REVIEW-*` 与 `pre_run_code_commit`。
 3. 确认运行命令使用 route 所绑定的 candidate commit；存在后续 diff 时重新分类，而不是自动进入完整 PRERUN。
 4. 缺少合法 route/probes/review 时 fail closed；仅 `full_review` 的 `pre_review_smoke` 可在正式 review 前放行，其他 official run 不得绕过 gate。
-5. 使用 `scripts/remote_route.py` 解析 command owner 和 lifecycle：
+5. 使用 `scripts/remote_route.py <request> --csv <csv-path> --repo-root <repo-root>` 解析 command owner 和 lifecycle，并核验已登记任务没有暂停、取消或被替换：
    - actionable remote row（尚未启动或失败后 retry）未声明 `command_owner` 时默认进入 rrctl；显式 `command_owner:rrctl` 同样进入 rrctl。
    - 显式 `command_owner:legacy` 只有同时声明使用原因、迁移期限或 migration issue、责任组件/owner 的完整 legacy 豁免才允许；失败后 retry 必须迁移 rrctl。
    - 已闭环历史行保持只读；有真实远程证据的 `running_remote` legacy run 可按原路径完成；没有真实证据的 `running_remote` fail closed。
    - 禁止从标题、ExpID 或旧运行记录推断 actionable row 继续 legacy；禁止批量改写历史 row。
    - `remote_route.py` 输出的 `fallback_allowed` 必须为 `false`；rrctl 不可用、readiness 失败或 launch 失败时停在当前 row，不得静默回退 legacy。
-6. rrctl 路由下使用 `remote-run-snippet` 对接 `.agents/harness/config/project.toml` 中的训练与评估命令。历史 legacy 运行仅按已有、已批准的行内协议收尾，重试迁移 rrctl。
+6. rrctl 路由下使用 `remote-run-snippet` 调用项目 `.sh` 训练与评估脚本；参数在脚本中维护，`.agents/harness/config/project.toml` 登记入口和产物约定。历史 legacy 运行仅按已有、已批准的行内协议收尾，重试迁移 rrctl。
 7. 若由用户手动粘贴远程命令：写入 CSV `notes` 和 `issues/<stem>/<stem>.review.md`，标记 `remote_state=running_remote`，在该可恢复暂停点停止。
 8. 若具备明确 SSH 权限、远程凭据和用户授权：Codex 可直接连接服务器运行命令；启动后仍需记录 remote session、命令、branch/commit、`pre_run_code_commit`、预期输出路径，并标记 `remote_state=running_remote`。
 9. 恢复时按 command owner 分流：

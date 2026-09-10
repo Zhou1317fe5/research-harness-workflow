@@ -25,3 +25,9 @@ issues/**/readiness*.json
 /.agents/harness/config/research-memory.json
 /.ruff_cache
 /.pytest_cache
+
+# 事务锁保持稳定路径，不属于任务交付工件。
+*.csv.lock
+issues/.missions.lock
+issues/.missions.json
+/.pi/settings.json

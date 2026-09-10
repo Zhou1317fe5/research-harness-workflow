@@ -7,7 +7,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from harness.memory.research_memory import MAX_INPUT, MemoryError, digest, sensitive, timestamp
+from harness.memory.research_memory import MAX_INPUT, MemoryError, digest, internal_host_process, sensitive, timestamp
 
 TRANSCRIPT_BUDGET = 8 * 1024 * 1024
 
@@ -55,6 +55,7 @@ def capture_message(memory, payload, host, actor, text):
             state, actor, text, source, [key, turn, actor, body_hash],
             extra={"session_id": payload.get("session_id", "unknown"), "turn_id": turn,
                    "host": host, "occurred_at": occurred_at,
+                   "origin": "primary_session",
                    "identity_basis": "native" if native else "session_sequence"},
         )
     return eid
@@ -163,7 +164,7 @@ def recover_replies(memory, payload, host):
 
 
 def start_sync(memory):
-    if not memory.config["hindsight_enabled"]:
+    if not memory.config["hindsight_enabled"] or not memory.config["hindsight_auto_sync"]:
         return
     # worker 自己取得非阻塞同步锁；关闭所有宿主管道，宿主不等待网络返回。
     try:
@@ -179,6 +180,8 @@ def start_sync(memory):
 
 
 def handle_hook(memory, payload, action, host="codex"):
+    if not memory.config["hooks_enabled"] or internal_host_process():
+        return {"hookSpecificOutput": {"additionalContext": "", "snapshotRevision": "disabled"}}
     if not isinstance(payload, dict):
         raise MemoryError("宿主事件必须是 JSON 对象")
     event_name = payload.get("hook_event_name") or "SessionStart"
@@ -195,11 +198,19 @@ def handle_hook(memory, payload, action, host="codex"):
     changes = memory.scan()
     if action in {"context", "stop"} or changes:
         start_sync(memory)
-    if action in {"context", "prompt"} or action == "scan" and changes:
+    if action in {"context", "prompt", "scan", "checkpoint"}:
+        if host == "pi" and payload.get("memory_protocol") != "2":
+            # 已加载旧扩展时先清除危险的末尾 user 注入；/reload 后恢复版本化快照。
+            return {"hookSpecificOutput": {"hookEventName": event_name, "additionalContext": "",
+                                           "snapshotRevision": "requires_reload", "requiresReload": True}}
         query = payload.get("prompt") or ""
         if not isinstance(query, str) or sensitive(query):
             query = ""
         # 生命周期回调只读取本地；可选远端检索由 recall 命令按需执行。
-        return {"hookSpecificOutput": {"hookEventName": event_name,
-                                       "additionalContext": memory.context(query)}}
+        snapshot = memory.snapshot(query)
+        output = {"hookEventName": event_name, "snapshotRevision": snapshot["revision"],
+                  "generatedAt": snapshot["generated_at"]}
+        if payload.get("context_revision") != snapshot["revision"]:
+            output["additionalContext"] = snapshot["context"]
+        return {"hookSpecificOutput": output}
     return {}

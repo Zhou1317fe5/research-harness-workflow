@@ -56,13 +56,17 @@ CSV 的 artifact root 按以下顺序确定：
 27. **Outcome Contract 是读者合同**：新任务存在 `outcome_contract:<path>` 时，review 必须逐条回答 reader questions，handoff 必须呈现判定、证据、边界和下一步；不得用 issue 完成数或实现状态代替能力结论。
 28. **人类 handoff 必须经过 `humanizer-zh`**：未在最新 REVIEW notes 记录 `handoff_humanized:true` 时，只能保留 draft，不能通过 handoff contract，不能完成 REVIEW。结构化答案表和 blocked-claim 表不得润色，正文必须润色。
 29. **先分类再处置发现**：当前 scope/acceptance gap 现在修或追加正式 follow-up issue；human-required blocker 记录后继续其他可推进项；只有不阻塞当前承诺的改进和未来决策才进入 Deferred Findings ledger。
-30. **sidecar 不是第二状态源**：`<stem>.deferred.json` 和 events sidecar 只保存证据、事件和讨论问题，不控制 CSV 行状态，也不得成为关闭当前 issue 的理由。CSV 始终是唯一任务状态源。
+30. **sidecar 不是第二状态源**：`<stem>.deferred.json` 和 events sidecar 只保存证据、事件和讨论问题，不控制 CSV 行状态，也不得成为关闭当前 issue 的理由。CSV 是唯一的逐行执行与验收状态源；`issues/.missions.json` 只维护当前任务身份及暂停、取消、替换等生命周期，不复制行状态。
 31. **完成后停在讨论入口**：原 CSV 和 handoff 闭环后，向用户展示开放的待讨论项并停止。不得自动创建下一份 CSV，也不得把待讨论项追加到当前 CSV 后继续执行。
 32. **每个 CSV 都必须有 closing review，但不默认重复独立审查**：加载合法 CSV 后若没有 `REVIEW-*` 行，先追加 `REVIEW-01`。若同一 scientific commit 已完成独立 PRERUN、此后 scientific contract/dataflow/sink 未改变且机械证据无冲突，closing 直接走 `evidence-close`；只有未经过等价独立审查的高风险交付、证据冲突或疑似 current-scope gap 才走独立 capability ladder。
 33. **保护用户 index**：开始时记录 `git diff --cached` 的路径与 patch。提交只命名本任务路径；已暂存的无关改动保持原样且不得进入提交。同一路径存在用户已暂存 patch、或无法精确隔离 index delta 时，记录 human-required blocker。禁止用 `git stash`、reset、移动或隐藏用户工作来简化提交。
 34. **最小工件直接落盘**：新 Mission 从一开始只写终态所需工件，不创建一次性 request/state/inspect/ready/launch/pull JSON，不在 closing 阶段运行压缩或生成 `artifact-index.json`。CSV + events 是状态记录；每个实际启动的 RunID 最多保留一个 canonical RunSpec；PRERUN 与 closing 各最多保留一个最终结构化结论。`compact_artifacts.py` 仅用于 legacy Mission 的人工归档/GC，不是 closing 步骤。
 
 接收 CSV 后先运行 `python scripts/ensure_review_row.py <csv-path>`。提交边界复杂时使用 `scripts/git_isolation.py` 的 `commit_paths`；它会拒绝同路径 staged 冲突并核对提交前后的 index patch。
+
+仓库内任务首次进入执行时，用 `.agents/harness/workflow/mission_state.py register --task-id <SpecID-or-task-id> --csv <project-relative-csv> --source-ref <user-or-approved-spec-ref>` 登记身份；已登记则沿用，不重复创建任务。暂停、取消、切换由当前用户指令驱动，分别记录 lifecycle transition；不要把旧快照或 pending 来源当作重新请求授权的理由。completed 生命周期只有 CSV 真正闭环后才可设置。
+
+CSV 更新统一使用 `scripts/csv_state.py`，它锁住整段读改写和 events sidecar。返回的 `csv_sha256` 可作为下一次请求的 `expected_sha256`；版本冲突时重新读取并合并本次字段，不覆盖其他写者。追加 review 和 legacy 归档也使用同一把锁。
 
 # 闭环完成判定
 

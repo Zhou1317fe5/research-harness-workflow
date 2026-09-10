@@ -25,6 +25,12 @@ python <skill-dir>/scripts/scan_recovery.py --repo-root <repo-root>
 
 扫描器先检查目录化 CSV，再检查平铺 CSV，找到未完成的 CSV：
 
+先使用 `issues/.missions.json` 中的当前任务指针。`resume_target.kind=csv` 时恢复该 CSV，
+即使其他 CSV 的 mtime 更新；`kind=spec` 时沿已登记路径交给 `mission` 校验并路由，
+不扫描 docs/specs。`kind=paused` 不自动推进；当前用户明确要求继续该任务时，先用
+`mission_state.py transition` 恢复 active（已有 CSV）或 preparing（尚无 CSV），再恢复。
+cancelled/superseded/completed 不进入候选；当前指针损坏或缺文件时报告具体错误，不回退旧任务。
+
 ```
 扫描: issues/*/*.csv
 条件: 任一行 NOT 同时满足
@@ -76,7 +82,7 @@ python <skill-dir>/scripts/scan_recovery.py --repo-root <repo-root>
 
 # 多个可恢复任务
 
-如果存在多个未完成 CSV：
+只有没有适用的当前指针，且当前会话也未明确选定任务时，多个未完成 CSV 才需要选择：
 
 ```
 找到多个可恢复任务：
@@ -86,6 +92,8 @@ python <skill-dir>/scripts/scan_recovery.py --repo-root <repo-root>
 ```
 
 等待用户选择后恢复。
+
+已有当前任务或本轮明确选择时直接继续，不因扫描出其他旧 CSV 重复询问。
 
 # 委托执行
 

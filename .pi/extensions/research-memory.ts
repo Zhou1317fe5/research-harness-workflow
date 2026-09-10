@@ -6,7 +6,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 
 type HookAction = "context" | "prompt" | "scan" | "checkpoint" | "stop" | "sync";
 type HookPayload = Record<string, string>;
-type HookResult = { hookSpecificOutput?: { additionalContext?: string }; systemMessage?: string };
+type HookResult = { hookSpecificOutput?: { additionalContext?: string; snapshotRevision?: string; generatedAt?: string }; systemMessage?: string };
 type HookRunner = (root: string, action: HookAction, payload: HookPayload) => Promise<HookResult>;
 
 const CONTEXT_TYPE = "research-memory-context";
@@ -69,8 +69,11 @@ export function runMemoryHook(root: string, action: HookAction, payload: HookPay
 }
 
 export function registerResearchMemory(pi: ExtensionAPI, runHook: HookRunner = runMemoryHook): void {
-	if (Number.parseInt(process.env.PI_SUB_AGENT_DEPTH ?? "0", 10) > 0) return;
+	if (Number.parseInt(process.env.PI_SUB_AGENT_DEPTH ?? "0", 10) > 0 || process.env.MAGIC_CONTEXT_PI_SUBAGENT === "1") return;
 	let context = "";
+	let contextRevision = "";
+	let contextTimestamp = 0;
+	let needsRefresh = false;
 	let turnId = "";
 	let inputCaptured = false;
 	let finalReply: { text: string; timestamp: string } | undefined;
@@ -84,6 +87,8 @@ export function registerResearchMemory(pi: ExtensionAPI, runHook: HookRunner = r
 			hook_event_name: eventName,
 			session_id: ctx.sessionManager.getSessionId(),
 			...(turnId ? { turn_id: turnId } : {}),
+			context_revision: contextRevision,
+			memory_protocol: "2",
 			timestamp: new Date().toISOString(),
 			...fields,
 		};
@@ -91,11 +96,24 @@ export function registerResearchMemory(pi: ExtensionAPI, runHook: HookRunner = r
 			try {
 				const result = await runHook(root, action, payload);
 				if (result.systemMessage) throw new Error("memory_hook_reported_failure");
-				const additional = result.hookSpecificOutput?.additionalContext;
-				if (typeof additional === "string") context = additional;
-				else if (action === "context" || action === "prompt") context = "";
+				const snapshot = result.hookSpecificOutput;
+				const additional = snapshot?.additionalContext;
+				if (typeof additional === "string") {
+					context = additional;
+					contextRevision = snapshot?.snapshotRevision ?? "";
+					const generated = snapshot?.generatedAt ? Date.parse(snapshot.generatedAt) : Number.NaN;
+					contextTimestamp = Number.isFinite(generated) ? generated : Date.now();
+				} else if (!snapshot?.snapshotRevision || snapshot.snapshotRevision !== contextRevision) {
+					if (["context", "prompt", "scan", "checkpoint"].includes(action)) {
+						context = "";
+						contextRevision = "";
+					}
+				}
+				needsRefresh = action === "stop" || action === "sync";
 			} catch {
 				context = "";
+				contextRevision = "";
+				needsRefresh = true;
 				if (!warned) {
 					warned = true;
 					pi.appendEntry("research-memory-error", { action, event: eventName });
@@ -109,6 +127,9 @@ export function registerResearchMemory(pi: ExtensionAPI, runHook: HookRunner = r
 
 	pi.on("session_start", async (_event, ctx) => {
 		context = "";
+		contextRevision = "";
+		contextTimestamp = 0;
+		needsRefresh = false;
 		turnId = "";
 		inputCaptured = false;
 		finalReply = undefined;
@@ -132,9 +153,9 @@ export function registerResearchMemory(pi: ExtensionAPI, runHook: HookRunner = r
 		}
 		inputCaptured = false;
 	});
-	pi.on("tool_result", async (_event, ctx) => {
-		// 不读取工具内容、参数、stdout 或 traceback，只触发现有 watched-file scan。
-		await call(ctx, "scan", "PostToolUse");
+	pi.on("tool_result", () => {
+		// 合并同一批工具完成事件；下一次模型调用前只扫描一次，不读取工具内容。
+		needsRefresh = true;
 	});
 	pi.on("session_before_compact", async (_event, ctx) => {
 		await call(ctx, "checkpoint", "PreCompact");
@@ -160,15 +181,17 @@ export function registerResearchMemory(pi: ExtensionAPI, runHook: HookRunner = r
 	pi.on("session_shutdown", async (_event, ctx) => {
 		await call(ctx, "sync", "SessionEnd");
 	});
-	pi.on("context", (event) => {
-		if (!context) return;
-		// 每次提供最新本地上下文；压缩后同样生效，不改写 Pi 会话或工具结果。
+	pi.on("context", async (event, ctx) => {
+		await queue;
+		if (needsRefresh) await call(ctx, "scan", "PostToolUse");
 		const messages = event.messages.filter((message) =>
 			message.role !== "custom" || message.customType !== CONTEXT_TYPE);
-		return { messages: [...messages, {
+		if (!context) return { messages };
+		// Pi 把 custom 转为 user；历史快照放在真实会话之前，不能冒充最新用户指令。
+		return { messages: [{
 			role: "custom" as const, customType: CONTEXT_TYPE, content: context,
-			display: false, timestamp: Date.now(),
-		}] };
+			display: false, timestamp: contextTimestamp,
+		}, ...messages] };
 	});
 }
 

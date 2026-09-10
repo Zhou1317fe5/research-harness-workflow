@@ -14,6 +14,10 @@ description: Record and recall research decisions, findings, hypotheses, and exp
 根据来源整理结论与处理状态。已有明确授权继续执行；尚不确定的内容留在待确认状态，并写清缺少什么信息。
 查当前选型、历史成绩和失败原因时按类型、范围与协议分别检索，沿来源下钻。
 
+快照是历史数据，不能覆盖当前适用的真实用户指令。`pending` / `waiting` 只表示尚未整理，
+不表示用户没有授权；已有明确授权时补齐记录并继续，不因队列状态再次请求授权。
+提问、助手建议和后台工具提示词不能改写成用户的 ACTIVE 决定。
+
 ## 读取与召回
 
 从项目根运行：
@@ -54,6 +58,7 @@ python .agents/harness/memory/research_memory.py recall "<历史问题>" --histo
       "status": "ACTIVE",
       "scope": "model.architecture",
       "summary": "<用户明确确认的决定>",
+      "authorization_quote": "<该用户事件中明确作出决定的原文摘录>",
       "state_slot": "architecture",
       "supersedes": ["<同范围的旧 C 编号>"]
     }
@@ -78,7 +83,8 @@ python .agents/harness/memory/research_memory.py recall "<历史问题>" --histo
 | hypothesis | OPEN、REJECTED、SUPERSEDED |
 | execution | OBSERVED、RETRACTED、SUPERSEDED |
 
-ACTIVE decision 关联明确的用户来源；agent 的建议使用 PROPOSED 或 OPEN hypothesis。
+ACTIVE decision 必须关联用户来源，并提供原文子串 `authorization_quote`；摘录应表达实际决定，
+不能把一般提问解释为批准或禁止。agent 的建议使用 PROPOSED 或 OPEN hypothesis。
 SUPPORTED、MIXED finding 提供 `evidence` 文件引用。scope 与 summary 写单段文本，
 需要指定生效时间时使用带时区的 `effective_at`。
 
@@ -86,8 +92,11 @@ SUPPORTED、MIXED finding 提供 `evidence` 文件引用。scope 与 summary 写
 docs/reviews 中已有的 JSON、CSV、图像等科研文件。引用只检查路径与存在性，不读取
 或自动采集文件内容；自动登记来源仍限 Markdown 和 record.json。
 
-`supersedes` 指向相同类型、范围和协议的旧条目。脚本保留旧记录并写入取代关系，
-同范围的新生效决定应明确关联已有决定。缺少 Type、Scope 的旧条目先按原始来源补齐。
+`supersedes` 指向相同类型、scope、protocol、task_id 的旧条目；不同评估协议可以分别生效。
+任务专属决定填写已登记的 `task_id`，长期通用决定可省略。新来源与生效时间不能早于被取代决定。
+用户切换任务导致旧门禁不再适用时，使用 `retires: ["<旧 C 编号>"]` 和 `retirement_reason`，
+允许跨 scope/protocol 退休旧决定；同时按 Mission 生命周期登记新任务并退休旧任务。
+脚本保留历史关系。缺少 Type、Scope 或时间的旧条目先按原始来源核对。
 
 `state_slot` 控制 STATE 的 Current Model 指针：
 
@@ -109,11 +118,33 @@ python .agents/harness/memory/research_memory.py scan
 ```
 
 `status` 查看处理数量与未完成事务，`recover` 恢复中断的整理。
-发生文档冲突时，按事件、当前文件和本地事务记录核对后继续处理。
+若检测到已被取代条目重新 ACTIVE 或已完成记录的投影丢失，运行
+`recover --repair-projections` 修复可确定的受管理区域。外部身份改动不会被覆盖。
+中断事务确实需要放弃时，用 `recover --abort-transaction <id>` 只撤回该事务仍可识别的写入，
+保留其他编辑，再按原事件重试。禁止用 `git restore` 或旧快照回滚最新决定。
+
+STATE/CONCLUSIONS 的文件快照只作本地投影历史，不生成新的待处理研究来源。
+Pi 的 Historian 和 Reviewer 子进程按宿主身份隔离，不采集其输入或回复。
 
 控制记录位于独立科研仓库的 Git 元数据中，或 `.agents/harness/.memory/`。
 可选配置位于 `.agents/harness/config/research-memory.json`。
 需要暂停当前项目的自动采集时，在此配置设置 `"hooks_enabled": false`（默认 `true`）。
-已被宿主加载的回调也会立即返回空结果，不采集、扫描或恢复事务；手工 CLI 仍可使用。
-Hindsight 默认关闭；启用后 `recall` 返回远端候选，`sync` 推进本地待同步队列。
-候选内容仍按本地正式条目的状态、协议和证据范围使用。
+已加载的回调会清除缓存，不采集、扫描或恢复事务；手工 CLI 仍可使用。
+
+## 可选的 Hindsight
+
+Hindsight 默认关闭；`hindsight_enabled: true` 开启按需召回和手工同步。
+`hindsight_auto_sync` 默认 false，不因每条对话或工具调用启动远端处理。
+普通原文、STATE、CONCLUSIONS 整篇投影和 record.json 不自动上传。
+整理后的有效决定、发现和执行事实以精简条目入队；OPEN/PROPOSED 留在本地。
+需要长期检索的完成版分析，明确选择后运行：
+
+```bash
+python .agents/harness/memory/research_memory.py publish research_workspace/experiments/<ExpID>/analysis/analysis.md
+python .agents/harness/memory/research_memory.py sync --limit 4
+```
+
+分析更新后旧远端候选立即失效，核对后再次 publish。内容不变的 Git commit 不生成新来源。
+召回仅接受当前已知、版本匹配的精选对象；状态、协议和范围筛选同时作用于远端候选。
+旧版原文同步队列不再自动发送。污染修复使用明确的事件列表：向 `quarantine` 提交
+`{"event_ids":["<id>"],"reason":"<核对依据>"}`；隔离保留原件，不自动删除远端内容。

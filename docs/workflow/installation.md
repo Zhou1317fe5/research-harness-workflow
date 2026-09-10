@@ -2,7 +2,7 @@
 
 下面从一个常见情况出发：项目已经能训练、能评估，但命令、数据路径和结果整理还需要自己照看。我们要把这些现成入口接进工作流，让 agent 能按同样的方式运行，并知道去哪里判断进度、读取结果。
 
-文中用 `train.py` 和 `evaluate.py` 举例。你的入口放在 `tools/`、`scripts/` 或其他目录都可以，填写真实路径即可。
+训练和评估命令连同参数放在项目 `.sh` 脚本中，用 `bash` 启动。文中使用 `scripts/train.sh`、`scripts/eval.sh`，也支持把训练评估写在一个脚本中。已有脚本沿用原来的路径与名称。
 
 整次接入按这个顺序做：
 
@@ -74,7 +74,8 @@ Hindsight 需要先启动服务，再填写项目的连接信息，步骤见[可
 | 位置 | 需要修改什么 | 完成后检查什么 |
 |---|---|---|
 | `AGENTS.md`、`CLAUDE.md` 的“本项目补充” | 研究背景、基线、指标、数据与代码路径 | 两份说明一致，路径与当前项目相符 |
-| `.agents/harness/config/project.toml` | 真实运行命令、checkpoint 衔接、进度与结果字段、产物清单 | 配置能解析，并能对应项目实际输出 |
+| 项目的训练、评估 `.sh` 脚本 | Python/torchrun 等启动命令，以及学习率、batch size、seed、数据路径、评估协议等参数 | 用 bash 调用时沿用原有实验设置，训练输出与评估输入正确衔接 |
+| `.agents/harness/config/project.toml` | bash 脚本入口、阶段顺序、checkpoint 约定、进度与结果字段、产物清单 | 配置能解析，并能对应项目实际输出 |
 | `.agents/harness/config/profiles.json` | 主机、端口、登录方式和连接名称 | 能使用约定方式连接正确的远端 |
 | `.agents/harness/config/.env` | 远程环境与工作目录、需要的本地凭据 | 环境和路径存在，凭据没有进入提交 |
 | 项目自己的训练、评估入口 | 输出目录参数、进度文件、结果摘要、失败退出行为 | 正常运行能识别进度和结果，失败不会被报告成成功 |
@@ -85,7 +86,7 @@ Hindsight 需要先启动服务，再填写项目的连接信息，步骤见[可
 
 | 代码需要提供的能力 | 如何适配 |
 |---|---|
-| 指定本次输出目录 | 训练和评估接受输出路径参数，每次运行写入各自的目录 |
+| 指定本次输出目录 | 脚本读取 `RRCTL_OUTPUT_ROOT`，或通过位置参数接收输出目录，再传给训练和评估入口 |
 | 输出真实进度 | 写出 JSON 或 JSONL 进度，包含实际计数及需要检查的数值，例如 step、loss |
 | 明确 checkpoint 的传递 | 训练写出的文件与评估读取的文件一致；动态文件名由项目入口明确传递 |
 | 输出最终结果 | 评估结束后保存真实指标摘要，字段名与 `adapter`、`records` 的配置对应 |
@@ -123,6 +124,8 @@ python -m pip install -e .agents/harness/remote/rrctl
 
 ```text
 AGENTS.md / CLAUDE.md    项目规则和研究背景
+scripts/train.sh        项目训练命令与参数；已有脚本可沿用原路径
+scripts/eval.sh         项目评估命令与参数；也可合并为一个 train_eval.sh
 .agents/harness/config/ 项目的运行与连接配置
 docs/specs/             讨论形成的实验方案
 issues/                 任务 CSV 和交付说明
@@ -160,15 +163,37 @@ remote_artifacts/       从远端取回的原始证据
 
 后面的命令和配置，就是这次接入需要完成的内容。你可以自己填，也可以用它们核对 agent 的改动。
 
-## 3. 让工作流调用项目原来的命令
+## 3. 用项目脚本维护训练和评估参数
 
-先复制配置模板：
+先找到项目现有的训练、评估 `.sh` 脚本。一个训练脚本、一个评估脚本，或者一个完整训练评估脚本都可以，工作流通过 `bash` 调用它们。
+
+尚未提供脚本的项目可以复制模板：
+
+```bash
+mkdir -p scripts
+cp -n /tmp/research-harness-template/scripts/train.sh scripts/train.sh
+cp -n /tmp/research-harness-template/scripts/eval.sh scripts/eval.sh
+```
+
+打开 [train.sh](../../scripts/train.sh) 和 [eval.sh](../../scripts/eval.sh)，把项目原有命令及参数分别放进 `train_args`、`eval_args`，并修改对应的 Python 入口。模板只展示输出目录和 checkpoint 接口；学习率、batch size、训练步数、seed、数据路径和评估协议按项目现有设置填写，不套用其他项目的数值。使用 `torchrun`、`accelerate` 等启动器的项目，也把完整启动命令留在脚本中。
+
+激活计算环境后，脚本的调用方式就是：
+
+```bash
+export OUTPUT_ROOT="$HOME/research-runs/my-project/run-001"
+bash scripts/train.sh
+bash scripts/eval.sh
+```
+
+模板在未设置 `OUTPUT_ROOT` 时使用 `$HOME/research-runs/<项目目录名>/manual`，也可以直接修改脚本的输出路径。评估默认读取同一目录下的 `checkpoints/best.pt`；只评估已有权重时，在评估脚本中指定 checkpoint，或用 `CHECKPOINT` 提供路径。正式实验由 rrctl 在远端调用这些脚本，传入本次运行的 `RRCTL_OUTPUT_ROOT`，它优先于手工设置的默认输出目录。
+
+脚本准备好后，再复制工作流配置：
 
 ```bash
 cp -n .agents/harness/config/project.example.toml .agents/harness/config/project.toml
 ```
 
-这份 `project.toml` 主要回答两个问题：按什么顺序运行，运行后去哪里找输出。
+`project.toml` 登记调用哪个脚本、按什么顺序运行，以及去哪里找输出。实验参数在 `.sh` 中维护；修改参数时编辑脚本即可。
 
 下面是“训练后评估”的完整示例：
 
@@ -177,13 +202,13 @@ version = 1
 
 [[pipeline.stages]]
 name = "train"
-argv = ["python", "train.py", "--output-dir", "{output_root}"]
+argv = ["bash", "scripts/train.sh"]
 log = "train.log"
 outputs = ["checkpoints/best.pt"]
 
 [[pipeline.stages]]
 name = "evaluate"
-argv = ["python", "evaluate.py", "--checkpoint", "{output_root}/checkpoints/best.pt", "--output", "{output_root}/summary.json"]
+argv = ["bash", "scripts/eval.sh"]
 log = "evaluate.log"
 requires = ["checkpoints/best.pt"]
 outputs = ["summary.json"]
@@ -219,11 +244,23 @@ dimensions = []
 
 从上往下读就能看出这条链：先训练，得到 `checkpoints/best.pt`；再把这个文件交给评估，生成 `summary.json`。
 
-先改 `argv`，把示例脚本名和参数换成项目真实命令。每个参数单独一项，shell 脚本入口也可以写成 `["bash", "tools/train.sh", "..."]`。阶段需要在其他目录执行时，用 `cwd` 指定相对项目根的目录。
+将 `argv` 中的脚本路径改为项目实际路径即可；不要再把脚本中的整串 Python 参数复制过来。阶段需要在其他目录执行时，用 `cwd` 指定相对项目根的目录。
 
 然后对齐 checkpoint。`outputs` 写这一阶段应产生的文件，`requires` 写下一阶段开始前需要的文件。两者都相对本次输出目录，评估读到的应当就是这次训练生成的模型。
 
-`{output_root}` 会替换成这次运行的独立输出目录。`{repo_root}` 和 `{run_id}` 分别表示项目根和运行标识；参数本身需要花括号时，用 `{{`、`}}` 表示字面量。
+执行器为所有阶段设置同一个 `RRCTL_OUTPUT_ROOT`，`RRCTL_RUN_ID` 来自 rrctl。已有脚本习惯用位置参数接收输出目录时，也可登记 `argv = ["bash", "tools/train.sh", "{output_root}"]`。配置中的 `{output_root}`、`{repo_root}`、`{run_id}` 分别替换为输出目录、项目根和运行标识；脚本中的 Bash 变量由 Bash 正常解释。
+
+如果希望所有训练、评估参数都放在**单个 `scripts/train_eval.sh`** 中，就把两条实际命令及参数写在该文件里，并用一个阶段替换上面的两个阶段：
+
+```toml
+[[pipeline.stages]]
+name = "train_eval"
+argv = ["bash", "scripts/train_eval.sh"]
+log = "train_eval.log"
+outputs = ["checkpoints/best.pt", "summary.json"]
+```
+
+同时把 `artifacts` 中的两份日志声明改为 `train_eval.log`，其余进度、结果字段继续按实际输出配置。单文件脚本应使用 `set -euo pipefail`，训练失败或 checkpoint 缺失时停止评估，避免后一个成功命令掩盖训练失败。
 
 **配置里写了进度文件，并不会自动让训练代码产生它。** 这一步需要核对项目实际输出。
 
@@ -252,7 +289,7 @@ dimensions = []
 | 参数 | 填写内容 |
 |---|---|
 | `version` | 保持为 1 |
-| `pipeline.stages[].name / argv` | 唯一的阶段名，以及项目真实命令的参数数组 |
+| `pipeline.stages[].name / argv` | 唯一的阶段名，以及 `bash` 和项目脚本路径；单文件训练评估只登记一个阶段 |
 | `pipeline.stages[].cwd / log` | 相对项目根的工作目录，以及相对本次输出目录的日志路径 |
 | `pipeline.stages[].requires / outputs` | 阶段开始前需要、结束后应产生的文件，路径相对本次输出目录 |
 | `adapter.progress_path / progress_format` | 进度文件及其格式：`json` 或 `jsonl_last` |
@@ -265,7 +302,7 @@ dimensions = []
 | `records.primary_metric / secondary_metric` | 主指标与可选辅助指标字段 |
 | `records.dimensions` | 需要保留的实际维度字段，没有时填空数组 |
 
-只评估已有模型时，删除训练阶段，把评估参数指向已有权重，并去掉对本次训练输出的 `requires`。进度配置也要对应评估实际写出的内容，不能继续等一个不存在的训练 loss。
+只评估已有模型时，只保留评估阶段，在 `eval.sh` 中把 checkpoint 指向已有权重，并去掉对本次训练输出的 `requires`。进度配置也要对应评估实际写出的内容，不能继续等一个不存在的训练 loss。
 
 多个预先确定的阶段可以按顺序配置，前一阶段失败时后续阶段停止。如果下一步需要先判断实验结果，就把这个判断留在任务清单中。
 
@@ -355,7 +392,7 @@ cp -n .agents/harness/config/research-memory.example.json .agents/harness/config
 
 先给 `project_id` 填一个稳定的项目名称。`sources` 默认包含研究状态、结论和实验分析，有其他需要记录的分析文件再补。`context_chars` 和 `max_items` 控制每次提供的上下文量，初次接入可以沿用 6500 字符和 8 条。
 
-`hooks_enabled` 默认是 true，改为 false 可以暂停自动收集。`hindsight_enabled` 默认是 false，只用本地功能时保持这个设置。
+`hooks_enabled` 默认是 true，改为 false 可以暂停自动收集并清除已注入的缓存。Pi 的 Historian 和 Reviewer 子进程在入口处排除。`hindsight_enabled` 默认是 false；启用后仍默认手工同步，`hindsight_auto_sync` 为 false。
 
 | 记忆配置参数 | 填写方式 |
 |---|---|
@@ -364,6 +401,7 @@ cp -n .agents/harness/config/research-memory.example.json .agents/harness/config
 | `context_chars / max_items` | 每次提供的上下文上限，默认 6500 字符和 8 条 |
 | `hooks_enabled` | 是否自动收集，默认 true |
 | `hindsight_enabled` | 是否使用 Hindsight，默认 false |
+| `hindsight_auto_sync` | 是否在宿主回调中启动精选内容同步，默认 false；通常保持手工同步即可 |
 
 这些记录怎样帮助下一轮研究，见[使用指南](usage.md#科研记录与召回)。
 
@@ -389,17 +427,18 @@ cp -n .agents/harness/config/.env.example .agents/harness/config/.env
 chmod 600 .agents/harness/config/.env
 ```
 
-在 `research-memory.json` 中设置下面三个字段，其他已经填写的来源和预算配置保留：
+在 `research-memory.json` 中设置以下字段，其他已经填写的来源和预算配置保留：
 
 ```json
 {
   "project_id": "your-project",
   "hooks_enabled": true,
-  "hindsight_enabled": true
+  "hindsight_enabled": true,
+  "hindsight_auto_sync": false
 }
 ```
 
-将 `your-project` 换成稳定的项目名称。`hooks_enabled` 控制自动收集，`hindsight_enabled` 控制项目是否使用 Hindsight；只用本地记录时，后者保持 false。
+将 `your-project` 换成稳定的项目名称。`hooks_enabled` 控制本地自动收集，`hindsight_enabled` 控制项目是否使用 Hindsight。`hindsight_auto_sync: false` 保留按需召回和手工同步，不会因每条对话启动远端处理。
 
 连接信息仍填在本地 `.env`：
 
@@ -435,7 +474,13 @@ python .agents/harness/memory/research_memory.py status
 
 确认 `hooks_enabled`、`hindsight_enabled` 都为 true，再检查实际收集与连接。
 
-在启用 hooks 的会话中产生一条正常科研消息后，再查看状态，核对是否有新的来源事件。已经有待同步来源时，可以手工推进同步，并试一次查询：
+在启用 hooks 的会话中产生一条正常科研消息后，先核对本地来源。普通对话不自动上传；按 research-memory skill 把有价值的内容整理为条目，或明确选择一份已完成的分析：
+
+```bash
+python .agents/harness/memory/research_memory.py publish research_workspace/experiments/<ExpID>/analysis/analysis.md
+```
+
+分析更新后，旧远端候选失效，核对后再发布。STATE、CONCLUSIONS 整篇投影、record.json 和内部提示词不作为远端全量输入。已有精选内容排队时，可以手工推进同步并查询：
 
 ```bash
 set -a
@@ -447,7 +492,7 @@ python .agents/harness/memory/research_memory.py recall "当前研究方案"
 
 手工命令需要先加载 `.env`；生成的 hooks 会在执行时自行加载这个文件。查看查询返回的 `hindsight` 部分：应当启用，且没有 `error_type`。刚接入或没有相关记忆时，`results` 为空是正常情况。
 
-最后用项目里已有的一条明确来源核对同步和召回，以来源已被采集、同步完成且能召回对应内容作为接入检查结果。
+最后用项目里已有的一条已整理记录核对同步和召回。仅“来源已采集”不代表已经上传，也不代表获得新的运行授权。旧版原文同步队列不会自动重发。
 
 ## 6. 用一次小任务检查接入结果
 

@@ -184,7 +184,7 @@ nano ~/.config/cortexkit/magic-context.jsonc
 
 这套配置启用 Magic Context 自己的压缩，触发阈值设为 70，历史预算为可用上下文的 15%。跨会话 Memory、Auto Search、Git memory indexing、Embedding、Dreamer、Sidekick、commit-cluster trigger 和 todowrite 全部关闭。如果项目已有 `.cortexkit/magic-context.jsonc`，也要检查它没有重新开启这些功能。
 
-Magic Context 配好后，关闭 Pi 原生自动压缩。需要调整的是另一个文件 `~/.pi/agent/settings.json`，其中应有：
+Magic Context 配好后，在使用它的项目中关闭 Pi 原生自动压缩。调整项目的 `.pi/settings.json`，它会覆盖全局设置，其中应有：
 
 ```json
 {
@@ -194,14 +194,14 @@ Magic Context 配好后，关闭 Pi 原生自动压缩。需要调整的是另�
 }
 ```
 
-只合并这个字段，不要用上面的片段覆盖整个 settings 文件。下面的命令会保留现有 packages、模型等其他配置，只修改 compaction，并输出这个字段用于检查：
+模板另有 `.pi/settings.magic-context.example.json` 供参考，它不会自动关闭未安装 Magic Context 的项目的原生压缩。只合并这个字段，不要覆盖整个 settings 文件。从项目根运行以下命令，保留其他配置，只修改 compaction：
 
 ```bash
 python3 - <<'PY'
 import json
 from pathlib import Path
 
-p = Path.home() / ".pi/agent/settings.json"
+p = Path(".pi/settings.json")
 d = json.loads(p.read_text()) if p.exists() else {}
 if not isinstance(d, dict):
     raise SystemExit("Pi settings 必须是 JSON 对象")
@@ -237,6 +237,10 @@ npx @cortexkit/magic-context@latest doctor --harness pi
 | Sidekick | 关闭 |
 
 长期科研记忆继续按[项目接入与配置](installation.md)启用 Research Memory 和 Hindsight。项目身份、bank、来源范围和凭据仍由项目配置管理。关闭 Magic Context 的 memory 不会代替或关闭这条科研记忆链。
+
+项目 Research Memory 同时识别 `PI_SUB_AGENT_DEPTH` 和 `MAGIC_CONTEXT_PI_SUBAGENT`，后台 Historian 与 Reviewer 的提示词不会作为用户来源采集。历史快照放在真实会话之前；工具完成后按版本刷新，同一批工具只扫描一次。Hindsight 默认手工同步精选内容，普通消息不全量上传。
+
+更新项目扩展后，在现有 Pi 会话中执行 `/reload`，或开启新会话，使新的 TS 注入逻辑生效。Python 会先清除旧版扩展的危险注入，保留本地采集；新版扩展握手后恢复历史快照展示。身份隔离和停用设置在下次回调就生效，不需要终止正在运行的实验。
 
 ```text
 当前 Pi 会话上下文

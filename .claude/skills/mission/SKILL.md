@@ -35,6 +35,8 @@ Ordinary work with a clear goal and acceptance criteria does not need mission. E
 
 Once `mission-csv-execute` owns an unfinished CSV, keep routing subsequent progress, explanation, or continue messages to that same execution. Leave only when the CSV reaches a terminal state or the user explicitly pauses, cancels, or changes the task boundary.
 
+Persist that identity in `issues/.missions.json` through `.agents/harness/workflow/mission_state.py`. An explicit pause/cancel is a lifecycle transition with its user source and reason; it does not mark unfinished CSV rows complete or terminate a remote process. A task switch registers the new task with `--replaces <old-task-id>`. Generic recovery never reactivates a cancelled or superseded task. Current applicable user instructions retain priority over research-memory snapshots and pending processing state.
+
 ## Sub-skills
 
 | Skill | Owns |

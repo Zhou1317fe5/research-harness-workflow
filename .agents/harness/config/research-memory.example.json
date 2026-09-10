@@ -10,5 +10,6 @@
   "context_chars": 6500,
   "max_items": 8,
   "hooks_enabled": true,
-  "hindsight_enabled": false
+  "hindsight_enabled": false,
+  "hindsight_auto_sync": false
 }

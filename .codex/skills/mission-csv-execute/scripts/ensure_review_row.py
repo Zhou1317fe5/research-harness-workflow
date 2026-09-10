@@ -12,6 +12,7 @@ import tempfile
 from pathlib import Path
 
 from mission_completion import read_mission_csv
+from csv_state import file_lock
 
 
 COMPAT_FIELDNAMES = [
@@ -40,6 +41,11 @@ def _scope(rows: list[dict[str, str]]) -> str:
 
 def ensure_review_row(path: Path) -> bool:
     path = path.expanduser().resolve()
+    with file_lock(path.with_name("." + path.name + ".lock")):
+        return _ensure_review_row_locked(path)
+
+
+def _ensure_review_row_locked(path: Path) -> bool:
     fieldnames, rows, has_bom = read_mission_csv(path, allow_compat=True)
     if any(row.get("id", "").startswith("REVIEW-") for row in rows):
         return False

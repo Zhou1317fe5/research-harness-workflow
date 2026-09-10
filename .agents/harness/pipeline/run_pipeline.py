@@ -37,6 +37,8 @@ def run_pipeline(config: dict, repo_root: Path, output_root: Path) -> int:
     with marker.open("x", encoding="utf-8") as stream:
         json.dump({"state": "starting"}, stream)
     values = {"repo_root": str(repo_root), "output_root": str(output_root), "run_id": os.environ.get("RRCTL_RUN_ID", "")}
+    # 脚本直接读取本次输出目录；显式 --output-root 同样覆盖继承的旧环境值。
+    environment = {**os.environ, "RRCTL_OUTPUT_ROOT": str(output_root.resolve())}
     try:
         for stage in stages:
             name = stage["name"]
@@ -49,7 +51,7 @@ def run_pipeline(config: dict, repo_root: Path, output_root: Path) -> int:
             log.parent.mkdir(parents=True, exist_ok=True)
             marker.write_text(json.dumps({"state": "running", "stage": name}) + "\n")
             print(f"[pipeline] {name}: started; log={log}", flush=True)
-            with log.open("xb") as stream, subprocess.Popen(argv, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT) as process:
+            with log.open("xb") as stream, subprocess.Popen(argv, cwd=cwd, env=environment, stdout=subprocess.PIPE, stderr=subprocess.STDOUT) as process:
                 assert process.stdout is not None
                 for chunk in iter(lambda: process.stdout.read1(65536), b""):
                     stream.write(chunk)

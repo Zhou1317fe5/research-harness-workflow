@@ -16,6 +16,9 @@ import tempfile
 from pathlib import Path
 from typing import Any, Callable
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[4] / ".agents"))
+from harness.common.locking import file_lock
+
 from mission_completion import EXPECTED_FIELDS, REMOTE_STATES, read_mission_csv
 
 
@@ -333,6 +336,12 @@ def apply_update(
     *,
     replace: Callable[[str | bytes, str | bytes], None] = os.replace,
 ) -> dict[str, Any]:
+    csv_path = csv_path.expanduser().resolve()
+    with file_lock(csv_path.with_name("." + csv_path.name + ".lock")):
+        return _apply_update_locked(csv_path, request, replace=replace)
+
+
+def _apply_update_locked(csv_path, request, *, replace):
     if not isinstance(request, dict):
         raise StateUpdateError("request_invalid: expected object")
     allowed = {
@@ -342,6 +351,7 @@ def apply_update(
         "append_notes",
         "event",
         "commit_boundary",
+        "expected_sha256",
     }
     unknown = sorted(set(request) - allowed)
     if unknown:
@@ -381,6 +391,11 @@ def apply_update(
     if event is not None and not isinstance(event, dict):
         raise StateUpdateError("event_invalid: expected object or null")
 
+    original_hash = hashlib.sha256(csv_path.read_bytes()).hexdigest()
+    expected_hash = request.get("expected_sha256")
+    if expected_hash is not None and (not isinstance(expected_hash, str)
+            or not re.fullmatch(r"[0-9a-f]{64}", expected_hash) or expected_hash != original_hash):
+        raise StateUpdateError("csv_version_conflict: CSV 已更新，请基于新版本重试")
     rows, has_bom = _read_csv(csv_path)
     missing_fields = sorted(set(updates) - set(rows[0]))
     if missing_fields:
@@ -425,6 +440,8 @@ def apply_update(
     _validate_single_prerun(rows, row_id)
     _validate_claims(csv_path, rows)
     csv_bytes = _encode_csv(rows, has_bom)
+    if hashlib.sha256(csv_path.read_bytes()).hexdigest() != original_hash:
+        raise StateUpdateError("csv_version_conflict: CSV 被其他写者修改")
 
     if event is not None:
         events: list[Any] = []
@@ -468,6 +485,7 @@ def apply_update(
         "row": dict(target),
         "rows_total": len(rows),
         "columns": len(rows[0]),
+        "csv_sha256": hashlib.sha256(csv_bytes).hexdigest(),
     }
 
 

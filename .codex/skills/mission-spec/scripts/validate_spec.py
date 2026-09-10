@@ -11,7 +11,7 @@ from datetime import date, datetime
 from pathlib import Path
 
 
-ALLOWED_KEYS = ("mission", "status", "created", "approved_at")
+ALLOWED_KEYS = ("mission", "status", "created", "approved_at", "approval_mode", "approval_source")
 REQUIRED_SECTIONS = ("Goal", "Scope", "Design", "Acceptance Criteria")
 KEY_VALUE_RE = re.compile(r"^([A-Za-z][A-Za-z0-9_-]*):[ \t]+([^\r\n]+)$")
 ISO_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
@@ -120,6 +120,13 @@ def validate_text(text: str) -> tuple[dict[str, str], list[str]]:
             errors.append("approved_at must be an RFC 3339 timestamp with timezone")
     elif status == "draft" and "approved_at" in metadata:
         errors.append("draft spec must not contain approved_at")
+    approval_mode = metadata.get("approval_mode", "explicit")
+    if approval_mode not in {"explicit", "delegated"}:
+        errors.append("approval_mode must be explicit or delegated")
+    if approval_mode == "delegated" and not metadata.get("approval_source", "").strip():
+        errors.append("delegated approval requires approval_source")
+    if "approval_source" in metadata and len(metadata["approval_source"]) > 1000:
+        errors.append("approval_source must be a bounded source reference")
 
     body = "\n".join(lines[closing + 1 :])
     for section in REQUIRED_SECTIONS:

@@ -199,6 +199,15 @@ claim_ledger:<stem>.claims.json; claims:CLAIM-001,CLAIM-002; claim_coverage:X/Y;
 
 ## Phase 4：生成后摘要
 
+CSV 已落盘后，把它绑定到 spec 阶段登记的任务：
+
+```bash
+python .agents/harness/workflow/mission_state.py bind --task-id <SpecID> --csv issues/<stem>/<stem>.csv --source-ref <approved-spec-path>
+```
+
+旧项目尚未登记该任务时，先用 `register --task-id <SpecID> --spec <approved-spec-path> --source-ref <approval-source>`。
+恢复依据使用这个当前指针；任务生命周期不替代 CSV 行状态或实验验收。
+
 ```
 生成完成
 - 快照: issues/<stem>/<stem>.csv

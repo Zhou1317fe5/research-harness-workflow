@@ -10,6 +10,9 @@ import sys
 from pathlib import Path
 from typing import Any
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[4] / ".agents"))
+from harness.workflow.mission_state import assert_launchable
+
 
 SCHEMA_VERSION = "mission.remote-route.v1"
 OWNERS = {None, "rrctl", "legacy"}
@@ -956,9 +959,17 @@ def _load_json(path: str) -> Any:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("request", help="Route request JSON path, or - for stdin")
+    parser.add_argument("--csv", type=Path, help="核验对应任务的生命周期后允许新的远程运行")
+    parser.add_argument("--repo-root", type=Path, default=Path.cwd())
     args = parser.parse_args()
     try:
         result = decide_remote_route(_load_json(args.request))
+        if args.csv and result["decision"] == "proceed":
+            try:
+                assert_launchable(args.repo_root, args.csv)
+            except ValueError as error:
+                result.update(actionable=False, decision="blocked", route=None,
+                              reason_codes=["mission_not_active"], errors=[str(error)])
     except (OSError, UnicodeError, json.JSONDecodeError) as error:
         result = {
             "schema_version": SCHEMA_VERSION,
