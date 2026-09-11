@@ -154,7 +154,25 @@ python .agents/harness/workflow/mission_state.py transition --task-id <task-id> 
 
 Hindsight 可以辅助寻找较远的历史材料，但检索到相似内容后，仍要核对来源和适用条件。它的[官方安装仓库与接入方法](installation.md#可选-hindsight)在配置教程里，本地记录功能也能独立使用。
 
-Hindsight 默认关闭自动同步。启用后，远端只接收已整理的精简记录和明确发布的完成版分析；普通消息和后台 Historian 提示词留在采集边界之外。需要同步时运行 `research_memory.py sync`，需要查历史时再 recall。
+Hindsight 默认关闭自动同步。启用后，远端只接收已整理的精简记录和明确发布的完成版分析；普通对话保留本地，后台 Historian 提示词不采集。需要同步时运行 `research_memory.py sync`，需要查历史时再 recall。
+
+实验较多时，可以一次预览并发布多份主分析。从项目根先运行：
+
+```bash
+python .agents/harness/memory/research_memory.py publish-batch
+```
+
+默认仅选择各实验的 `analysis/analysis.md`，也可追加多个 `--exp-id <ExpID>` 缩小范围。程序检查敏感信息、草稿与原始对话/日志标记、四段分析结构和文件大小，排除未通过检查的文件，并跳过内容及来源身份未变的已同步版本。附件、原始会话、日志和草稿不进入本批。
+
+这一步不联网、不入队。返回的 `preview_path` 包含完整清单和各文件的冻结副本。检查结果只能辅助审阅；agent 应先展示清单与排除项，由用户确认一次，再执行：
+
+```bash
+python .agents/harness/memory/research_memory.py publish-batch --confirm <BATCH_ID> --sync
+```
+
+确认后整批入队并只同步这一批；省略 `--sync` 则只入队。分析、来源身份或预览副本改变时，旧清单不能发布新内容。文件保存与 Git 提交无法可靠表示分析已定稿，因此不启用自动发布。
+
+同步默认有 120 秒预算，超过 20 份自动分轮。查看 `complete` 和 `queue`，`submitted` 表示远端仍在处理。需要继续时运行 `python .agents/harness/memory/research_memory.py sync --batch <BATCH_ID> --seconds 120`，沿用同一确认，无需逐篇重新 publish。预览与确认记录只保存在本地控制目录，不写入研究台账。手工命令的凭据加载见[Hindsight 配置](installation.md#可选-hindsight)。
 
 若状态文件被恢复到旧版本，记忆程序会报告投影冲突。用 `research_memory.py recover --repair-projections` 核对并修复受管理区域，不用 `git restore` 撤销新的用户决定。
 

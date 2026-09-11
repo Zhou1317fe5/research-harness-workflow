@@ -430,18 +430,30 @@ class Memory:
             document = state["documents"].get(relative)
             if not document or document.get("deleted"):
                 raise MemoryError("分析尚未登记；先 watch 对应 Markdown 来源")
-            eid = document["event_id"]
-            source, event = self.get(eid), state["events"][eid]
-            if (source["sensitive"] or source["truncated"] or event.get("quarantined")
-                    or source.get("source_role") in {"oversized_source", "unreadable_source", "deleted_source"}):
-                raise MemoryError("来源不可发布；需使用不含敏感信息的精简分析")
-            event.update(disposition="recorded", references=[relative], processed_at=now())
-            self._job(state, "document:" + relative, source["text"], {
-                "event_id": eid, "source_role": "analysis", "source_ref": relative,
-                "content_sha256": source["content_sha256"], "processing_state": "recorded",
-                "sync_policy": SYNC_POLICY,
-            })
+            eid = self._publish_document(state, relative)
         return {"published": relative, "event_id": eid}
+
+    def _publish_document(self, state, relative):
+        from harness.memory.analysis_publication import publication_issues
+        eid = state["documents"][relative]["event_id"]
+        source, event = self.get(eid), state["events"][eid]
+        if (source["sensitive"] or source["truncated"] or event.get("quarantined")
+                or source.get("source_role") in {"oversized_source", "unreadable_source", "deleted_source"}):
+            raise MemoryError("来源不可发布；需使用不含敏感信息的精简分析")
+        if publication_issues(relative, source.get("text") or ""):
+            raise MemoryError("来源包含敏感信息、草稿或原始对话/日志标记，不可发布")
+        path = self.safe_path(relative)
+        with path.open("rb") as stream:
+            current = stream.read(MAX_SNAPSHOT + 1)
+        if digest(current) != source["content_sha256"]:
+            raise MemoryError("来源已变化，需重新预览或 scan 后发布")
+        event.update(disposition="recorded", references=[relative], processed_at=now())
+        self._job(state, "document:" + relative, source["text"], {
+            "event_id": eid, "source_role": "analysis", "source_ref": relative,
+            "content_sha256": source["content_sha256"], "processing_state": "recorded",
+            "sync_policy": SYNC_POLICY,
+        })
+        return eid
 
     def quarantine(self, event_ids, reason):
         """按明确事件列表隔离污染，原始事件文件保留供审计和恢复。"""
@@ -510,9 +522,9 @@ class Memory:
                                  extra={"session_id": session_id, "turn_id": turn_id,
                                         "message_id": event_id, "occurred_at": occurred_at})
 
-    def _source(self, path):
+    def _source(self, path, *, raw=None):
         relative = path.relative_to(self.root).as_posix()
-        raw = path.read_bytes()
+        raw = path.read_bytes() if raw is None else raw
         repo = git(path.parent, "rev-parse", "--show-toplevel")
         commit = git(path.parent, "rev-parse", "HEAD")
         local = path.relative_to(repo).as_posix() if repo else relative
@@ -574,6 +586,31 @@ class Memory:
                 metadata["identity_pending"] = "record.json 尚不可用；SpecID、Branch、Commit、RunID 待补"
         return text, metadata
 
+    @staticmethod
+    def document_semantics(metadata):
+        return {k: v for k, v in metadata.items()
+                if k not in {"occurred_at", "source_commit", "source_git_state"}}
+
+    def _register_document(self, state, relative, text, metadata, signature=None, disposition="pending"):
+        semantic = self.document_semantics(metadata)
+        key = ["document", relative, semantic, digest(text.encode())]
+        old = state["documents"].get(relative, {}).get("event_id")
+        previous = state["events"].get(old, {})
+        same_content = previous.get("content_sha256") == digest(text.encode()) and all(
+            previous.get(name) == value for name, value in semantic.items())
+        eid = old if same_content else self._capture(state, "document", text, relative, key,
+                                                    extra=metadata, disposition=disposition)
+        if old and old != eid:
+            state["events"][old]["superseded_by_event"] = eid
+        state["events"][eid].pop("superseded_by_event", None)
+        state["documents"][relative] = {"signature": signature, "event_id": eid,
+                                         "observed_commit": metadata.get("source_commit", ""),
+                                         "observed_git_state": metadata.get("source_git_state")}
+        job_key = digest([self.config["project_id"], "document:" + relative])[:32]
+        if old != eid and job_key in state["jobs"]:
+            state["jobs"][job_key]["state"] = "stale"
+        return eid, old != eid
+
     def scan(self):
         paths = set()
         for pattern in self.config["sources"]:
@@ -626,30 +663,11 @@ class Memory:
                             "source_commit": commit, "error_type": type(error).__name__,
                             "file_signature": json.dumps(signature),
                         }
-                semantic = {k: v for k, v in metadata.items()
-                            if k not in {"occurred_at", "source_commit", "source_git_state"}}
-                key = ["document", relative, semantic, digest(text.encode())]
                 unavailable = metadata["source_role"] in {"oversized_source", "unreadable_source"}
                 disposition = "observed" if relative in PROJECTION_SOURCES else "waiting" if unavailable else "pending"
-                old = state["documents"].get(relative, {}).get("event_id")
-                previous = state["events"].get(old, {})
-                same_content = previous.get("content_sha256") == digest(text.encode()) and all(
-                    previous.get(name) == value for name, value in semantic.items())
-                eid = old if same_content else self._capture(state, "document", text, relative, key, extra=metadata,
-                                                             disposition=disposition)
-                if old and old != eid:
-                    state["events"][old]["superseded_by_event"] = eid
-                state["events"][eid].pop("superseded_by_event", None)
-                state["documents"][relative] = {"signature": signature, "event_id": eid,
-                                                 "observed_commit": commit,
-                                                 "observed_git_state": metadata.get("source_git_state")}
-                if old == eid:
-                    continue
-                # 新内容须再次显式发布；旧远端候选立即失效，不自动重处理整篇文档。
-                job_key = digest([self.config["project_id"], "document:" + relative])[:32]
-                if job_key in state["jobs"]:
-                    state["jobs"][job_key]["state"] = "stale"
-                changed.append(eid)
+                eid, updated = self._register_document(state, relative, text, metadata, signature, disposition)
+                if updated:
+                    changed.append(eid)
             for relative, document in list(state["documents"].items()):
                 if document.get("deleted") or self.safe_path(relative).exists():
                     continue
@@ -1261,14 +1279,22 @@ class Memory:
         self.scan()
         return result
 
-    def sync(self, client=None, *, limit=4):
+    def sync(self, client=None, *, limit=4, job_revisions=None, budget_seconds=50):
         if not self.config["hindsight_enabled"]:
             return {"enabled": False, "attempted": 0}
         from harness.memory.hindsight_mcp import HindsightMCP, unpack_result
+        from harness.memory.analysis_publication import _payload, payload_allowed
         if type(limit) is not int or not 1 <= limit <= 20:
             raise MemoryError("单次同步 limit 必须在 1 到 20 之间")
+        if not isinstance(budget_seconds, (int, float)) or not 0 < budget_seconds <= 50:
+            raise MemoryError("同步预算必须在 0 到 50 秒之间")
+        if job_revisions is not None and (not isinstance(job_revisions, dict) or any(
+                not re.fullmatch(r"[0-9a-f]{32}", key) or not re.fullmatch(r"[0-9a-f]{64}", value)
+                for key, value in job_revisions.items())):
+            raise MemoryError("定向同步需要有效的对象与版本映射")
         attempted = completed = 0
-        deadline = time.monotonic() + 50
+        attempted_keys, skipped_keys = [], []
+        deadline = time.monotonic() + budget_seconds
         lock = (self.store / "sync.lock").open("a")
         owned = client is None
         try:
@@ -1278,33 +1304,54 @@ class Memory:
                 return {"enabled": True, "attempted": 0, "busy": True}
             if owned:
                 client = HindsightMCP.from_env(timeout=8)
-            with self.locked() as state:
+            with self.locked(replay=False) as state:
                 if self.projection_conflicts(state) or any(t["state"] == "prepared" for t in state["transactions"].values()):
                     raise MemoryError("投影尚未一致，暂不发布远端记忆")
                 # 手工同步时补齐已整理条目，兼容升级前已完成的本地决定。
-                for eid, event in state["events"].items():
-                    if event.get("record_ids") and event["disposition"] == "recorded":
-                        self._event_job(state, eid)
+                if job_revisions is None:
+                    for eid, event in state["events"].items():
+                        if event.get("record_ids") and event["disposition"] == "recorded":
+                            self._event_job(state, eid)
                 keys = sorted(
                     (key for key, job in state["jobs"].items() if job.get("policy") == SYNC_POLICY
-                     and job["state"] in {"pending", "submitted"}),
+                     and job["state"] in {"pending", "submitted"}
+                     and (job_revisions is None or job_revisions.get(key) == job["revision"])),
                     key=lambda key: state["jobs"][key].get("last_attempt_at", state["jobs"][key]["updated_at"]),
                 )[:limit]
             for key in keys:
                 if time.monotonic() >= deadline:
                     break
-                with self.locked() as state:
-                    job = dict(state["jobs"][key])
-                inflight = job.get("inflight")
-                version = inflight["revision"] if inflight else job["revision"]
-                payload = json.loads((self.store / "outbox" / (key + "-" + version + ".json")).read_text())
-                attempted += 1
                 try:
                     # 先记录发送意图。请求超时或提交后进程退出时，先确认同一旧版本，
                     # 避免把尚未完成的旧写入与较新的版本交错发送。
-                    with self.locked() as state:
+                    with self.locked(replay=False) as state:
+                        job = dict(state["jobs"][key])
+                        if (job["state"] not in {"pending", "submitted"} or
+                                (job_revisions is not None and job_revisions.get(key) != job["revision"])):
+                            skipped_keys.append(key)
+                            continue
+                        current_payload = _payload(self, key, job["revision"])
+                        if not payload_allowed(self, state, key, job["revision"], current_payload):
+                            state["jobs"][key].update(state="stale", error="publication_no_longer_valid")
+                            skipped_keys.append(key)
+                            continue
+                        inflight = job.get("inflight")
+                        version = inflight["revision"] if inflight else job["revision"]
+                        payload = current_payload
+                        if version != job["revision"] and not inflight.get("operation_id"):
+                            if job_revisions is not None:
+                                state["jobs"][key]["error"] = "prior_inflight_unresolved"
+                                skipped_keys.append(key)
+                                continue
+                            payload = _payload(self, key, version)
+                            if not payload_allowed(self, state, key, version, payload, current=False):
+                                state["jobs"][key]["error"] = "prior_inflight_not_curated"
+                                skipped_keys.append(key)
+                                continue
                         state["jobs"][key]["inflight"] = inflight or {"revision": version, "operation_id": None}
                         state["jobs"][key]["last_attempt_at"] = now()
+                    attempted += 1
+                    attempted_keys.append(key)
                     if inflight and inflight.get("operation_id"):
                         response = unpack_result(client.call("get_operation", {"operation_id": inflight["operation_id"]}))
                     else:
@@ -1313,36 +1360,45 @@ class Memory:
                         raise MemoryError("同步返回值缺少结构化状态")
                     status = response.get("status") or response.get("state")
                     operation = response.get("operation_id")
-                    with self.locked() as state:
+                    with self.locked(replay=False) as state:
                         current = state["jobs"][key]
+                        invalidated = current["state"] in {"stale", "quarantined"}
                         current["attempts"] += 1
                         current.pop("error", None)
                         if status in {"completed", "success", "succeeded"}:
                             current["inflight"] = None
-                            current["state"] = "synced" if current["revision"] == version else "pending"
+                            if not invalidated:
+                                current["state"] = "synced" if current["revision"] == version else "pending"
                             completed += 1
                         elif status in {"failed", "cancelled", "canceled"}:
-                            current["state"] = "pending"
+                            if not invalidated:
+                                current["state"] = "pending"
                             current["inflight"] = None
                             current["error"] = "remote_operation_" + status
                         elif operation or inflight:
                             current["inflight"] = {"operation_id": operation or (inflight or {}).get("operation_id"),
                                                    "revision": version}
-                            current["state"] = "submitted" if current["inflight"]["operation_id"] else "pending"
+                            if not invalidated:
+                                current["state"] = "submitted" if current["inflight"]["operation_id"] else "pending"
                         else:
-                            current["state"] = "pending"
+                            if not invalidated:
+                                current["state"] = "pending"
                             current["error"] = "completion_unverified"
                 except Exception as error:
-                    with self.locked() as state:
+                    if key not in attempted_keys:
+                        skipped_keys.append(key)
+                    with self.locked(replay=False) as state:
                         state["jobs"][key]["error"] = type(error).__name__
                         state["jobs"][key]["attempts"] += 1
         except Exception as error:
-            return {"enabled": True, "attempted": attempted, "error_type": type(error).__name__}
+            return {"enabled": True, "attempted": attempted, "error_type": type(error).__name__,
+                    "attempted_keys": attempted_keys, "skipped_keys": skipped_keys}
         finally:
             if owned and client is not None:
                 client.close()
             lock.close()
-        return {"enabled": True, "attempted": attempted, "completed": completed}
+        return {"enabled": True, "attempted": attempted, "completed": completed,
+                "attempted_keys": attempted_keys, "skipped_keys": skipped_keys}
 
     def remote_search(self, query, client=None, *, history=False, kind=None, scope=None, status=None, protocol=None):
         if not self.config["hindsight_enabled"] or not query or sensitive(query):
@@ -1433,9 +1489,17 @@ def main():
     commands.add_parser("process", help="从 stdin 读取明确的处理结果")
     publish = commands.add_parser("publish", help="显式选择分析 Markdown 进入同步队列")
     publish.add_argument("source")
+    batch = commands.add_parser("publish-batch", help="预览各实验主分析；确认固定清单后批量发布")
+    batch.add_argument("--exp-id", action="append", dest="exp_ids", help="仅选择指定实验，可重复")
+    batch.add_argument("--confirm", metavar="BATCH_ID", help="确认已审阅的固定预览清单")
+    batch.add_argument("--sync", action="store_true", help="确认入队后只同步本批")
+    batch.add_argument("--seconds", type=int, default=120, help="本批同步的单次时间预算")
+    batch.add_argument("--limit", type=int, default=20, help="终端预览行数；完整清单保存在预览目录")
     commands.add_parser("quarantine", help="从 stdin 接收 event_ids 和 reason，隔离已核对的污染来源")
     sync = commands.add_parser("sync")
     sync.add_argument("--limit", type=int, default=4)
+    sync.add_argument("--batch", help="只推进已确认批次，不重新发布或扩大选择")
+    sync.add_argument("--seconds", type=int, default=120, help="批量同步的单次时间预算")
     recall = commands.add_parser("recall")
     recall.add_argument("query")
     recall.add_argument("--history", action="store_true")
@@ -1488,6 +1552,20 @@ def main():
             result = {"record_ids": memory.process(read_json_input())}
         elif args.command == "publish":
             result = memory.publish(args.source)
+        elif args.command == "publish-batch":
+            from harness.memory.analysis_publication import confirm, preview, sync_batch
+            if args.sync and not args.confirm:
+                raise MemoryError("先预览并取得用户确认，再使用 --confirm BATCH_ID --sync")
+            if args.confirm and args.exp_ids:
+                raise MemoryError("确认已有清单时不能改变实验选择；请重新预览")
+            if args.sync and not 1 <= args.seconds <= 900:
+                raise MemoryError("批量同步 seconds 必须在 1 到 900 之间")
+            if args.confirm:
+                result = confirm(memory, args.confirm)
+                if args.sync:
+                    result["sync"] = sync_batch(memory, args.confirm, seconds=args.seconds)
+            else:
+                result = preview(memory, exp_ids=args.exp_ids, limit=args.limit)
         elif args.command == "quarantine":
             payload = read_json_input()
             if not isinstance(payload, dict) or set(payload) != {"event_ids", "reason"}:
@@ -1496,7 +1574,13 @@ def main():
         elif args.command == "sync":
             if not 1 <= args.limit <= 20:
                 raise MemoryError("单次同步 limit 必须在 1 到 20 之间")
-            result = memory.sync(limit=args.limit)
+            if args.batch:
+                from harness.memory.analysis_publication import sync_batch
+                if args.limit != 4:
+                    raise MemoryError("sync --batch 使用完整已确认清单和 --seconds 预算，不使用 --limit")
+                result = sync_batch(memory, args.batch, seconds=args.seconds)
+            else:
+                result = memory.sync(limit=args.limit)
         elif args.command == "recall":
             memory.scan()
             records = memory.records(args.query, history=args.history, kind=args.kind, scope=args.scope,
@@ -1512,6 +1596,10 @@ def main():
                 atomic(memory.config_path, memory.config)
             result = {"watched": source, "events": memory.scan()}
         print(json.dumps(result, ensure_ascii=False))
+        sync_result = result.get("sync", result) if isinstance(result, dict) else {}
+        if args.command in {"publish-batch", "sync"} and (
+                sync_result.get("error_type") or sync_result.get("queue", {}).get("blocked")):
+            return 2
         return 0
     except Exception as error:
         # 异常可能带远端响应或私密来源，不回显异常正文。
