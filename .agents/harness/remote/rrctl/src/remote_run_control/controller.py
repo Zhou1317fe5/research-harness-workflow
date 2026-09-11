@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 import shutil
@@ -16,7 +17,7 @@ from typing import Any
 
 from .artifacts import load_artifact_manifest
 from .errors import RRCError
-from .jsonutil import atomic_write_json, load_json, sha256_file
+from .jsonutil import atomic_write_json, load_json, sha256_file, sha256_json
 from .models import RunSpec
 from .profiles import DEFAULT_PROFILE_PATH, ProfileStore
 from .readiness import ReadinessResult, validate_run_spec
@@ -150,7 +151,7 @@ class Controller:
             transport = transport_for(result.profile)
             output["remote_preflight"] = transport.preflight(
                 python=spec.remote.python,
-                conda_sh=spec.environment.conda_sh,
+                environment=spec.environment,
             )
         elif offline:
             output["remote_preflight"] = "skipped"
@@ -166,12 +167,12 @@ class Controller:
                 details=result.to_dict(),
             )
         transport = transport_for(result.profile)
-        transport.preflight(python=spec.remote.python, conda_sh=spec.environment.conda_sh)
+        transport.preflight(python=spec.remote.python, environment=spec.environment)
         return result, transport
 
     def _create_bundle(self, spec: RunSpec, destination: Path) -> str:
         repo = Path(spec.source.repo_root)
-        temporary_ref = f"refs/heads/rrctl-{spec.run_id}"
+        temporary_ref = f"refs/heads/rrctl-{sha256_json(spec.run_id)[:24]}"
         try:
             subprocess.run(
                 ["git", "-C", str(repo), "update-ref", temporary_ref, spec.source.commit],
@@ -299,9 +300,15 @@ class Controller:
             transport_bundle_sha256=bundle_sha,
         )
 
-    def launch(self, spec: RunSpec) -> dict[str, Any]:
+    def launch(self, spec: RunSpec, *, max_wait_seconds: float = 900) -> dict[str, Any]:
+        if not math.isfinite(max_wait_seconds) or max_wait_seconds < 0:
+            raise RRCError(
+                "launch_budget", "max-wait must be nonnegative finite seconds", "observer"
+            )
         readiness, transport = self._require_ready(spec)
         ref = self._stage(spec, readiness, transport)
+        # 启动失败也保留恢复定位，允许通过同一控制面拉取诊断。
+        self.index.save(ref, spec)
         result = transport.run(
             [
                 ref.remote_python,
@@ -316,7 +323,12 @@ class Controller:
         )
         self.index.save(ref, spec, launched)
         try:
-            deadline = time.monotonic() + spec.health.first_step.timeout_seconds
+            budget = (
+                min(spec.health.first_step.timeout_seconds, max_wait_seconds)
+                if max_wait_seconds
+                else spec.health.first_step.timeout_seconds
+            )
+            deadline = time.monotonic() + budget
             last: dict[str, Any] | None = None
             while time.monotonic() < deadline:
                 inspected = self.inspect(spec.run_id)
@@ -342,19 +354,9 @@ class Controller:
                         details=inspected,
                     )
                 last = self.health(spec.run_id, phase="first_step")
-                health_status = self._health_status(last)
-                if health_status != "unhealthy":
+                if self._health_status(last) != "unhealthy" and last.get("gate_passed") is True:
                     return {"launch": launched, "first_step": last}
                 time.sleep(spec.health.first_step.poll_interval_seconds)
-            if last is not None and self._health_status(last) == "unhealthy":
-                self._fail_and_reap(spec.run_id, "authoritative_first_step_unhealthy")
-                raise RRCError(
-                    "first_step_health",
-                    "remote authoritative first-step health stayed unhealthy "
-                    "for the full gate window",
-                    "health",
-                    details=last,
-                )
             raise RRCError(
                 "first_step_observer_timeout",
                 "first-step observation ended without an authoritative pass; "
@@ -385,7 +387,11 @@ class Controller:
         return value
 
     def health(self, run_id: str, *, phase: str) -> dict[str, Any]:
-        ref, _, transport = self._runtime(run_id)
+        ref, spec, transport = self._runtime(run_id)
+        if spec.session.backend != "process":
+            raise RRCError(
+                "legacy_backend_read_only", "use inspect/pull for frozen legacy runs", "observer"
+            )
         result = transport.run(
             [
                 ref.remote_python,
@@ -409,6 +415,8 @@ class Controller:
     @staticmethod
     def _raise_observer_error(run_id: str, exc: BaseException) -> None:
         if isinstance(exc, RRCError):
+            if exc.code == "transport_timeout":
+                exc.details.update({"run_id": run_id, "remote_workload_preserved": True})
             raise exc
         raise RRCError(
             "observer_detached",
@@ -426,7 +434,7 @@ class Controller:
         )
         return _parse_worker_result(result, phase=phase, secret_values=transport.secret_values)
 
-    def _fail_and_reap(self, run_id: str, reason: str) -> dict[str, Any]:
+    def _fail_completed_workload(self, run_id: str, reason: str) -> dict[str, Any]:
         ref, _, transport = self._runtime(run_id)
         inspected: dict[str, Any] | None = None
         with suppress(RRCError):
@@ -434,29 +442,22 @@ class Controller:
         state = inspected.get("status", {}).get("state") if isinstance(inspected, dict) else None
         if state in {"failed", "aborted", "completed"}:
             return inspected or {"state": state}
-        command = (
-            [
-                ref.remote_python,
-                ref.worker_path,
-                "fail-completed",
-                "--control",
-                ref.control_root,
-                "--reason",
-                reason,
-            ]
-            if state == "workload_complete"
-            else [
-                ref.remote_python,
-                ref.worker_path,
-                "abort",
-                "--control",
-                ref.control_root,
-                "--terminal-state",
-                "failed",
-                "--reason",
-                reason,
-            ]
-        )
+        if state != "workload_complete":
+            raise RRCError(
+                "completion_state_unknown",
+                "completion failure cannot mutate an active or unobserved run",
+                "observer",
+                details={"remote_workload_preserved": True, "run_id": run_id},
+            )
+        command = [
+            ref.remote_python,
+            ref.worker_path,
+            "fail-completed",
+            "--control",
+            ref.control_root,
+            "--reason",
+            reason,
+        ]
         result = transport.run(command)
         return _parse_worker_result(
             result, phase="monitor_cleanup", secret_values=transport.secret_values
@@ -473,7 +474,7 @@ class Controller:
                 self._worker_lifecycle_command(run_id, ["complete"], phase="complete")
                 return self.inspect(run_id)
             if status == "unhealthy":
-                self._fail_and_reap(run_id, "authoritative_completion_unhealthy")
+                self._fail_completed_workload(run_id, "authoritative_completion_unhealthy")
                 raise RRCError(
                     "completion_health",
                     "remote authoritative completion health failed",
@@ -489,13 +490,40 @@ class Controller:
             details={"last": last, "remote_state_preserved": True},
         )
 
-    def wait(self, run_id: str, *, poll_seconds: float | None = None) -> dict[str, Any]:
+    def wait(
+        self,
+        run_id: str,
+        *,
+        poll_seconds: float | None = None,
+        max_wait_seconds: float = 900,
+    ) -> dict[str, Any]:
         _, spec, _ = self._runtime(run_id)
-        interval = poll_seconds or spec.health.periodic.poll_interval_seconds
+        interval = 600 if poll_seconds is None else poll_seconds
+        if (
+            not math.isfinite(interval)
+            or interval <= 0
+            or not math.isfinite(max_wait_seconds)
+            or max_wait_seconds < 0
+        ):
+            raise RRCError(
+                "wait_budget",
+                "poll must be positive and max-wait must be nonnegative finite seconds",
+                "observer",
+            )
+        deadline = time.monotonic() + max_wait_seconds if max_wait_seconds else None
         try:
             while True:
                 value = self.inspect(run_id)
                 state = value["status"]["state"]
+                if spec.session.backend != "process":
+                    if state in {"completed", "failed", "aborted"}:
+                        return value
+                    raise RRCError(
+                        "legacy_backend_read_only",
+                        "legacy run preserved; inspect its frozen control state",
+                        "observer",
+                        details={"run_id": run_id, "remote_workload_preserved": True},
+                    )
                 if state == "workload_complete":
                     return self._finalize_completed_workload(run_id)
                 if state == "completed":
@@ -512,7 +540,15 @@ class Controller:
                     return value
                 if state in {"failed", "aborted"}:
                     return value
-                periodic = self.health(run_id, phase="periodic")
+                if deadline is not None and time.monotonic() >= deadline:
+                    return {
+                        **value,
+                        "observation": "timeout",
+                        "remote_workload_preserved": True,
+                        "resume_argv": ["rrctl", "wait", run_id],
+                    }
+                phase = "first_step" if state == "launched" else "periodic"
+                periodic = self.health(run_id, phase=phase)
                 if self._health_status(periodic) == "unhealthy":
                     rechecked = self.inspect(run_id)
                     rechecked_state = rechecked["status"]["state"]
@@ -531,7 +567,12 @@ class Controller:
                             "explicit_abort_required": True,
                         },
                     )
-                time.sleep(interval)
+                delay = (
+                    min(interval, max(0, deadline - time.monotonic()))
+                    if deadline is not None
+                    else interval
+                )
+                time.sleep(delay)
         except BaseException as exc:
             self._raise_observer_error(run_id, exc)
 
@@ -556,12 +597,37 @@ class Controller:
             manifest_path.write_bytes(manifest_bytes)
             manifest = load_artifact_manifest(manifest_path, expected_run_id=run_id)
         diagnostic_only = (
-            not diagnostic and destination.is_dir() and not destination.is_symlink()
+            not diagnostic
+            and destination.is_dir()
+            and not destination.is_symlink()
             and {path.name for path in destination.iterdir()} == {"diagnostics"}
             and (destination / "diagnostics").is_dir()
             and not (destination / "diagnostics").is_symlink()
         )
         if destination.exists() and not diagnostic_only:
+            existing_manifest = destination / "artifact_manifest.json"
+            if (
+                not destination.is_symlink()
+                and existing_manifest.is_file()
+                and not existing_manifest.is_symlink()
+            ):
+                existing = load_artifact_manifest(existing_manifest, expected_run_id=run_id)
+                if sha256_json(existing) == sha256_json(manifest) and all(
+                    (destination / item["path"]).is_file()
+                    and not (destination / item["path"]).is_symlink()
+                    and (destination / item["path"]).resolve().is_relative_to(destination.resolve())
+                    and (destination / item["path"]).stat().st_size == item["size"]
+                    and sha256_file(destination / item["path"]) == item["sha256"]
+                    for item in manifest["entries"]
+                ):
+                    return {
+                        "run_id": run_id,
+                        "destination": str(destination),
+                        "entries": len(manifest["entries"]),
+                        "diagnostic": diagnostic,
+                        "reused": True,
+                        "layout": "diagnostic_snapshot" if diagnostic else "artifacts",
+                    }
             raise RRCError(
                 "pull_collision",
                 f"local artifact destination already exists: {destination}",
@@ -587,10 +653,9 @@ class Controller:
                     )
             atomic_write_json(temporary / "artifact_manifest.json", manifest)
             if diagnostic_only:
-                if (
-                    {path.name for path in destination.iterdir()} != {"diagnostics"}
-                    or (temporary / "diagnostics").exists()
-                ):
+                if {path.name for path in destination.iterdir()} != {"diagnostics"} or (
+                    temporary / "diagnostics"
+                ).exists():
                     raise RRCError("pull_collision", "destination changed during pull", "artifact")
                 os.replace(destination / "diagnostics", temporary / "diagnostics")
                 try:
@@ -610,6 +675,8 @@ class Controller:
             "destination": str(destination),
             "entries": len(manifest["entries"]),
             "diagnostic": diagnostic,
+            "reused": False,
+            "layout": "diagnostic_snapshot" if diagnostic else "artifacts",
         }
 
     def resume(self, *, profile_name: str, control_root: str) -> dict[str, Any]:
@@ -700,7 +767,14 @@ class Controller:
     def abort(self, run_id: str, *, confirmed: bool) -> dict[str, Any]:
         if not confirmed:
             raise RRCError("abort_confirmation", "abort requires explicit --yes", "ownership")
-        ref, _, transport = self._runtime(run_id)
+        ref, spec, transport = self._runtime(run_id)
+        if spec.session.backend != "process":
+            raise RRCError(
+                "legacy_backend_read_only",
+                "legacy runs can be inspected and pulled; "
+                "process ownership is required for new lifecycle mutations",
+                "ownership",
+            )
         result = transport.run(
             [ref.remote_python, ref.worker_path, "abort", "--control", ref.control_root]
         )

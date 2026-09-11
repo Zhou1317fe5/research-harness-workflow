@@ -2,18 +2,19 @@
 
 from __future__ import annotations
 
-import os
 import re
 import subprocess
 import time
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
 from .adapter import AdapterResult, run_adapter
+from .environment import activation_argv, make_environment
 from .errors import RRCError
 from .jsonutil import append_jsonl, atomic_write_json, load_json, utc_now
 from .models import HealthPhaseSpec, RunSpec
+from .processes import owned_processes, probe_bound_process
 from .state import control_lock, mark_first_step_passed, read_status
 
 
@@ -27,6 +28,7 @@ class HealthResult:
     adapter: AdapterResult | None = None
     status: str = "healthy"
     degraded_reasons: tuple[str, ...] = ()
+    gate_passed: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -39,6 +41,7 @@ class HealthResult:
             "errors": list(self.errors),
             "degraded_reasons": list(self.degraded_reasons),
             "adapter": self.adapter.to_dict() if self.adapter else None,
+            "gate_passed": self.gate_passed,
         }
 
 
@@ -48,36 +51,21 @@ def _file_age(path: Path, now: float) -> float | None:
     return max(0.0, now - path.stat().st_mtime)
 
 
-def _pid_has_run_id(pid: int, run_id: str) -> bool:
-    try:
-        environ = (Path("/proc") / str(pid) / "environ").read_bytes().split(b"\0")
-    except (FileNotFoundError, PermissionError, ProcessLookupError):
-        return False
-    marker = f"RRCTL_RUN_ID={run_id}".encode()
-    return marker in environ
-
-
-def _session_exists(name: str) -> bool:
-    return (
-        subprocess.run(
-            ["tmux", "has-session", "-t", name],
-            check=False,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        ).returncode
-        == 0
-    )
-
-
-def _sample_gpu() -> int | None:
+def _sample_gpu(gpu_ids: list[str]) -> int | None:
     try:
         result = subprocess.run(
-            ["nvidia-smi", "--query-gpu=utilization.gpu", "--format=csv,noheader,nounits"],
+            [
+                "nvidia-smi",
+                *(["-i", ",".join(gpu_ids)] if gpu_ids else []),
+                "--query-gpu=utilization.gpu",
+                "--format=csv,noheader,nounits",
+            ],
             check=False,
             capture_output=True,
             text=True,
+            timeout=10,
         )
-    except FileNotFoundError:
+    except (OSError, subprocess.TimeoutExpired):
         return None
     if result.returncode != 0:
         return None
@@ -117,10 +105,12 @@ def _phase_spec(spec: RunSpec, phase: str) -> HealthPhaseSpec:
     return getattr(spec.health, phase)
 
 
-def environment_prefix(spec: RunSpec) -> tuple[str, ...]:
-    # The final shell boundary exists only to source conda; every value is passed via environment.
-    script = 'source "$RRCTL_CONDA_SH" && conda activate "$RRCTL_CONDA_ENV" && exec "$@"'
-    return ("bash", "-c", script, "rrctl-adapter")
+def environment_prefix(spec: RunSpec, gpu_ids: list[str]) -> tuple[str, ...]:
+    return tuple(
+        activation_argv(
+            [], overrides={**spec.environment.variables, "CUDA_VISIBLE_DEVICES": ",".join(gpu_ids)}
+        )
+    )
 
 
 def evaluate_health(
@@ -142,10 +132,12 @@ def evaluate_health(
 
     workload_pid = binding.get("workload_pid")
     executor_pid = binding.get("executor_pid")
-    workload_alive = isinstance(workload_pid, int) and _pid_has_run_id(workload_pid, spec.run_id)
-    executor_alive = isinstance(executor_pid, int) and _pid_has_run_id(executor_pid, spec.run_id)
+    workload_probe = probe_bound_process(binding, "workload", spec.run_id, control_root)
+    executor_probe = probe_bound_process(binding, "executor", spec.run_id, control_root)
+    workload_alive = workload_probe["state"] == "alive"
+    executor_alive = executor_probe["state"] == "alive"
     process_alive = workload_alive or executor_alive
-    session_alive = _session_exists(spec.session.name)
+    first_step_ready = not process_required or workload_alive
     observations.update(
         {
             "process_pid": workload_pid or executor_pid,
@@ -154,25 +146,41 @@ def evaluate_health(
             "workload_alive": workload_alive,
             "executor_pid": executor_pid,
             "executor_alive": executor_alive,
-            "session_alive": session_alive,
+            "workload_identity": workload_probe,
+            "executor_identity": executor_probe,
+            "backend": spec.session.backend,
         }
     )
     if process_required and status.get("state") not in {"completed", "failed", "aborted"}:
         if not process_alive:
-            errors.append("owned process is not alive")
-        if not session_alive:
-            errors.append("tmux session is not alive")
+            if any(
+                probe["state"] in {"pending", "unavailable", "mismatch"}
+                for probe in (workload_probe, executor_probe)
+            ):
+                degraded_reasons.append("process identity is not yet authoritative")
+            elif owned_processes(spec.run_id, control_root):
+                degraded_reasons.append("supervisor exited while owned descendants remain")
+            else:
+                errors.append("owned process is not alive")
+        elif not workload_alive:
+            degraded_reasons.append("workload is starting or finishing")
+        elif not executor_alive:
+            degraded_reasons.append("workload is alive but supervisor identity is unavailable")
 
     console = control_root / "console.log"
     console_age = _file_age(console, now)
     observations["console_age_seconds"] = console_age
     if phase_spec.console_stale_seconds is not None:
         if console_age is None:
-            errors.append("console log is missing")
+            degraded_reasons.append("console log is missing")
+            first_step_ready = False
         elif console_age > phase_spec.console_stale_seconds:
-            errors.append("console log is stale")
+            degraded_reasons.append("console log is stale")
+            first_step_ready = False
     if console.is_file():
-        text = console.read_text(encoding="utf-8", errors="replace")
+        with console.open("rb") as stream:
+            stream.seek(max(0, console.stat().st_size - 65536))
+            text = stream.read().decode("utf-8", errors="replace")
         for pattern in phase_spec.fatal_patterns:
             if re.search(pattern, text, flags=re.IGNORECASE | re.MULTILINE):
                 errors.append(f"fatal pattern matched: {pattern}")
@@ -183,17 +191,19 @@ def evaluate_health(
         observations["progress_path"] = str(progress)
         observations["progress_age_seconds"] = progress_age
         if progress_age is None:
-            errors.append("progress file is missing")
+            degraded_reasons.append("progress file is missing")
+            first_step_ready = False
         elif (
             phase_spec.progress_stale_seconds is not None
             and progress_age > phase_spec.progress_stale_seconds
         ):
-            errors.append("progress file is stale")
+            degraded_reasons.append("progress file is stale")
+            first_step_ready = False
 
     gpu_policy = phase_spec.gpu_utilization_policy
     observations["gpu_utilization_policy"] = gpu_policy
     if gpu_policy != "disabled" and phase_spec.gpu_min_percent is not None:
-        gpu = _sample_gpu()
+        gpu = _sample_gpu(binding.get("resources", {}).get("gpu_ids", []))
         observations["gpu_utilization_percent"] = gpu
         if gpu is None:
             observations["low_gpu_duration_seconds"] = _track_low_gpu(
@@ -233,16 +243,21 @@ def evaluate_health(
     }
     adapter: AdapterResult | None = None
     if phase_spec.adapter_argv:
-        adapter_env = os.environ.copy()
-        adapter_env["RRCTL_CONDA_SH"] = spec.environment.conda_sh
-        adapter_env["RRCTL_CONDA_ENV"] = spec.environment.name
+        adapter_env = make_environment(
+            asdict(spec.environment),
+            {
+                "CUDA_VISIBLE_DEVICES": ",".join(binding.get("resources", {}).get("gpu_ids", [])),
+            },
+        )
         try:
             adapter = run_adapter(
                 phase_spec.adapter_argv,
                 context,
                 timeout_seconds=phase_spec.adapter_timeout_seconds,
                 cwd=Path(spec.remote.repo_root) / spec.workload.cwd,
-                environment_command=environment_prefix(spec),
+                environment_command=environment_prefix(
+                    spec, binding.get("resources", {}).get("gpu_ids", [])
+                ),
                 env=adapter_env,
             )
             if adapter and not adapter.healthy:
@@ -251,7 +266,7 @@ def evaluate_health(
             observations["adapter_error"] = {"code": exc.code, "phase": exc.phase}
             errors.append(f"adapter health contract failed: {exc.code}")
 
-    complete = status.get("state") == "completed"
+    complete = status.get("state") in {"workload_complete", "completed"}
     if phase == "completion" and adapter is not None:
         complete = bool(adapter.complete) and status.get("state") in {
             "workload_complete",
@@ -295,10 +310,11 @@ def evaluate_health(
         adapter=adapter,
         status=health_status,
         degraded_reasons=tuple(degraded_reasons),
+        gate_passed=healthy and first_step_ready,
     )
     event = {**result.to_dict(), "at": utc_now(), "run_id": spec.run_id}
     append_jsonl(control_root / "health.jsonl", event)
 
-    if healthy and transition_lifecycle and phase == "first_step":
+    if result.gate_passed and transition_lifecycle and phase == "first_step":
         mark_first_step_passed(control_root, run_id=spec.run_id, health=result.to_dict())
     return result

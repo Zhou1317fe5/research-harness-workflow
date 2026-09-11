@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import math
+import re
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
@@ -26,7 +28,7 @@ def _mapping(value: Any, path: str) -> dict[str, Any]:
 
 
 def _text(value: Any, path: str) -> str:
-    if not isinstance(value, str) or not value.strip():
+    if not isinstance(value, str) or not value.strip() or "\0" in value:
         raise RRCError("spec_type", f"{path} must be non-empty text", "schema")
     return value.strip()
 
@@ -37,7 +39,7 @@ def _argv(value: Any, path: str, *, optional: bool = False) -> tuple[str, ...]:
     if (
         not isinstance(value, list)
         or not value
-        or any(not isinstance(v, str) or not v for v in value)
+        or any(not isinstance(v, str) or not v or "\0" in v for v in value)
     ):
         raise RRCError("spec_argv", f"{path} must be a non-empty string array", "schema")
     return tuple(value)
@@ -66,7 +68,7 @@ class RemoteSpec:
     repo_root: str
     control_root: str
     output_root: str
-    python: str = "python3"
+    python: str = "/usr/bin/python3"
 
 
 @dataclass(frozen=True, slots=True)
@@ -80,6 +82,16 @@ class EnvironmentSpec:
     kind: str
     name: str
     conda_sh: str = "/root/miniconda3/etc/profile.d/conda.sh"
+    variables: dict[str, str] = field(default_factory=dict)
+    required_modules: tuple[str, ...] = ()
+    preflight_argv: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class ResourcesSpec:
+    device: str = "gpu"
+    gpu_ids: tuple[str, ...] = ()
+    minimum_free_mib: int = 1024
 
 
 @dataclass(frozen=True, slots=True)
@@ -148,13 +160,16 @@ class RunSpec:
     output_cleanup: OutputCleanupSpec | None = None
     local_pull_root: str = ""
     metadata: dict[str, Any] = field(default_factory=dict)
+    resources: ResourcesSpec | None = None
 
     @classmethod
     def from_dict(cls, raw: dict[str, Any]) -> RunSpec:
         root = _mapping(raw, "run_spec")
         source = _mapping(root.get("source"), "source")
         remote = _mapping(root.get("remote"), "remote")
-        session = _mapping(root.get("session"), "session")
+        session = _mapping(
+            root.get("session", {"backend": "process", "name": root.get("run_id")}), "session"
+        )
         environment = _mapping(root.get("environment"), "environment")
         workload = _mapping(root.get("workload"), "workload")
         health = _mapping(root.get("health"), "health")
@@ -166,7 +181,10 @@ class RunSpec:
                 raise RRCError(
                     "spec_type", f"health.{name}.timeout_seconds must be an integer >= 1", "schema"
                 )
-            poll_interval = value.get("poll_interval_seconds", 5.0)
+            default_poll = (
+                600.0 if name == "periodic" and session.get("backend") == "process" else 5.0
+            )
+            poll_interval = value.get("poll_interval_seconds", default_poll)
             adapter_timeout = value.get("adapter_timeout_seconds", 30)
             fatal_patterns = value.get("fatal_patterns", [])
             gpu_policy = value.get("gpu_utilization_policy", "advisory")
@@ -174,6 +192,7 @@ class RunSpec:
                 not isinstance(poll_interval, int | float)
                 or isinstance(poll_interval, bool)
                 or poll_interval <= 0
+                or not math.isfinite(poll_interval)
             ):
                 raise RRCError(
                     "spec_type",
@@ -306,9 +325,7 @@ class RunSpec:
                     "spec_type", "output_cleanup.delete_globs must be a string array", "schema"
                 )
             if threshold is not None and (
-                not isinstance(threshold, int)
-                or isinstance(threshold, bool)
-                or threshold < 1
+                not isinstance(threshold, int) or isinstance(threshold, bool) or threshold < 1
             ):
                 raise RRCError(
                     "spec_type",
@@ -326,6 +343,66 @@ class RunSpec:
                 raise RRCError(
                     "spec_type", f"artifacts[{index}].required must be a boolean", "schema"
                 )
+
+        variables = _mapping(environment.get("variables", {}), "environment.variables")
+        for key, value in variables.items():
+            if (
+                not isinstance(key, str)
+                or not re.fullmatch(r"[A-Z_][A-Z0-9_]*", key)
+                or not isinstance(value, str)
+                or "\0" in value
+                or key.startswith(("RRCTL_", "CONDA_"))
+                or key in {"BASH_ENV", "ENV", "CUDA_VISIBLE_DEVICES"}
+                or re.search(
+                    r"(?:^|_)(?:PASSWORD|PASSWD|SECRET|TOKEN|API_KEY|PRIVATE_KEY|"
+                    r"SECRET_ACCESS_KEY|ACCESS_KEY_ID)$",
+                    key,
+                )
+            ):
+                raise RRCError(
+                    "environment_variable",
+                    f"invalid or reserved environment variable name: {key}",
+                    "schema",
+                )
+        modules = environment.get("required_modules", [])
+        if not isinstance(modules, list) or any(
+            not isinstance(item, str) or not re.fullmatch(r"[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*", item)
+            for item in modules
+        ):
+            raise RRCError(
+                "environment_modules",
+                "environment.required_modules must contain module names",
+                "schema",
+            )
+        resources = None
+        if root.get("resources") is not None:
+            values = _mapping(root["resources"], "resources")
+            if set(values) - {"device", "gpu_ids", "minimum_free_mib"}:
+                raise RRCError("resources_fields", "unknown resources field", "schema")
+            device = values.get("device", "gpu")
+            ids = values.get("gpu_ids", [])
+            minimum = values.get("minimum_free_mib", 1024)
+            if (
+                device not in {"gpu", "cpu"}
+                or not isinstance(ids, list)
+                or any(
+                    not isinstance(item, str)
+                    or not re.fullmatch(r"(?:\d+|GPU-[A-Za-z0-9-]+)", item)
+                    for item in ids
+                )
+                or len(set(ids)) != len(ids)
+                or (device == "cpu" and ids)
+            ):
+                raise RRCError(
+                    "resources_devices", "declare cpu or unique GPU indices/UUIDs", "schema"
+                )
+            if not isinstance(minimum, int) or isinstance(minimum, bool) or minimum < 0:
+                raise RRCError(
+                    "resources_memory",
+                    "resources.minimum_free_mib must be an integer >= 0",
+                    "schema",
+                )
+            resources = ResourcesSpec(device=device, gpu_ids=tuple(ids), minimum_free_mib=minimum)
 
         return cls(
             schema_version=_text(root.get("schema_version"), "schema_version"),
@@ -345,7 +422,13 @@ class RunSpec:
                 repo_root=_text(remote.get("repo_root"), "remote.repo_root"),
                 control_root=_text(remote.get("control_root"), "remote.control_root"),
                 output_root=_text(remote.get("output_root"), "remote.output_root"),
-                python=_text(remote.get("python", "python3"), "remote.python"),
+                python=_text(
+                    remote.get(
+                        "python",
+                        "/usr/bin/python3" if session.get("backend") == "process" else "python3",
+                    ),
+                    "remote.python",
+                ),
             ),
             session=SessionSpec(
                 backend=_text(session.get("backend"), "session.backend"),
@@ -357,6 +440,11 @@ class RunSpec:
                 conda_sh=_text(
                     environment.get("conda_sh", "/root/miniconda3/etc/profile.d/conda.sh"),
                     "environment.conda_sh",
+                ),
+                variables=dict(variables),
+                required_modules=tuple(modules),
+                preflight_argv=_argv(
+                    environment.get("preflight_argv"), "environment.preflight_argv", optional=True
                 ),
             ),
             workload=WorkloadSpec(
@@ -373,6 +461,7 @@ class RunSpec:
             output_cleanup=output_cleanup,
             local_pull_root=_text(root.get("local_pull_root"), "local_pull_root"),
             metadata=metadata,
+            resources=resources,
         )
 
     @classmethod
@@ -392,6 +481,12 @@ class RunSpec:
             value["source"].pop("source_content_sha256", None)
         if self.output_cleanup is None:
             value.pop("output_cleanup", None)
+        if self.resources is None:
+            value.pop("resources", None)
+        # 旧 RunSpec 的规范摘要保持不变，以便读取冻结的历史运行。
+        for key in ("variables", "required_modules", "preflight_argv"):
+            if not value["environment"][key]:
+                value["environment"].pop(key)
         for phase in value["health"].values():
             if phase.get("gpu_utilization_policy") == "advisory":
                 phase.pop("gpu_utilization_policy")

@@ -116,8 +116,22 @@ def validate_run_spec(
         if not IDENTIFIER_RE.fullmatch(value):
             error("identifier_invalid", field, "must match [A-Za-z0-9][A-Za-z0-9._-]{0,127}")
 
-    if spec.session.backend != "tmux":
-        error("session_backend", "session.backend", "v1 only supports tmux")
+    if spec.session.backend != "process":
+        error(
+            "session_backend",
+            "session.backend",
+            "new runs require the process backend; legacy runs remain readable",
+        )
+    if spec.resources is None:
+        error("resources_missing", "resources", "declare device=gpu or device=cpu before launch")
+    if spec.session.backend == "process" and not PurePosixPath(spec.remote.python).is_absolute():
+        error("remote_python", "remote.python", "use an absolute bootstrap Python path")
+    if spec.session.backend == "process" and spec.health.first_step.timeout_seconds > 3600:
+        warning(
+            "first_step_budget_long",
+            "health.first_step.timeout_seconds",
+            "first-step gate exceeds one hour; workload duration belongs to wait, not this gate",
+        )
     if spec.environment.kind != "conda":
         error("environment_kind", "environment.kind", "v1 only supports conda")
     if contains_secret_data(spec.to_dict()):

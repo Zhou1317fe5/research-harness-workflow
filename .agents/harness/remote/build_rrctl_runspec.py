@@ -14,6 +14,7 @@ if __name__ == "__main__":
 import argparse
 import hashlib
 import json
+import math
 import os
 import re
 import shutil
@@ -459,6 +460,7 @@ def _artifact_pull_policy(
     artifacts: list[dict[str, Any]],
     *,
     thin_smoke: bool,
+    required_evidence: set[str] | None = None,
 ) -> dict[str, Any]:
     """Validate what is pulled now versus retained remotely for on-demand debug."""
     if thin_smoke:
@@ -495,8 +497,10 @@ def _artifact_pull_policy(
         raw_paths = sorted(
             path
             for path in pulled_paths
-            if path.lower().endswith(".jsonl")
-            or any(token in path.lower() for token in RAW_DIAGNOSTIC_TOKENS)
+            if path not in (required_evidence or set()) and (
+                path.lower().endswith(".jsonl")
+                or any(token in path.lower() for token in RAW_DIAGNOSTIC_TOKENS)
+            )
         )
         if raw_paths:
             raise RunSpecBuildError(
@@ -511,7 +515,7 @@ def _health(
     adapter_argv: list[str],
     adapter_progress_path: str,
 ) -> dict[str, Any]:
-    health = _mapping(raw, "health")
+    health = _mapping({} if raw is None else raw, "health")
     _reject_unknown(health, "health", {"first_step", "periodic", "completion"})
     result: dict[str, Any] = {}
     allowed_fields = {
@@ -527,20 +531,21 @@ def _health(
         "adapter_timeout_seconds",
     }
     for phase in ("first_step", "periodic", "completion"):
-        item = dict(_mapping(health.get(phase), f"health.{phase}"))
+        item = dict(_mapping(health.get(phase, {}), f"health.{phase}"))
         unknown = sorted(set(item) - allowed_fields)
         if unknown:
             raise RunSpecBuildError(
                 f"health.{phase}.unknown_fields: {','.join(unknown)}"
             )
-        timeout = item.get("timeout_seconds")
+        timeout = item.get("timeout_seconds", 600 if phase == "first_step" else 120)
         if not isinstance(timeout, int) or isinstance(timeout, bool) or timeout < 1:
             raise RunSpecBuildError(f"health.{phase}.timeout_seconds_invalid")
-        poll_interval = item.get("poll_interval_seconds", 5.0)
+        poll_interval = item.get("poll_interval_seconds", 600.0 if phase == "periodic" else 5.0)
         if (
             not isinstance(poll_interval, int | float)
             or isinstance(poll_interval, bool)
             or poll_interval <= 0
+            or not math.isfinite(poll_interval)
         ):
             raise RunSpecBuildError(f"health.{phase}.poll_interval_seconds_invalid")
         adapter_timeout = item.get("adapter_timeout_seconds", 30)
@@ -625,6 +630,8 @@ def build_runspec(request: dict[str, Any]) -> dict[str, Any]:
             "gate_provenance",
             "metadata",
             "execution_purpose",
+            "resources",
+            "pipeline",
         },
     )
     if request.get("schema_version") != REQUEST_SCHEMA:
@@ -692,10 +699,10 @@ def build_runspec(request: dict[str, Any]) -> dict[str, Any]:
     if thin_smoke and run_id not in lifecycle_roots["output_root"].as_posix():
         raise RunSpecBuildError("pre_review_smoke.output_root_not_bound_to_run_id")
     profile = _text(remote.get("profile"), "remote.profile")
-    remote_python = _text(remote.get("python", "python3"), "remote.python")
+    remote_python = _absolute(remote.get("python", "/usr/bin/python3"), "remote.python").as_posix()
 
     environment = _mapping(request.get("environment"), "environment")
-    _reject_unknown(environment, "environment", {"kind", "name", "conda_sh"})
+    _reject_unknown(environment, "environment", {"kind", "name", "conda_sh", "variables", "required_modules", "preflight_argv"})
     if environment.get("kind", "conda") != "conda":
         raise RunSpecBuildError("environment.kind_must_equal_conda")
     conda_name = _text(environment.get("name"), "environment.name")
@@ -711,8 +718,15 @@ def build_runspec(request: dict[str, Any]) -> dict[str, Any]:
     cwd_path = PurePosixPath(workload_cwd)
     if cwd_path.is_absolute() or ".." in cwd_path.parts:
         raise RunSpecBuildError("workload.cwd_not_confined")
+    pipeline_name = request.get("pipeline")
+    if pipeline_name is not None:
+        if not isinstance(pipeline_name, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]*", pipeline_name):
+            raise RunSpecBuildError("pipeline_name_invalid")
+        choices = [workload_argv[i + 1] for i, value in enumerate(workload_argv[:-1]) if value == "--pipeline"]
+        if choices != [pipeline_name]:
+            raise RunSpecBuildError("pipeline_selector_must_match_workload")
 
-    session_name = _text(request.get("session_name"), "session_name")
+    session_name = _text(request.get("session_name", run_id), "session_name")
     if not IDENTIFIER_RE.fullmatch(session_name):
         raise RunSpecBuildError("session_name_invalid")
     requested_local_pull_root = request.get("local_pull_root")
@@ -813,10 +827,19 @@ def build_runspec(request: dict[str, Any]) -> dict[str, Any]:
         if thin_smoke
         else _artifacts(request.get("artifacts", []))
     )
+    # 完成校验所需的机器证据必须进入正式清单；smoke 仍保持原有精简清理契约。
+    if not thin_smoke and tuple(adapter_argv) == tuple(DEFAULT_ADAPTER_ARGV):
+        required = [contract["progress_path"], contract["summary_path"], *contract.get("artifacts", [])]
+        declared = {item["path"]: item for item in selected_artifacts}
+        for path in required:
+            declared[_relative(path, "adapter_contract.artifacts")] = {"path": path, "required": True}
+        selected_artifacts = list(declared.values())
     artifact_pull_policy = _artifact_pull_policy(
         request.get("artifact_pull_policy"),
         selected_artifacts,
         thin_smoke=thin_smoke,
+        required_evidence={contract["progress_path"], contract["summary_path"]}
+        if tuple(adapter_argv) == tuple(DEFAULT_ADAPTER_ARGV) else set(),
     )
     extra_metadata = _mapping(request.get("metadata", {}), "metadata")
     reserved = {
@@ -827,6 +850,7 @@ def build_runspec(request: dict[str, Any]) -> dict[str, Any]:
         "execution_purpose",
         "thin_smoke",
         "artifact_pull_policy",
+        "pipeline_name",
         *GATE_PROVENANCE_METADATA_KEYS,
     }
     if reserved.intersection(extra_metadata):
@@ -844,7 +868,7 @@ def build_runspec(request: dict[str, Any]) -> dict[str, Any]:
             request["gate_provenance"],
             source_commit=commit,
         )
-    return {
+    result = {
         "schema_version": RUN_SCHEMA,
         "run_id": run_id,
         "project": _text(request.get("project", "<PROJECT>"), "project"),
@@ -863,8 +887,10 @@ def build_runspec(request: dict[str, Any]) -> dict[str, Any]:
             "output_root": lifecycle_roots["output_root"].as_posix(),
             "python": remote_python,
         },
-        "session": {"backend": "tmux", "name": session_name},
-        "environment": {"kind": "conda", "name": conda_name, "conda_sh": conda_sh},
+        "session": {"backend": "process", "name": session_name},
+        "environment": {"kind": "conda", "name": conda_name, "conda_sh": conda_sh,
+                        **{key: environment[key] for key in ("variables", "required_modules", "preflight_argv") if key in environment}},
+        "resources": request.get("resources", {"device": "gpu"}),
         "workload": {"argv": workload_argv, "cwd": workload_cwd},
         "health": _health(
             request.get("health"),
@@ -895,6 +921,7 @@ def build_runspec(request: dict[str, Any]) -> dict[str, Any]:
             "exp_id": exp_id,
             "adapter_contract": contract,
             "artifact_pull_policy": artifact_pull_policy,
+            **({"pipeline_name": pipeline_name} if pipeline_name is not None else {}),
             **(
                 {"execution_purpose": execution_purpose, "thin_smoke": True}
                 if thin_smoke
@@ -912,6 +939,24 @@ def build_runspec(request: dict[str, Any]) -> dict[str, Any]:
             **extra_metadata,
         },
     }
+    return canonical_run_spec(result)
+
+
+def canonical_run_spec(value: dict[str, Any]) -> dict[str, Any]:
+    """使用本仓库控制包规范解析，供生成器和可恢复入口共同使用。"""
+    package_root = str(Path(__file__).resolve().parent / "rrctl" / "src")
+    if package_root not in sys.path:
+        sys.path.insert(0, package_root)
+    from remote_run_control.errors import RRCError
+    from remote_run_control.models import RunSpec
+    try:
+        return RunSpec.from_dict(value).to_dict()
+    except RRCError as exc:
+        raise RunSpecBuildError(f"{exc.code}: {exc.message}") from exc
+
+
+def run_spec_digest(value: dict[str, Any]) -> str:
+    return hashlib.sha256(_canonical_bytes(canonical_run_spec(value))).hexdigest()
 
 
 def write_exclusive(path: Path, value: dict[str, Any]) -> str:
@@ -961,6 +1006,7 @@ def parser() -> argparse.ArgumentParser:
     )
     root.add_argument("--rrctl-executable", default="rrctl")
     root.add_argument("--project-config", type=Path, help="project TOML defaults for workload, adapter and artifacts")
+    root.add_argument("--pipeline", help="select a named pipeline from --project-config")
     return root
 
 
@@ -979,9 +1025,11 @@ def main(argv: list[str] | None = None) -> int:
         if args.project_config:
             from harness.common.project_config import apply_project_config
             try:
-                request = apply_project_config(request, args.project_config)
+                request = apply_project_config(request, args.project_config, pipeline=args.pipeline)
             except (ValueError, KeyError) as exc:
                 raise RunSpecBuildError(f"project_config: {exc}") from exc
+        elif args.pipeline is not None:
+            raise RunSpecBuildError("--pipeline requires --project-config")
         runspec = build_runspec(request)
         digest = write_exclusive(args.output, runspec)
         print(

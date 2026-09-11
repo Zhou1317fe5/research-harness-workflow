@@ -6,6 +6,12 @@
 训练和评估参数放在项目 `.sh` 脚本中，用 `bash` 启动。模板提供
 [train.sh](scripts/train.sh) 和 [eval.sh](scripts/eval.sh)，也支持项目已有的单个训练评估脚本。
 `project.toml` 登记脚本入口、阶段顺序和产物约定。
+多个模块/消融实验使用命名 `pipelines`，每次通过 `--pipeline <名称>` 选择自己的脚本组合；
+模板中的 baseline 与 module_variant 只是示例名称，支持继续添加其他组合。
+
+远程执行使用 rrctl 0.2 的独立进程后端，运行前检查 Conda 依赖和 GPU 占用。
+`rrctl --json doctor` 显示实际安装路径与能力；`wait` 默认观察 900 秒，超时后沿用同一 RunID 继续。
+接口和退出码见 [rrctl 使用说明](.agents/harness/remote/rrctl/README.md)。
 
 ## 文档
 

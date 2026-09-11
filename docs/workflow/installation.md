@@ -17,7 +17,7 @@ Hindsight 可以在本地流程跑顺后再接。已有项目的升级和科研�
 
 本地需要 Python 3.11+，以及能在项目里工作的 Codex、Claude Code 或 Pi。选择 Pi 时，按 [Pi 安装与配置](Pi_配置说明.md)准备全局 packages、模型、MCP 和会话压缩。项目也要有 Git 历史；如果还是一个普通目录，先初始化 Git 并保存已有代码，后面才能关联每次实验所用的版本。
 
-远程实验这边，rrctl 的本地控制端和远程主机使用 Linux。远程要有 Python 3.11+、SSH、Git、tmux、conda，以及项目自己的依赖和数据。使用密码登录时，本地还需要 sshpass。
+远程实验这边，rrctl 的本地控制端和远程主机使用 Linux。远程需要 Python 3.10+、SSH、Git、conda，以及项目依赖和数据。rrctl 0.2 使用独立后台 worker，不需要 tmux。Python 3.10 还需安装 `.agents/harness/requirements.txt` 中的 tomli。使用密码登录时，本地需要 sshpass。
 
 模板带有任务执行相关技能，`humanizer-zh` 需要在 agent 环境中另外安装。代码语义检索与外部资料查询可以按需接入 `fast-context-mcp` 和 `smart-search`；它们是可选工具，不是首次接入的前置条件。
 
@@ -115,7 +115,8 @@ cp -n /tmp/research-harness-template/research_workspace/STATE.md /tmp/research-h
 cp -n /tmp/research-harness-template/remote_artifacts/README.md remote_artifacts/
 cat /tmp/research-harness-template/.gitignore >> .gitignore
 
-python -m pip install -e .agents/harness/remote/rrctl
+python3 -m pip install -e .agents/harness/remote/rrctl
+rrctl --json doctor
 ```
 
 复制时保留 `.agents/skills` 的符号链接。Pi 用户还需按 [Pi 配置说明](Pi_配置说明.md)复制模板的 `.pi/`，保留其中指向共享脚本的链接。原有训练代码继续放在原处。
@@ -194,6 +195,27 @@ cp -n .agents/harness/config/project.example.toml .agents/harness/config/project
 ```
 
 `project.toml` 登记调用哪个脚本、按什么顺序运行，以及去哪里找输出。实验参数在 `.sh` 中维护；修改参数时编辑脚本即可。
+
+项目有多组模块或消融脚本时，在同一配置中按名称登记。每组可以是训练加评估两个阶段，也可以是一个组合脚本：
+
+```toml
+[pipeline]
+default = "baseline"
+
+[[pipelines.baseline.stages]]
+name = "train"
+argv = ["bash", "scripts/baseline/train.sh"]
+
+[[pipelines.baseline.stages]]
+name = "evaluate"
+argv = ["bash", "scripts/baseline/eval.sh"]
+
+[[pipelines.module_a.stages]]
+name = "train_eval"
+argv = ["bash", "scripts/module_a/train_eval.sh"]
+```
+
+用 `python3 .agents/harness/pipeline/run_pipeline.py --list-pipelines` 查看组合；生成运行时给 `remote_run.py --request ... --execute` 增加 `--pipeline module_a`。只执行所选组合，选择和阶段 SHA 会写入 RunSpec。注册脚本后，切换实验无需修改公共配置。多个组合未设置 default 时必须显式选择；旧的 `[[pipeline.stages]]` 单组合格式仍然支持。
 
 下面是“训练后评估”的完整示例：
 

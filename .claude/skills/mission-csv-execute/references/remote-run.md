@@ -29,8 +29,10 @@
 
 此路由只替代通用远程控制，不替代 Spec/CSV intent、PRERUN gate、项目 adapter、结果 ingest 或科研审查。
 
+多组模块/消融脚本使用命名 pipelines。先通过 `run_pipeline.py --list-pipelines` 确认组合，再在请求或生成入口选择 `--pipeline <名称>`。所选阶段、名称和 SHA 固定到 RunSpec；恢复同一个 RunID 时不能换组合。
+
 1. 先构造 `mission.remote-route.v1` 请求并运行路由器；official 请求携带必要 formal verdict，pre-review smoke 请求携带 `execution_purpose:pre_review_smoke` 和 commit/1–100 steps/GPU/隔离输出/禁指标/禁 ingest/用户授权/正式命令绑定/fail-on-collision/checkpoint cleanup 合同。只有 `decision:proceed, route:rrctl` 才继续，blocked 禁止回退 legacy。
-2. 确认 `remote-run-control` 已按其独立提交安装，`command -v rrctl` 成功；不可用时记录 `rrctl_unavailable` 诊断并停在当前运行 row，不得回退为临时 SSH/tmux 拼接命令冒充同一控制面。
+2. 运行 `rrctl --json doctor`，确认实际安装的是项目内置 0.2+ 控制包且支持 process 后端。不可用时记录 `rrctl_unavailable` 并修复安装，不得回退为临时 SSH/nohup 命令。新运行显式声明 CPU 或 GPU 资源；未绑定不重叠 GPU 的任务使用独占资源。
 3. 从已批准 intent、当前 gated run row 和 route/review evidence 生成显式 `mission.rrctl-request.v1` request；通过 stdin 直接交给 builder，不把 request 写入 artifact root。禁止生成器推断实验命令，禁止把密码写入 request。`route=rrctl` 时禁止新增承担通用 stage/launch/health/cleanup ownership 的一次性脚本；自定义脚本只允许项目 adapter 或科学语义解析。
 4. 直接生成该 RunID 唯一保留的 canonical RunSpec：
 
@@ -42,7 +44,7 @@
          --check-rrctl
    ```
 
-   request 默认使用 `artifact_pull_policy:{"mode":"minimal","on_demand":[]}`：顶层 `artifacts` 与 `adapter_contract.artifacts` 都只声明结论所需的 `results.json` / `summary.json` / 必要日志或 manifest；episode/rank trace、逐样本指标和其他 `.jsonl` 放在 `on_demand`，留在远端，只有出现实际失败或 `validation_gap` 才以 `mode:diagnostic` 精确拉取单个诊断文件。official request 可以省略 `local_pull_root`；builder 统一派生为 `<source.repo_root>/remote_artifacts/<ExpID>`，由 rrctl 追加 `<RunID>`。显式值仍兼容。`execution_purpose:pre_review_smoke` 必须显式提供隔离的 `local_pull_root`，禁止进入正式科研结果目录。
+   request 默认使用 `artifact_pull_policy:{"mode":"minimal","on_demand":[]}`：顶层 `artifacts` 与 `adapter_contract.artifacts` 都只声明结论所需的 `results.json` / `summary.json` / 必要日志或 manifest；完成校验直接依赖的 progress/summary 也属于最小清单，即使使用 JSONL。其他 episode/rank trace、逐样本指标放在 `on_demand`，只有实际失败或 `validation_gap` 才精确拉取。不能把完成校验所需文件同时声明为 on_demand。official request 可以省略 `local_pull_root`；builder 统一派生为 `<source.repo_root>/remote_artifacts/<ExpID>`，由 rrctl 追加 `<RunID>`。显式值仍兼容。`execution_purpose:pre_review_smoke` 必须显式提供隔离的 `local_pull_root`，禁止进入正式科研结果目录。
 
    builder 通过 stdin 解析本身就是 request JSON/转义检查；解析失败时原地修正输入，不写失败 request 文件。新增或修改 adapter、adapter contract、JSON/JSONL 输出格式或 required fields 时，必须在 GPU launch 前用代表性本地 fixture 跑实际 adapter：
 
@@ -67,15 +69,15 @@
    rrctl --json launch issues/<stem>/runs/<RunID>/runspec.json
    ```
 
-   `launch` 只有通过 first-step gate 才算成功。成功后立即在 CSV notes 与 review execution log 记录 `command_owner:rrctl`、RunID、profile 名、session、control root、output root、`pre_run_code_commit`、launch JSON 证据和不含凭据的 resume 命令，并设置 `remote_state=running_remote`。
-8. periodic unhealthy 或 Stop Trigger 不自动转换为 abort：**健康检查负责报告事实，不自动取得停止权**。**硬故障仅包括**：目标进程确认消失、显存 OOM、最新 progress 出现 NaN/Inf、明确未恢复的 fatal traceback，以及 Spec 明确声明的 Stop Condition；确认命中并记录证据后才显式执行 `rrctl abort <RunID> --yes`。单次低 GPU、单次日志延迟、checkpoint 写盘、旧日志历史错误、PID/cmdline 漂移、tmux 短暂不可见或一次检查失败只记 `degraded`，不得停止训练；至少连续两次复核仍异常才升级诊断。`rrctl wait` 返回一次结构化 attention，远端 workload 保持运行。禁止直接 `pkill`、`pgrep -f | kill` 或仅按 tmux 名终止。
+   `launch` 通过 first-step gate 后才能推进下游步骤。启动后记录 `command_owner:rrctl`、RunID、profile、PID/PGID、control/output root、`pre_run_code_commit` 和恢复命令。若返回 first_step_observer_timeout 且远端进程已启动，记录 `remote_state=running_remote` 与 `first_step_gate:pending`，继续观察同一 RunID，不重新 launch。首步默认预算 600 秒，CLI 的单次观察预算默认 900 秒；整个训练时长交给 wait。
+8. periodic unhealthy 或 Stop Trigger 不自动转换为 abort：**健康检查负责报告事实，不自动取得停止权**。**硬故障仅包括**：目标进程确认消失、显存 OOM、最新 progress 出现 NaN/Inf、明确未恢复的 fatal traceback，以及 Spec 明确声明的 Stop Condition；确认命中并记录证据后才显式执行 `rrctl abort <RunID> --yes`。单次低 GPU、单次日志延迟、checkpoint 写盘、旧日志历史错误、身份暂时不可读或一次检查失败只记 `degraded`，不得停止训练；至少连续两次复核仍异常才升级诊断。`rrctl wait` 返回一次结构化 attention，远端 workload 保持运行。停止操作必须核对本次独立进程组的 RunID、control root、PID 启动身份和 boot ID，禁止直接按进程名批量终止。
 9. launch 通过首步 gate 后，长训练在当前会话使用**一个前台阻塞调用**等待终态：
 
    ```bash
-   rrctl --json wait <RunID> --poll-seconds 600
+   rrctl --json wait <RunID> --poll-seconds 600 --max-wait-seconds 900
    ```
 
-   `rrctl wait` 在进程内部每 10 分钟执行 authoritative inspect + periodic health，期间不输出中间日志，因此不会按巡检次数消耗模型 token。预期超过 6 小时且 Stop Trigger 允许时可放宽到 900–1800 秒；不得超过当前任务最短故障检测预算。若执行工具暂时 yield 出 session，只对**同一 session**使用空输入和工具允许的最长等待时间；pending/yield 不是状态变化，后续动作必须直接是工具等待，禁止插入任何用户可见 commentary、进度复述、ETA、skill 重读或额外 `inspect`。命令返回 terminal JSON 后，同一 turn 立即继续：`completed` → pull/ingest/后续 CSV；`failed/aborted` → 记录终态故障；`periodic_health` attention → 保留 workload，按硬/软条件判断是否继续 wait 或显式 abort。
+   `rrctl wait` 在进程内部低频 inspect/health，不输出中间日志。退出码 0 表示 completed，1 表示 failed/aborted，2 表示 attention/控制错误，124 表示观察期限到达且运行保留。外层工具预算需大于观察预算及一次控制请求时间；124 后直接继续同一 RunID 的 wait，不标 failed、不拉诊断、不重复 launch。也可用一键入口的 `--execute --resume` 恢复。若工具只是 yield，继续等待同一工具 session；按宿主要求提供必要进度，不重读 skill 或重复输出未变化状态。completed 后立即 pull/ingest；出现 attention 时按硬/软条件处理，保持 `fallback_allowed=false`。
 
 ### 运行类型
 
@@ -88,7 +90,7 @@ Pilot RunSpec 使用 `execution_purpose:pilot`；不得用 `official` 表示 `pi
 10. official run 在前台 `rrctl wait` 返回 terminal completed 后执行 `rrctl pull`；只拉 RunSpec `artifacts` 中的最小结果集，`artifact_pull_policy.on_demand` 不会被默认拉取。pull 的 manifest、size 与原子目标验证通过后才设置 `remote_state=artifacts_pulled`。pre-review smoke 不进入 official artifact ingest：成功、失败或 abort 后都必须由 RunSpec `output_cleanup` 删除绑定 output root 内的 checkpoint/optimizer/scheduler/大型文件，保留 control root 的 `console.log/status.json` 与 output root 的 `smoke_summary.json`，并验证 `checkpoint_cleanup_completed:true`、`checkpoint_paths_remaining:[]` 后才写 smoke evidence。
 失败、abort 或 periodic attention 时可执行 `rrctl pull <RunID> --diagnostic`。快照位于该 RunID 的 `diagnostics/<snapshot-id>/`，只包含受大小限制的日志、状态和已有进度；不标记正式结果已拉取，也不进入指标入账。
 
-11. **禁止为"等跑完"建立本地常驻进程**：不得创建 systemd user unit、nohup 守护、后台 `rrctl wait` 包装或任何本地 watcher 去跨会话等待远端终态。rrctl 是 daemonless 设计，`rrctl wait` 是当前会话内的前台阻塞调用；远端已由 tmux 承载，会话结束不影响它。本地常驻只增加故障面，不增加可靠性。
+11. **禁止为"等跑完"建立本地常驻进程**：不得创建 systemd user unit、nohup 守护、后台 `rrctl wait` 包装或任何本地 watcher 去跨会话等待远端终态。rrctl 是 daemonless 设计，`rrctl wait` 是当前会话内的前台阻塞调用；远端 worker 拥有独立进程会话，stdio 与 SSH 分离；结束本地观察不会改变远端归属。
 12. **会话中断后的恢复流程**（不需要任何常驻进程，也不做自动拉取）：
 
     ```bash
@@ -132,3 +134,18 @@ printf '%s' '<mission.csv-state-update.v1 JSON>' \
 - 详细事件进入 `<csv-stem>.events.json` sidecar，CSV notes 只保留 event digest。不要把重复日志或长审查文本塞入 notes。
 - `commit_boundary:none` 用于 readiness retry、poll、reviewer wait 和 unchanged inspect，输出 `git_commit_recommended:false`；仅 implementation/review/launch/terminal/final_review 阶段边界建议提交。
 - 已关闭历史 CSV 不迁移；此规则只约束新写入。
+
+### 常用公共入口
+
+接口不确定时读取对应 `--help`；不要在会话内临时导入私有模块、猜状态常量或重新拼运行目录。
+
+| 动作 | 调用 |
+|---|---|
+| 生成并启动 | `python3 .agents/harness/remote/remote_run.py <runspec> --request - --execute`，请求从 stdin 输入 |
+| 恢复观察与拉取 | `python3 .agents/harness/remote/remote_run.py <runspec> --execute --resume` |
+| 更新 CSV | `python3 .agents/skills/mission-csv-execute/scripts/csv_state.py <csv> -`，请求从 stdin 输入 |
+| 生成实验记录 | `python3 .agents/harness/records/experiment_records.py build --exp <ExpID>` |
+| 查看记忆状态 | `python3 .agents/harness/memory/research_memory.py --repo-root . status` |
+| 离线完成复查 | `python3 .agents/harness/remote/validate_adapter.py <runspec> <pull 返回的 destination> --phase completion` |
+
+正式 pull 的 destination 直接包含声明的文件；只有 diagnostic snapshot 才包含 control/output 子目录。默认摘要中的 details_path 指向完整响应，可按字段或行读取，不把整段日志反复放入会话。

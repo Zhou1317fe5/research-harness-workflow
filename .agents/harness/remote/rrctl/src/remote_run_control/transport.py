@@ -2,15 +2,17 @@
 
 from __future__ import annotations
 
+import json
 import os
 import shlex
 import shutil
 import subprocess
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
 
 from .errors import RRCError
 from .jsonutil import sha256_file
+from .models import EnvironmentSpec
 from .profiles import Profile
 from .security import redact
 
@@ -42,30 +44,40 @@ class Transport:
     def download(self, remote_path: str) -> bytes:
         raise NotImplementedError
 
-    def preflight(self, *, python: str, conda_sh: str) -> dict[str, str]:
+    def preflight(self, *, python: str, environment: EnvironmentSpec) -> dict:
+        # 直接执行同一份标准库实现，避免 SSH 和 worker 各维护一套环境规则。
+        source = Path(__file__).with_name("environment.py").read_text(encoding="utf-8")
         result = self.run(
-            [
-                "bash",
-                "-c",
-                '"$1" --version && command -v tmux && test -f "$2"',
-                "rrctl-preflight",
-                python,
-                conda_sh,
-            ]
+            [python, "-c", source],
+            input_data=json.dumps(asdict(environment)).encode(),
         )
-        if result.returncode != 0:
+        try:
+            value = json.loads(result.stdout)
+        except ValueError:
+            value = {"ok": False, "errors": [{"code": "bootstrap_python_failed"}]}
+        if result.returncode != 0 or not isinstance(value, dict) or value.get("ok") is not True:
             raise RRCError(
                 "remote_preflight",
-                "remote Python/tmux/conda preflight failed",
+                "selected Conda environment failed its Python/import preflight",
                 "transport",
-                details={"stderr": result.stderr.decode("utf-8", errors="replace")[-4000:]},
+                details=value if isinstance(value, dict) else {},
             )
-        return {"stdout": result.stdout.decode("utf-8", errors="replace").strip()}
+        return value
 
 
 class LocalTransport(Transport):
     def run(self, argv: list[str], *, input_data: bytes | None = None) -> CommandResult:
-        result = subprocess.run(argv, input=input_data, check=False, capture_output=True)
+        try:
+            result = subprocess.run(
+                argv, input=input_data, check=False, capture_output=True, timeout=180
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise RRCError(
+                "transport_timeout",
+                "control command timed out; detached workload ownership is unchanged",
+                "observer",
+                details={"remote_state_unknown": True},
+            ) from exc
         return CommandResult(result.returncode, result.stdout, result.stderr)
 
     def mkdir_exclusive(self, path: str) -> None:
@@ -127,13 +139,22 @@ class SSHTransport(Transport):
     def run(self, argv: list[str], *, input_data: bytes | None = None) -> CommandResult:
         base, environment = self._base_command()
         remote_command = shlex.join(argv)
-        result = subprocess.run(
-            [*base, remote_command],
-            input=input_data,
-            check=False,
-            capture_output=True,
-            env=environment,
-        )
+        try:
+            result = subprocess.run(
+                [*base, remote_command],
+                input=input_data,
+                check=False,
+                capture_output=True,
+                env=environment,
+                timeout=180,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise RRCError(
+                "transport_timeout",
+                "SSH control command timed out; detached workload ownership is unchanged",
+                "observer",
+                details={"remote_state_unknown": True},
+            ) from exc
         return CommandResult(result.returncode, result.stdout, result.stderr)
 
     def mkdir_exclusive(self, path: str) -> None:

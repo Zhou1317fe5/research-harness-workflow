@@ -50,7 +50,7 @@ CSV 的 artifact root 按以下顺序确定：
 21. **pre-run commit 边界**：`PRERUN-REVIEW-*` 审查并记录的是本次训练 / 运行使用的 `pre_run_code_commit`，不是整个 CSV 最终所有 commit。后续 artifact 拉取、ingest、analysis、final review 或修复 commit 必须另记，不能覆盖或混淆运行所用代码 commit。
 22. **claim ledger 不可丢且证据等级不可冒充**：任何 CSV notes 出现 `claims:CLAIM-*` 时，必须存在可读 `claim_ledger:<path>`，且 claim id 能在 JSON 中找到。`real_e2e` 只能由真实端到端运行写成 `verified`；被预注册门限合法跳过的条件 claim 写成 `not_run_by_preregistered_gate` 并携带 `gate_evidence`，不得写成 `verified`。`pending/failed/validation_gap` 不能通过 closing-ready。
 23. **独立 scientific review 只调用一次**：`PRERUN-REVIEW-*` 只使用一次 sub-agent 或独立 `codex exec`，输入限 `prerun.scientific-review.v1` lean packet、批准依据、committed diff 和原始证据。quota、进程、格式或可用性问题只记录一次 capability gap，不创建 retry 状态机、等待轮询行或新 PRERUN 编号。
-24. **Correctness first, metrics final**：模型/数据/指标/scientific args/computation sink/结果归属和未知改动走 `full_review`，顺序固定为本地验证→当前 commit 的 1–100 step 隔离 GPU smoke→一次 scientific review→official run；smoke 禁止 official metrics、artifact ingest 和输出碰撞。凭证/破坏性 lifecycle 走 `targeted_review`；rrctl、tmux、cleanup、monitoring、scheduler、artifact transport 和 bookkeeping 走普通验证或 `smoke_validation`，不进入 scientific reviewer。效果预测不阻断。
+24. **Correctness first, metrics final**：模型/数据/指标/scientific args/computation sink/结果归属和未知改动走 `full_review`，顺序固定为本地验证→当前 commit 的 1–100 step 隔离 GPU smoke→一次 scientific review→official run；smoke 禁止 official metrics、artifact ingest 和输出碰撞。凭证/破坏性 lifecycle 走 `targeted_review`；rrctl、进程归属、cleanup、monitoring、scheduler、artifact transport 和 bookkeeping 走普通验证或 `smoke_validation`，不进入 scientific reviewer。效果预测不阻断。
 25. **Scientific blocker 在实施行闭环**：reviewer 一次性返回全部可判定 blocker。主代理在原 implementation row 修复，补跑 production/sink probe，必要时重跑 GPU smoke，并逐项记录 blocker closure；不得创建 Attempt 2、resolution review、lineage/generation 或 closing scientific review。无法用可复现证据确认关闭时记录 `validation_gap` 并停止 official run。
 26. **所有任务使用风险分级验证**：L0 文档/静态只做结构检查；L1 局部低风险做受影响文件 `compileall`/lint 加 1–3 个直接测试或 probe；L2 共享接口做直接模块和一层依赖回归；L3 共享核心、安全/cleanup、数据/指标/checkpoint 或大迁移运行相关共享核心集合；L4 全量仅用于发布、breaking migration、共享基础设施大改、用户明确要求或 L3 无法覆盖的系统性风险。普通 issue、单个 CSV row、smoke 和 review 修复禁止默认运行全量测试；测试数量、`passed` 或 `skipped` 数量不能作为扩大范围的理由。
 27. **Outcome Contract 是读者合同**：新任务存在 `outcome_contract:<path>` 时，review 必须逐条回答 reader questions，handoff 必须呈现判定、证据、边界和下一步；不得用 issue 完成数或实现状态代替能力结论。
@@ -270,7 +270,7 @@ P0 → P1 → P2；优先能解阻塞/提供公共能力的任务；减少无意
 
 # Pre-run Scientific Implementation Review 闭环
 
-`PRERUN-REVIEW-*` 只用于确认科学实施是否正确：模块是否按批准原理落在 canonical 路径，关键值是否到达真实 forward/loss/attention/eval sink，实验身份和结果归属是否正确。它不审 rrctl、tmux、health、scheduler、CSV bookkeeping 或最终效果预测。
+`PRERUN-REVIEW-*` 只用于确认科学实施是否正确：模块是否按批准原理落在 canonical 路径，关键值是否到达真实 forward/loss/attention/eval sink，实验身份和结果归属是否正确。它不审 rrctl、进程归属、health、scheduler、CSV bookkeeping 或最终效果预测。
 
 ## 前置条件
 
@@ -309,7 +309,7 @@ python <pre-run-skill-dir>/scripts/prerun_ready.py <packet.json>
 1. 只调用一次独立 reviewer：使用当前已加载的 `pre-run-implementation-review` skill 中的 reviewer launcher。prompt 只携带 lean packet、批准源、committed diff 和 packet 引用的原始证据。
 2. reviewer 必须继续检查所有当前可判定的科学维度，一次性返回全部 findings，不得在发现首个 blocker 后停止。
 3. reviewer 只检查批准意图/原理、canonical 实现位置、模块实例化、参数/数据流、optimizer/loss 连接、computation sink、baseline/disabled path、dataset/checkpoint/metric identity、command 和结果归属。
-4. rrctl、tmux、PID、cleanup、health、scheduler、artifact transport、RunID/path/profile、bookkeeping/coverage 和效果预测不属于 scientific review。
+4. rrctl、进程归属、PID、cleanup、health、scheduler、artifact transport、RunID/path/profile、bookkeeping/coverage 和效果预测不属于 scientific review。
 5. 输出只有：
    - `scientifically_correct / allow_run`；
    - `scientifically_incorrect / do_not_run`；
@@ -452,7 +452,7 @@ python <pre-run-skill-dir>/scripts/prerun_ready.py <packet.json>
 - Command owner: user paste | codex ssh
 - Branch/commit: <branch>/<hash>
 - Pre-run code commit: <hash from PRERUN-REVIEW-N>
-- Remote session: <tmux/session/ssh target>
+- Remote session: <RunID/PID/PGID/control root>
 - Expected artifact path: <path>
 - Review handoff: issues/<stem>/<stem>.review.md
 - Resume: 训练完成后使用 `mission <同一 CSV 或目录>` 恢复，先 pull artifacts → ingest → 更新 review.md

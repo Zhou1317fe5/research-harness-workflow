@@ -2,27 +2,53 @@
 # 这里只登记 bash 入口、阶段顺序和输出约定，与脚本一起提交。
 version = 1
 
-[[pipeline.stages]]
+[pipeline]
+default = "baseline"
+
+[[pipelines.baseline.stages]]
 name = "train"
 argv = ["bash", "scripts/train.sh"]
 log = "train.log"
 outputs = ["checkpoints/best.pt"]
 
-[[pipeline.stages]]
+[[pipelines.baseline.stages]]
 name = "evaluate"
 argv = ["bash", "scripts/eval.sh"]
 log = "evaluate.log"
 requires = ["checkpoints/best.pt"]
 outputs = ["summary.json"]
 
-# 已有单个训练评估脚本时，把上面两个阶段替换为一个阶段：
-# [[pipeline.stages]]
-# name = "train_eval"
-# argv = ["bash", "scripts/train_eval.sh"]
-# log = "train_eval.log"
-# outputs = ["checkpoints/best.pt", "summary.json"]
-# 并将下面的日志 artifacts 改为 train_eval.log。
+# 每组模块/消融实验可以有独立脚本，也可以使用一个组合脚本。
+# 用 --pipeline module_variant 选择下面这一组；不会同时执行 baseline。
+[[pipelines.module_variant.stages]]
+name = "train_eval"
+argv = ["bash", "scripts/experiments/module_variant.sh"]
+log = "train_eval.log"
+outputs = ["checkpoints/best.pt", "summary.json"]
+# 按实际模块继续添加 pipelines.<name>.stages；命名不固定。
 # 执行器通过 RRCTL_OUTPUT_ROOT 向脚本传递本次运行的独立输出目录。
+
+[environment]
+# 按项目填写 import 名称；目标 Conda 环境在启动前验证这些依赖。
+required_modules = []
+
+[resources]
+# gpu_ids 留空时独占全部可见 GPU；CPU 检查显式设置 device = "cpu"。
+device = "gpu"
+gpu_ids = []
+minimum_free_mib = 1024
+
+[health.first_step]
+timeout_seconds = 600
+poll_interval_seconds = 5
+
+[health.periodic]
+timeout_seconds = 120
+poll_interval_seconds = 600
+
+[health.completion]
+timeout_seconds = 120
+poll_interval_seconds = 5
 
 # 支持现有 JSON 或 JSONL 日志，路径相对于本次运行的 output_root。
 [adapter]
@@ -37,6 +63,10 @@ summary_required_fields = ["metric"]
 summary_finite_fields = ["metric"]
 
 [[artifacts]]
+path = "progress.jsonl"
+required = true
+
+[[artifacts]]
 path = "summary.json"
 required = true
 
@@ -48,8 +78,16 @@ required = false
 path = "evaluate.log"
 required = false
 
+[[artifacts]]
+path = "train_eval.log"
+required = false
+
 # 可使用嵌套字段名，例如 metrics.accuracy；没有辅助指标时省略 secondary_metric。
 [records]
 summary_glob = "summary.json"
 primary_metric = "metric"
+# 按项目结果结构配置；省略时使用 protocol、checkpoint_path 和 steps。
+# protocol_field = "evaluation.protocol"
+# checkpoint_field = "files.weights"
+# steps_field = "training.updates"
 dimensions = []

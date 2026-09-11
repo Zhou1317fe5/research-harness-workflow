@@ -5,24 +5,36 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import shlex
 import shutil
 import signal
 import subprocess
 import sys
 import time
 from contextlib import suppress
+from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
 from .artifacts import build_artifact_manifest, build_diagnostic_snapshot
 from .cleanup import cleanup_output
+from .environment import activation_argv, make_environment
 from .errors import RRCError
 from .health import evaluate_health
 from .jsonutil import atomic_write_json, load_json, sha256_file, sha256_json, utc_now
 from .models import RunSpec
+from .processes import boot_id, bound_group, owned_processes
+from .processes import process_identity as _process_identity
+from .resources import acquire as acquire_resources
+from .resources import release as release_resources
 from .source_identity import source_content_sha256
-from .state import TERMINAL_STATES, read_status, recover_status, transition
+from .state import (
+    TERMINAL_STATES,
+    control_lock,
+    mark_launched,
+    read_status,
+    recover_status,
+    transition,
+)
 
 
 def _load_spec(path: Path) -> RunSpec:
@@ -35,35 +47,11 @@ def _binding_path(control_root: Path) -> Path:
 
 def _update_binding(control_root: Path, values: dict[str, Any]) -> dict[str, Any]:
     path = _binding_path(control_root)
-    current = load_json(path) if path.is_file() else {}
-    current.update(values)
-    atomic_write_json(path, current)
+    with control_lock(control_root):
+        current = load_json(path) if path.is_file() else {}
+        current.update(values)
+        atomic_write_json(path, current)
     return current
-
-
-def _process_identity(pid: int) -> dict[str, Any]:
-    try:
-        stat_text = (Path("/proc") / str(pid) / "stat").read_text(encoding="utf-8")
-        command_bytes = (Path("/proc") / str(pid) / "cmdline").read_bytes()
-    except (FileNotFoundError, PermissionError, ProcessLookupError) as exc:
-        raise RRCError(
-            "process_identity_unavailable", "process identity is unavailable", "ownership"
-        ) from exc
-    _, separator, fields_text = stat_text.rpartition(")")
-    fields = fields_text.split()
-    if not separator or len(fields) < 20:
-        raise RRCError("process_identity_invalid", "process stat identity is invalid", "ownership")
-    argv = [item.decode("utf-8", errors="replace") for item in command_bytes.split(b"\0") if item]
-    if not argv:
-        raise RRCError("process_identity_invalid", "process command line is empty", "ownership")
-    return {
-        "pid": pid,
-        "parent_pid": int(fields[1]),
-        "process_group_id": int(fields[2]),
-        "start_ticks": int(fields[19]),
-        "cmdline_sha256": sha256_json(argv),
-        "argv": argv,
-    }
 
 
 def _capture_workload_identity(pid: int, expected_argv: tuple[str, ...]) -> dict[str, Any] | None:
@@ -80,7 +68,7 @@ def _capture_workload_identity(pid: int, expected_argv: tuple[str, ...]) -> dict
         argv = current["argv"]
         if argv == list(expected_argv):
             return current
-        is_activation_shell = len(argv) >= 2 and Path(argv[0]).name == "bash" and argv[1] == "-c"
+        is_activation_shell = len(argv) >= 2 and Path(argv[0]).name == "bash" and "-c" in argv[1:5]
         if current["cmdline_sha256"] == stable_hash and not is_activation_shell:
             stable_samples += 1
             if stable_samples >= 3:
@@ -90,36 +78,6 @@ def _capture_workload_identity(pid: int, expected_argv: tuple[str, ...]) -> dict
             stable_samples = 1
         time.sleep(0.05)
     return latest
-
-
-def _has_run_marker(pid: int, run_id: str) -> bool:
-    try:
-        environment = (Path("/proc") / str(pid) / "environ").read_bytes().split(b"\0")
-    except (FileNotFoundError, PermissionError, ProcessLookupError):
-        return False
-    return f"RRCTL_RUN_ID={run_id}".encode() in environment
-
-
-def _is_descendant(pid: int, ancestor_pid: int) -> bool:
-    current = pid
-    for _ in range(64):
-        if current == ancestor_pid:
-            return True
-        if current <= 1:
-            return False
-        try:
-            current = int(_process_identity(current)["parent_pid"])
-        except RRCError:
-            return False
-    return False
-
-
-def _owned_marker_pids(run_id: str) -> list[int]:
-    return sorted(
-        int(entry.name)
-        for entry in Path("/proc").iterdir()
-        if entry.name.isdigit() and _has_run_marker(int(entry.name), run_id)
-    )
 
 
 def _fail(control_root: Path, spec: RunSpec, exc: BaseException, phase: str) -> None:
@@ -164,6 +122,12 @@ def launch(stage_root: Path) -> dict[str, Any]:
     spec_path = stage_root / "run_spec.json"
     manifest_path = stage_root / "stage_manifest.json"
     spec = _load_spec(spec_path)
+    if spec.session.backend != "process" or spec.resources is None:
+        raise RRCError(
+            "backend_removed",
+            "new runs require the process backend and resources declaration",
+            "worker",
+        )
     manifest = load_json(manifest_path)
     control_root = Path(spec.remote.control_root)
     if control_root.exists():
@@ -172,6 +136,7 @@ def launch(stage_root: Path) -> dict[str, Any]:
         )
     control_root.mkdir(parents=True, mode=0o700)
     transition(control_root, run_id=spec.run_id, next_state="prepared", reason="worker_started")
+    executor_started = False
     try:
         if sha256_file(spec_path) != manifest.get("run_spec_file_sha256"):
             raise RRCError("run_spec_sha_mismatch", "staged RunSpec file SHA mismatch", "worker")
@@ -197,21 +162,6 @@ def launch(stage_root: Path) -> dict[str, Any]:
                 "worker",
                 details={"repo_root": str(repo_root), "output_root": str(output_root)},
             )
-        if (
-            subprocess.run(
-                ["tmux", "has-session", "-t", spec.session.name],
-                check=False,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            ).returncode
-            == 0
-        ):
-            raise RRCError(
-                "session_collision",
-                f"tmux session already exists: {spec.session.name}",
-                "worker",
-            )
-
         transition(
             control_root,
             run_id=spec.run_id,
@@ -263,6 +213,7 @@ def launch(stage_root: Path) -> dict[str, Any]:
             "control_root": str(control_root),
             "output_root": str(output_root),
             "session": spec.session.name,
+            "backend": "process",
             "workload_argv_sha256": sha256_json(list(spec.workload.argv)),
             "created_at": utc_now(),
         }
@@ -279,32 +230,56 @@ def launch(stage_root: Path) -> dict[str, Any]:
                 "artifact_manifest": str(control_root / "artifact_manifest.json"),
             },
         )
+        settings = asdict(spec.environment)
+        if spec.environment.preflight_argv:
+            with (control_root / "preflight.log").open("wb") as stream:
+                check = subprocess.run(
+                    activation_argv(
+                        spec.environment.preflight_argv,
+                        overrides={**spec.environment.variables, "CUDA_VISIBLE_DEVICES": ""},
+                    ),
+                    cwd=repo_root / spec.workload.cwd,
+                    env=make_environment(settings),
+                    stdin=subprocess.DEVNULL,
+                    stdout=stream,
+                    stderr=subprocess.STDOUT,
+                    timeout=120,
+                    check=False,
+                )
+            atomic_write_json(control_root / "preflight.json", {"exit_code": check.returncode})
+            if check.returncode:
+                raise RRCError(
+                    "workload_preflight",
+                    "staged entrypoint preflight failed; inspect preflight.log",
+                    "worker",
+                )
         worker_command = [
-            "env",
-            f"RRCTL_RUN_ID={spec.run_id}",
-            spec.remote.python,
+            sys.executable,
             str(worker_path),
             "execute",
             "--control",
             str(control_root),
         ]
-        subprocess.run(
-            [
-                "tmux",
-                "new-session",
-                "-d",
-                "-s",
-                spec.session.name,
-                shlex.join(worker_command),
-            ],
-            check=True,
+        environment = make_environment(
+            settings,
+            {
+                "RRCTL_RUN_ID": spec.run_id,
+                "RRCTL_CONTROL_ROOT": str(control_root),
+            },
         )
-        transition(
-            control_root,
-            run_id=spec.run_id,
-            next_state="launched",
-            reason="tmux_worker_started",
-        )
+        with (control_root / "worker.log").open("ab", buffering=0) as worker_log:
+            subprocess.Popen(
+                worker_command,
+                stdin=subprocess.DEVNULL,
+                stdout=worker_log,
+                stderr=subprocess.STDOUT,
+                cwd=control_root,
+                env=environment,
+                start_new_session=True,
+                close_fds=True,
+            )
+        executor_started = True
+        mark_launched(control_root, run_id=spec.run_id)
         return {
             "run_id": spec.run_id,
             "state": "launched",
@@ -312,62 +287,62 @@ def launch(stage_root: Path) -> dict[str, Any]:
             "session": spec.session.name,
         }
     except BaseException as exc:
-        _fail(control_root, spec, exc, "launch")
+        if not executor_started:
+            _fail(control_root, spec, exc, "launch")
         raise
 
 
-def _conda_command(spec: RunSpec) -> list[str]:
-    shell = (
-        'source "$RRCTL_CONDA_SH" && conda activate "$RRCTL_CONDA_ENV" '
-        '&& cd "$RRCTL_WORKDIR" && exec "$@"'
-    )
-    return ["bash", "-c", shell, "rrctl-workload", *spec.workload.argv]
+def _conda_command(spec: RunSpec, extra: dict[str, str]) -> list[str]:
+    return activation_argv(spec.workload.argv, overrides={**spec.environment.variables, **extra})
 
 
 def execute(control_root: Path) -> int:
     spec = _load_spec(control_root / "run_spec.json")
-    executor_identity = _process_identity(os.getpid())
-    _update_binding(
-        control_root,
-        {
-            "executor_pid": os.getpid(),
-            "executor_started_at": utc_now(),
-            "executor_process_group_id": executor_identity["process_group_id"],
-            "executor_start_ticks": executor_identity["start_ticks"],
-            "executor_cmdline_sha256": executor_identity["cmdline_sha256"],
-        },
-    )
-    launch_deadline = time.monotonic() + 10
-    while read_status(control_root).get("state") == "staged":
-        if time.monotonic() >= launch_deadline:
-            raise RRCError(
-                "launch_state_timeout",
-                "executor did not observe the launched state within 10 seconds",
-                "worker",
-            )
-        time.sleep(0.05)
     output_root = Path(spec.remote.output_root)
-    output_root.parent.mkdir(parents=True, exist_ok=True)
     console_path = control_root / "console.log"
-    environment = os.environ.copy()
-    environment.update(
-        {
+    lease: dict[str, Any] = {}
+    try:
+        executor_identity = _process_identity(os.getpid())
+        if (
+            spec.session.backend != "process"
+            or executor_identity["session_id"] != os.getpid()
+            or executor_identity["process_group_id"] != os.getpid()
+        ):
+            raise RRCError(
+                "executor_session_invalid",
+                "worker must own an independent process session",
+                "ownership",
+            )
+        _update_binding(
+            control_root,
+            {
+                "boot_id": boot_id(),
+                "executor_pid": os.getpid(),
+                "executor_started_at": utc_now(),
+                "executor_process_group_id": executor_identity["process_group_id"],
+                "executor_session_id": executor_identity["session_id"],
+                "executor_start_ticks": executor_identity["start_ticks"],
+                "executor_cmdline_sha256": executor_identity["cmdline_sha256"],
+            },
+        )
+        mark_launched(control_root, run_id=spec.run_id)
+        lease = acquire_resources(spec, control_root)
+        _update_binding(control_root, {"resources": lease})
+        output_root.parent.mkdir(parents=True, exist_ok=True)
+        extra = {
             "RRCTL_RUN_ID": spec.run_id,
             "RRCTL_CONTROL_ROOT": str(control_root),
-            "RRCTL_CONDA_SH": spec.environment.conda_sh,
-            "RRCTL_CONDA_ENV": spec.environment.name,
-            "RRCTL_WORKDIR": str(Path(spec.remote.repo_root) / spec.workload.cwd),
             "RRCTL_OUTPUT_ROOT": str(output_root),
-            "PYTHONUNBUFFERED": "1",
+            "CUDA_VISIBLE_DEVICES": ",".join(lease["gpu_ids"]),
         }
-    )
-    try:
+        environment = make_environment(asdict(spec.environment), extra)
         with console_path.open("ab", buffering=0) as console:
             process = subprocess.Popen(
-                _conda_command(spec),
+                _conda_command(spec, extra),
                 stdout=console,
                 stderr=subprocess.STDOUT,
                 env=environment,
+                cwd=Path(spec.remote.repo_root) / spec.workload.cwd,
                 start_new_session=False,
             )
             workload_identity = _capture_workload_identity(process.pid, spec.workload.argv)
@@ -394,7 +369,7 @@ def execute(control_root: Path) -> int:
             terminal_state="workload_exit_zero" if return_code == 0 else "failed",
         )
         current = read_status(control_root).get("state")
-        if current in TERMINAL_STATES:
+        if current in TERMINAL_STATES or (control_root / "stop_request.json").exists():
             return return_code
         if return_code != 0:
             transition(
@@ -413,7 +388,7 @@ def execute(control_root: Path) -> int:
                 process_required=False,
                 transition_lifecycle=True,
             )
-            if not first.healthy:
+            if not first.gate_passed:
                 transition(
                     control_root,
                     run_id=spec.run_id,
@@ -433,6 +408,9 @@ def execute(control_root: Path) -> int:
     except BaseException as exc:
         _fail(control_root, spec, exc, "execute")
         raise
+    finally:
+        if lease:
+            release_resources(lease, spec, control_root)
 
 
 def health(control_root: Path, phase: str) -> dict[str, Any]:
@@ -505,6 +483,16 @@ def complete(control_root: Path) -> dict[str, Any]:
         adapter_paths=completion.adapter.artifacts if completion.adapter else (),
         destination=control_root / "artifact_manifest.json",
     )
+    manifest["provenance"] = {
+        "run_spec_sha256": spec.digest,
+        "commit": spec.source.commit,
+        "branch": spec.source.branch,
+        "spec_id": spec.metadata.get("spec_id"),
+        "exp_id": spec.metadata.get("exp_id"),
+        "pipeline_name": spec.metadata.get("pipeline_name"),
+        "pipeline_stages_sha256": spec.metadata.get("pipeline_stages_sha256"),
+    }
+    atomic_write_json(control_root / "artifact_manifest.json", manifest)
     transition(
         control_root,
         run_id=spec.run_id,
@@ -559,86 +547,62 @@ def abort(
             detail={"cleanup": "workload_already_exited"},
         )
         return read_status(control_root)
-    binding = load_json(_binding_path(control_root))
-    owned_pid = binding.get("workload_pid") or binding.get("executor_pid")
-    if not isinstance(owned_pid, int):
-        raise RRCError("abort_pid_missing", "owned process PID is unavailable", "ownership")
-    if not _has_run_marker(owned_pid, spec.run_id):
+    if spec.session.backend != "process":
         raise RRCError(
-            "abort_owner_mismatch", "PID does not carry the expected run marker", "ownership"
+            "legacy_backend_read_only",
+            "legacy runs remain readable; new process ownership is required to stop a run",
+            "ownership",
         )
+    binding = load_json(_binding_path(control_root))
     if binding.get("workload_argv_sha256") != sha256_json(list(spec.workload.argv)):
         raise RRCError(
             "abort_command_mismatch", "bound workload argv does not match RunSpec", "ownership"
         )
-    workload_identity = _process_identity(owned_pid)
-    if (
-        workload_identity["start_ticks"] != binding.get("workload_start_ticks")
-        or workload_identity["cmdline_sha256"] != binding.get("workload_cmdline_sha256")
-        or workload_identity["process_group_id"] != binding.get("workload_process_group_id")
-    ):
-        raise RRCError(
-            "abort_identity_mismatch",
-            "workload PID identity or command fingerprint changed",
-            "ownership",
+    try:
+        owned_pgid, members = bound_group(binding, spec.run_id, control_root)
+    except RRCError as exc:
+        if exc.code != "abort_process_missing":
+            raise
+        # 已确认进程消失时，显式停止请求仍可关闭运行；不伪造工作负载退出码。
+        cleanup_output(spec, terminal_state=terminal_state)
+        release_resources(binding.get("resources", {}), spec, control_root)
+        return transition(
+            control_root,
+            run_id=spec.run_id,
+            next_state=terminal_state,
+            reason="owned_process_already_gone",
+            detail={"exit_code": None, "cleanup": "no_live_process"},
         )
-    executor_pid = binding.get("executor_pid")
-    if not isinstance(executor_pid, int) or not _has_run_marker(executor_pid, spec.run_id):
-        raise RRCError(
-            "abort_executor_mismatch", "executor ownership cannot be verified", "ownership"
-        )
-    executor_identity = _process_identity(executor_pid)
-    if (
-        executor_identity["start_ticks"] != binding.get("executor_start_ticks")
-        or executor_identity["cmdline_sha256"] != binding.get("executor_cmdline_sha256")
-        or executor_identity["process_group_id"] != binding.get("executor_process_group_id")
-        or not _is_descendant(owned_pid, executor_pid)
-    ):
-        raise RRCError(
-            "abort_executor_mismatch", "workload is not owned by the bound executor", "ownership"
-        )
-    panes = subprocess.run(
-        ["tmux", "list-panes", "-t", spec.session.name, "-F", "#{pane_pid}"],
-        check=False,
-        capture_output=True,
-        text=True,
+    atomic_write_json(
+        control_root / "stop_request.json",
+        {"reason": reason, "at": utc_now(), "state": terminal_state},
     )
-    pane_pids = {int(line) for line in panes.stdout.splitlines() if line.strip().isdigit()}
-    if panes.returncode != 0 or not any(
-        _is_descendant(executor_pid, pane_pid) for pane_pid in pane_pids
-    ):
-        raise RRCError("abort_session_missing", "bound tmux session does not exist", "ownership")
-    owned_pgid = workload_identity["process_group_id"]
-    if owned_pgid <= 1 or owned_pgid == os.getpgrp():
-        raise RRCError(
-            "abort_process_group_invalid",
-            "owned process group is unsafe to signal",
-            "ownership",
-        )
-    subprocess.run(["tmux", "kill-session", "-t", spec.session.name], check=True)
     with suppress(ProcessLookupError):
         os.killpg(owned_pgid, signal.SIGTERM)
     term_deadline = time.monotonic() + 10
-    while _owned_marker_pids(spec.run_id) and time.monotonic() < term_deadline:
+    while owned_processes(spec.run_id, control_root) and time.monotonic() < term_deadline:
         time.sleep(0.1)
-    remaining = _owned_marker_pids(spec.run_id)
+    remaining = owned_processes(spec.run_id, control_root)
     if remaining:
+        owned_pgid, _ = bound_group(binding, spec.run_id, control_root)
         with suppress(ProcessLookupError):
             os.killpg(owned_pgid, signal.SIGKILL)
         kill_deadline = time.monotonic() + 5
-        while _owned_marker_pids(spec.run_id) and time.monotonic() < kill_deadline:
+        while owned_processes(spec.run_id, control_root) and time.monotonic() < kill_deadline:
             time.sleep(0.1)
-    remaining = _owned_marker_pids(spec.run_id)
-    cleanup_output(spec, terminal_state=terminal_state)
+    remaining = [item["pid"] for item in owned_processes(spec.run_id, control_root)]
+    if not remaining:
+        cleanup_output(spec, terminal_state=terminal_state)
+        release_resources(binding.get("resources", {}), spec, control_root)
     transition(
         control_root,
         run_id=spec.run_id,
         next_state=terminal_state,
         reason=reason,
         detail={
-            "pid": owned_pid,
+            "pids": [item["pid"] for item in members],
             "pgid": owned_pgid,
-            "session": spec.session.name,
+            "backend": "process",
             "cleanup": "reaped" if not remaining else "incomplete",
             "remaining_owned_pids": remaining,
         },

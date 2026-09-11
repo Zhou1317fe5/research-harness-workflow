@@ -99,7 +99,10 @@ def build_diagnostic_snapshot(
         (
             "control",
             control_root,
-            ("status.json", "console.log", "events.jsonl", "health.jsonl", "health_state.json"),
+            (
+                "status.json", "console.log", "events.jsonl", "health.jsonl", "health_state.json",
+                "worker.log", "preflight.log", "preflight.json",
+            ),
         ),
         ("output", output_root, tuple(output_paths)),
     )

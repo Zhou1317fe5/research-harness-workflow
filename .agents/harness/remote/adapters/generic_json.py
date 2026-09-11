@@ -184,13 +184,14 @@ def evaluate(context: dict[str, Any]) -> dict[str, Any]:
             f"completion_count_mismatch: expected={exact} actual={count}"
         )
 
-    artifacts: list[str] = []
+    artifacts: list[str] = [] if metadata.get("thin_smoke") else [contract["progress_path"], contract["summary_path"]]
     for index, value in enumerate(contract.get("artifacts", [])):
         relative = relative_path(
             value, f"adapter_contract.artifacts[{index}]"
         ).as_posix()
         confined_path(output_root, relative, f"adapter_contract.artifacts[{index}]")
-        artifacts.append(relative)
+        if relative not in artifacts:
+            artifacts.append(relative)
     observations.update(
         {
             "summary_path": contract["summary_path"],

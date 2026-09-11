@@ -256,6 +256,19 @@ def mark_first_step_passed(
         )
 
 
+def mark_launched(control_root: Path, *, run_id: str) -> dict[str, Any]:
+    """启动器与已分离 worker 均可确认启动，SSH 中断不会留下孤立的 staged 状态。"""
+    with control_lock(control_root):
+        status = read_status(control_root)
+        if status["run_id"] != run_id:
+            raise RRCError("state_run_mismatch", "status belongs to a different run", "state")
+        if status["state"] != "staged":
+            return status
+        return _transition_locked(
+            control_root, run_id=run_id, next_state="launched", reason="process_worker_started",
+        )
+
+
 def update_status_detail(
     control_root: Path,
     *,

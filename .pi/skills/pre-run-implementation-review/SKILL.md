@@ -70,7 +70,7 @@ Do not allow a run with "probably correct" data flow. A critical value that reac
 
 Do not send these surfaces to a formal reviewer:
 
-- rrctl, tmux, PID/process ownership, cleanup, health polling, watchers, and schedulers;
+- rrctl, process sessions, PID/process ownership, cleanup, health polling, watchers, and schedulers;
 - CSV bookkeeping, RunID/path/profile changes, coverage manifests, and frozen ExecutionPlans;
 - artifact transport and closing review machinery;
 - predictions about final method quality or effect size.

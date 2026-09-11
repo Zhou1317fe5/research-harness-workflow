@@ -19,10 +19,11 @@ import csv
 import json
 import math
 import re
+import sys
 from pathlib import Path
 
 from harness.common.project_config import DEFAULT_CONFIG, REPO_ROOT, load_config
-from harness.remote.adapters.common import dotted_value
+from harness.remote.adapters.common import AdapterContractError, dotted_value
 
 ARTIFACTS = REPO_ROOT / "remote_artifacts"
 EXPERIMENTS = REPO_ROOT / "research_workspace" / "experiments"
@@ -38,16 +39,24 @@ def identifier(value: str) -> str:
     return value
 
 
+def optional_summary_value(data: dict, field: str):
+    try:
+        return dotted_value(data, field, "summary")
+    except AdapterContractError:
+        return None
+
+
 def csv_projection() -> dict[str, dict]:
     """按 exp_id 汇总 Mission CSV 中可投影的字段。"""
     out: dict[str, dict] = {}
     for path in sorted((REPO_ROOT / "issues").rglob("*.csv")):
         try:
-            rows = list(csv.DictReader(path.open(encoding="utf-8-sig")))
+            with path.open(encoding="utf-8-sig", newline="") as stream:
+                rows = list(csv.DictReader(stream))
         except Exception:
             continue
         for row in rows:
-            for exp in (row.get("exp_id") or "").split(";"):
+            for exp in re.split(r"[;,]", row.get("exp_id") or ""):
                 exp = exp.strip()
                 if not exp:
                     continue
@@ -90,9 +99,18 @@ def read_runs(exp_id: str, settings: dict | None = None) -> list[dict]:
                 raise ValueError(f"summary primary metric is not finite: {summary}")
             auxiliary = settings.get("secondary_metric")
             dimensions = {k: dotted_value(data, k, "summary") for k in settings.get("dimensions", [])}
-            protocol = data.get("protocol")
+            protocol_field = settings.get("protocol_field", "protocol")
+            protocol = optional_summary_value(data, protocol_field)
             if protocol is not None and (not isinstance(protocol, str) or not protocol.strip()):
                 raise ValueError(f"summary protocol must be non-empty text: {summary}")
+            manifest_path = run_root / "artifact_manifest.json"
+            manifest = json.loads(manifest_path.read_text()) if manifest_path.is_file() else {}
+            if not isinstance(manifest, dict) or not isinstance(manifest.get("provenance", {}), dict):
+                raise ValueError(f"invalid artifact provenance: {manifest_path}")
+            provenance = manifest.get("provenance", {})
+            source_commit = provenance.get("commit")
+            if data.get("commit") and source_commit and data["commit"] != source_commit:
+                raise ValueError(f"summary and manifest source commit disagree: {summary}")
             runs.append({
                 **dimensions,
                 "run_id": run_root.name,
@@ -101,9 +119,11 @@ def read_runs(exp_id: str, settings: dict | None = None) -> list[dict]:
                 "dimensions": dimensions,
                 "protocol": protocol,
                 "metric": metric,
+                "steps": optional_summary_value(data, settings.get("steps_field", "steps")),
                 "metric_aux": dotted_value(data, auxiliary, "summary") if auxiliary else None,
-                "weights_path": data.get("checkpoint_path"),
-                "commit": data.get("commit"),
+                "weights_path": optional_summary_value(data, settings.get("checkpoint_field", "checkpoint_path")),
+                "commit": data.get("commit") or source_commit,
+                **({"pipeline_name": provenance["pipeline_name"]} if provenance.get("pipeline_name") else {}),
             })
     return runs
 
@@ -111,6 +131,11 @@ def read_runs(exp_id: str, settings: dict | None = None) -> list[dict]:
 def build_record(exp_id: str, proj: dict | None, settings: dict | None = None) -> dict:
     runs = read_runs(exp_id, settings)
     proj = proj or {}
+    commits = sorted(proj.get("commit", []))
+    if len(commits) == 1:
+        for run in runs:
+            if run.get("commit") is None:
+                run["commit"] = commits[0]
     protocols = {run["protocol"] for run in runs}
     protocol = next(iter(protocols)) if len(protocols) == 1 and None not in protocols else None
     # 多 Run 没有聚合契约时不能自动取均值或最好成绩。
@@ -211,4 +236,8 @@ def main() -> int:
     d = sub.add_parser("derive", help="从 record.json 派生 EXPERIMENTS.csv")
     d.set_defaults(func=cmd_derive)
     args = ap.parse_args()
-    return args.func(args)
+    try:
+        return args.func(args)
+    except (OSError, ValueError, KeyError, AdapterContractError) as exc:
+        print(json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False), file=sys.stderr)
+        return 2
