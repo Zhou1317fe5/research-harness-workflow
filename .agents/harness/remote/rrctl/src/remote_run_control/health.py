@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 import subprocess
 import time
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -29,6 +29,8 @@ class HealthResult:
     status: str = "healthy"
     degraded_reasons: tuple[str, ...] = ()
     gate_passed: bool = False
+    issues: tuple[dict[str, Any], ...] = ()
+    tracking: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -42,6 +44,7 @@ class HealthResult:
             "degraded_reasons": list(self.degraded_reasons),
             "adapter": self.adapter.to_dict() if self.adapter else None,
             "gate_passed": self.gate_passed,
+            "issues": list(self.issues),
         }
 
 
@@ -78,25 +81,16 @@ def _sample_gpu(gpu_ids: list[str]) -> int | None:
     return max(values) if values else None
 
 
-def _track_low_gpu(control_root: Path, *, phase: str, now: float, low: bool) -> float:
-    path = control_root / "health_state.json"
-    with control_lock(control_root):
-        value = load_json(path) if path.is_file() else {"schema_version": "rrctl.health-state.v1"}
-        since_by_phase = value.get("low_gpu_since", {})
-        if not isinstance(since_by_phase, dict):
-            since_by_phase = {}
-        if low:
-            since = since_by_phase.get(phase)
-            if not isinstance(since, int | float) or isinstance(since, bool):
-                since = now
-            since_by_phase[phase] = since
-            duration = max(0.0, now - float(since))
-        else:
-            since_by_phase.pop(phase, None)
-            duration = 0.0
-        value["low_gpu_since"] = since_by_phase
-        atomic_write_json(path, value)
-    return duration
+def _track_low_gpu(tracking: dict[str, Any], *, phase: str, now: float, low: bool) -> float:
+    since_by_phase = tracking.setdefault("low_gpu_since", {})
+    if low:
+        since = since_by_phase.get(phase)
+        if not isinstance(since, int | float) or isinstance(since, bool):
+            since = now
+        since_by_phase[phase] = since
+        return max(0.0, now - float(since))
+    since_by_phase.pop(phase, None)
+    return 0.0
 
 
 def _phase_spec(spec: RunSpec, phase: str) -> HealthPhaseSpec:
@@ -113,14 +107,16 @@ def environment_prefix(spec: RunSpec, gpu_ids: list[str]) -> tuple[str, ...]:
     )
 
 
-def evaluate_health(
+def sample_health(
     spec: RunSpec,
     control_root: Path,
     *,
     phase: str,
     process_required: bool = True,
-    transition_lifecycle: bool = True,
+    tracking: dict[str, Any] | None = None,
 ) -> HealthResult:
+    """只采样和判断；GPU 持续时间也作为返回值，不写状态或推进生命周期。"""
+    tracking = {"low_gpu_since": dict((tracking or {}).get("low_gpu_since", {}))}
     phase_spec = _phase_spec(spec, phase)
     now = time.time()
     status = read_status(control_root)
@@ -128,6 +124,19 @@ def evaluate_health(
     binding = load_json(binding_path) if binding_path.is_file() else {}
     errors: list[str] = []
     degraded_reasons: list[str] = []
+    issues: list[dict[str, Any]] = []
+
+    def issue(code: str, message: str, *, required=True, retryable=False, subject=""):
+        (errors if required else degraded_reasons).append(message)
+        issues.append(
+            {
+                "code": code,
+                "subject": subject,
+                "required": required,
+                "retryable": retryable,
+            }
+        )
+
     observations: dict[str, Any] = {"state": status.get("state")}
 
     workload_pid = binding.get("workload_pid")
@@ -157,25 +166,35 @@ def evaluate_health(
                 probe["state"] in {"pending", "unavailable", "mismatch"}
                 for probe in (workload_probe, executor_probe)
             ):
-                degraded_reasons.append("process identity is not yet authoritative")
+                issue(
+                    "process_identity_pending",
+                    "process identity is not yet authoritative",
+                    required=False,
+                    retryable=True,
+                )
             elif owned_processes(spec.run_id, control_root):
-                degraded_reasons.append("supervisor exited while owned descendants remain")
+                issue("supervisor_missing", "supervisor exited while owned descendants remain")
             else:
-                errors.append("owned process is not alive")
+                issue("process_missing", "owned process is not alive")
         elif not workload_alive:
-            degraded_reasons.append("workload is starting or finishing")
+            issue("workload_pending", "workload is starting or finishing", required=False)
         elif not executor_alive:
-            degraded_reasons.append("workload is alive but supervisor identity is unavailable")
+            issue(
+                "supervisor_unavailable",
+                "workload is alive but supervisor identity is unavailable",
+                required=False,
+                retryable=True,
+            )
 
     console = control_root / "console.log"
     console_age = _file_age(console, now)
     observations["console_age_seconds"] = console_age
     if phase_spec.console_stale_seconds is not None:
         if console_age is None:
-            degraded_reasons.append("console log is missing")
+            issue("console_missing", "console log is missing", required=False)
             first_step_ready = False
         elif console_age > phase_spec.console_stale_seconds:
-            degraded_reasons.append("console log is stale")
+            issue("console_stale", "console log is stale", required=False)
             first_step_ready = False
     if console.is_file():
         with console.open("rb") as stream:
@@ -183,7 +202,7 @@ def evaluate_health(
             text = stream.read().decode("utf-8", errors="replace")
         for pattern in phase_spec.fatal_patterns:
             if re.search(pattern, text, flags=re.IGNORECASE | re.MULTILINE):
-                errors.append(f"fatal pattern matched: {pattern}")
+                issue("fatal_pattern", f"fatal pattern matched: {pattern}", subject=pattern)
 
     if phase_spec.progress_path:
         progress = Path(spec.remote.output_root) / phase_spec.progress_path
@@ -191,13 +210,23 @@ def evaluate_health(
         observations["progress_path"] = str(progress)
         observations["progress_age_seconds"] = progress_age
         if progress_age is None:
-            degraded_reasons.append("progress file is missing")
+            issue(
+                "progress_missing",
+                "progress file is missing",
+                required=False,
+                subject=phase_spec.progress_path,
+            )
             first_step_ready = False
         elif (
             phase_spec.progress_stale_seconds is not None
             and progress_age > phase_spec.progress_stale_seconds
         ):
-            degraded_reasons.append("progress file is stale")
+            issue(
+                "progress_stale",
+                "progress file is stale",
+                required=False,
+                subject=phase_spec.progress_path,
+            )
             first_step_ready = False
 
     gpu_policy = phase_spec.gpu_utilization_policy
@@ -207,11 +236,16 @@ def evaluate_health(
         observations["gpu_utilization_percent"] = gpu
         if gpu is None:
             observations["low_gpu_duration_seconds"] = _track_low_gpu(
-                control_root, phase=phase, now=now, low=False
+                tracking, phase=phase, now=now, low=False
             )
-            degraded_reasons.append("GPU utilization is unavailable")
+            issue(
+                "gpu_unavailable",
+                "GPU utilization is unavailable",
+                required=False,
+                retryable=gpu_policy == "required",
+            )
         elif gpu < phase_spec.gpu_min_percent:
-            low_duration = _track_low_gpu(control_root, phase=phase, now=now, low=True)
+            low_duration = _track_low_gpu(tracking, phase=phase, now=now, low=True)
             observations["low_gpu_duration_seconds"] = low_duration
             reached_required_window = (
                 gpu_policy == "required"
@@ -219,14 +253,19 @@ def evaluate_health(
                 and low_duration >= phase_spec.low_gpu_limit_seconds
             )
             if reached_required_window:
-                errors.append(f"GPU utilization {gpu}% is below {phase_spec.gpu_min_percent}%")
+                issue(
+                    "gpu_below_required",
+                    f"GPU utilization {gpu}% is below {phase_spec.gpu_min_percent}%",
+                )
             else:
-                degraded_reasons.append(
-                    f"GPU utilization {gpu}% is below {phase_spec.gpu_min_percent}%"
+                issue(
+                    "gpu_below_advisory",
+                    f"GPU utilization {gpu}% is below {phase_spec.gpu_min_percent}%",
+                    required=False,
                 )
         else:
             observations["low_gpu_duration_seconds"] = _track_low_gpu(
-                control_root, phase=phase, now=now, low=False
+                tracking, phase=phase, now=now, low=False
             )
 
     context = {
@@ -261,10 +300,10 @@ def evaluate_health(
                 env=adapter_env,
             )
             if adapter and not adapter.healthy:
-                errors.append("adapter reported unhealthy")
+                issue("adapter_unhealthy", "adapter reported unhealthy")
         except RRCError as exc:
             observations["adapter_error"] = {"code": exc.code, "phase": exc.phase}
-            errors.append(f"adapter health contract failed: {exc.code}")
+            issue(exc.code, f"adapter check failed: {exc.code}", retryable=True)
 
     complete = status.get("state") in {"workload_complete", "completed"}
     if phase == "completion" and adapter is not None:
@@ -273,7 +312,7 @@ def evaluate_health(
             "completed",
         }
         if not adapter.complete:
-            errors.append("completion adapter reported incomplete")
+            issue("completion_incomplete", "completion adapter reported incomplete")
     elif (
         phase == "completion"
         and spec.output_cleanup is not None
@@ -286,24 +325,34 @@ def evaluate_health(
             summary = None
         observations["smoke_summary_path"] = str(summary_path)
         if not isinstance(summary, dict):
-            errors.append("smoke summary is missing or invalid")
+            issue("smoke_summary_invalid", "smoke summary is missing or invalid")
         elif summary.get("schema_version") != "rrctl.smoke-summary.v1":
-            errors.append("smoke summary schema is invalid")
+            issue("smoke_summary_schema", "smoke summary schema is invalid")
         elif summary.get("run_id") != spec.run_id:
-            errors.append("smoke summary run_id does not match")
+            issue("smoke_summary_identity", "smoke summary run_id does not match")
         elif summary.get("checkpoint_cleanup_completed") is not True:
-            errors.append("smoke checkpoint cleanup is incomplete")
+            issue("smoke_cleanup_incomplete", "smoke checkpoint cleanup is incomplete")
         elif summary.get("checkpoint_paths_remaining") != []:
-            errors.append("smoke checkpoint paths remain")
+            issue("smoke_checkpoint_remaining", "smoke checkpoint paths remain")
         else:
             complete = status.get("state") in {"workload_complete", "completed"}
     if status.get("state") in {"failed", "aborted"}:
-        errors.append(f"run is terminal: {status.get('state')}")
-    health_status = "unhealthy" if errors else "degraded" if degraded_reasons else "healthy"
-    healthy = health_status != "unhealthy"
+        issue("run_terminal", f"run is terminal: {status.get('state')}")
+    check_error = any(item["retryable"] for item in issues)
+    hard_error = any(item["required"] and not item["retryable"] for item in issues)
+    health_status = (
+        "unhealthy"
+        if hard_error
+        else "unavailable"
+        if check_error
+        else "degraded"
+        if degraded_reasons
+        else "healthy"
+    )
+    healthy = health_status in {"healthy", "degraded"}
     result = HealthResult(
         healthy=healthy,
-        complete=complete,
+        complete=complete and healthy,
         phase=phase,
         observations=observations,
         errors=tuple(errors),
@@ -311,10 +360,40 @@ def evaluate_health(
         status=health_status,
         degraded_reasons=tuple(degraded_reasons),
         gate_passed=healthy and first_step_ready,
+        issues=tuple(issues),
+        tracking=tracking,
     )
-    event = {**result.to_dict(), "at": utc_now(), "run_id": spec.run_id}
-    append_jsonl(control_root / "health.jsonl", event)
+    return result
 
-    if result.gate_passed and transition_lifecycle and phase == "first_step":
+
+def persist_health(
+    spec: RunSpec, control_root: Path, result: HealthResult, *, transition_lifecycle: bool = True
+) -> None:
+    event = {**result.to_dict(), "at": utc_now(), "run_id": spec.run_id}
+    with control_lock(control_root):
+        append_jsonl(control_root / "health.jsonl", event)
+        atomic_write_json(control_root / "health_state.json", result.tracking)
+
+    if result.gate_passed and transition_lifecycle and result.phase == "first_step":
         mark_first_step_passed(control_root, run_id=spec.run_id, health=result.to_dict())
+
+
+def evaluate_health(
+    spec: RunSpec,
+    control_root: Path,
+    *,
+    phase: str,
+    process_required: bool = True,
+    transition_lifecycle: bool = True,
+) -> HealthResult:
+    """旧调用的兼容入口；新监控器分别调用采样和发布。"""
+    tracking_path = control_root / "health_state.json"
+    result = sample_health(
+        spec,
+        control_root,
+        phase=phase,
+        process_required=process_required,
+        tracking=load_json(tracking_path) if tracking_path.is_file() else None,
+    )
+    persist_health(spec, control_root, result, transition_lifecycle=transition_lifecycle)
     return result

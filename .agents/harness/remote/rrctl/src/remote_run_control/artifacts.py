@@ -44,7 +44,7 @@ def build_artifact_manifest(
     output_root: Path,
     declared: tuple[ArtifactSpec, ...],
     adapter_paths: Iterable[str] = (),
-    destination: Path,
+    destination: Path | None,
 ) -> dict[str, Any]:
     requested: dict[str, bool] = {item.path: item.required for item in declared}
     for value in adapter_paths:
@@ -72,7 +72,8 @@ def build_artifact_manifest(
         "output_root": str(output_root),
         "entries": [entries_by_path[key] for key in sorted(entries_by_path)],
     }
-    atomic_write_json(destination, manifest)
+    if destination is not None:
+        atomic_write_json(destination, manifest)
     return manifest
 
 
@@ -100,8 +101,20 @@ def build_diagnostic_snapshot(
             "control",
             control_root,
             (
-                "status.json", "console.log", "events.jsonl", "health.jsonl", "health_state.json",
-                "worker.log", "preflight.log", "preflight.json",
+                "status.json",
+                "console.log",
+                "events.jsonl",
+                "health.jsonl",
+                "health_state.json",
+                "worker.log",
+                "preflight.log",
+                "preflight.json",
+                "monitor.json",
+                "monitor-events.jsonl",
+                "health-latest",
+                "completion.json",
+                "workload-exit.json",
+                "finalization-error.json",
             ),
         ),
         ("output", output_root, tuple(output_paths)),
@@ -132,16 +145,25 @@ def build_diagnostic_snapshot(
                 target.parent.mkdir(parents=True, exist_ok=True)
                 target.write_bytes(data)
                 remaining -= len(data)
-                copied.append({
-                    "path": name,
-                    "source_bytes": size,
-                    "copied_bytes": len(data),
-                    "truncated": len(data) < size,
-                })
-    atomic_write_json(destination / "snapshot.json", {
-        "run_id": run_id, "snapshot_id": snapshot_id, "files": copied, "skipped": skipped,
-        "max_file_bytes": max_file_bytes, "max_total_bytes": max_total_bytes,
-    })
+                copied.append(
+                    {
+                        "path": name,
+                        "source_bytes": size,
+                        "copied_bytes": len(data),
+                        "truncated": len(data) < size,
+                    }
+                )
+    atomic_write_json(
+        destination / "snapshot.json",
+        {
+            "run_id": run_id,
+            "snapshot_id": snapshot_id,
+            "files": copied,
+            "skipped": skipped,
+            "max_file_bytes": max_file_bytes,
+            "max_total_bytes": max_total_bytes,
+        },
+    )
     build_artifact_manifest(
         run_id=run_id,
         output_root=destination,

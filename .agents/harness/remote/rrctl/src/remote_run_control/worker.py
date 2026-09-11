@@ -15,10 +15,12 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
-from .artifacts import build_artifact_manifest, build_diagnostic_snapshot
+from . import monitor
+from .artifacts import build_diagnostic_snapshot
 from .cleanup import cleanup_output
 from .environment import activation_argv, make_environment
 from .errors import RRCError
+from .finalization import complete_existing, finalize_exit, read_completion
 from .health import evaluate_health
 from .jsonutil import atomic_write_json, load_json, sha256_file, sha256_json, utc_now
 from .models import RunSpec
@@ -31,9 +33,12 @@ from .state import (
     TERMINAL_STATES,
     control_lock,
     mark_launched,
+    operation_lock,
     read_status,
     recover_status,
+    request_stop,
     transition,
+    transition_if_open,
 )
 
 
@@ -85,7 +90,7 @@ def _fail(control_root: Path, spec: RunSpec, exc: BaseException, phase: str) -> 
         state = read_status(control_root).get("state")
         if state not in TERMINAL_STATES:
             detail = exc.to_dict() if isinstance(exc, RRCError) else {"message": str(exc)}
-            transition(
+            transition_if_open(
                 control_root,
                 run_id=spec.run_id,
                 next_state="failed",
@@ -216,6 +221,7 @@ def launch(stage_root: Path) -> dict[str, Any]:
             "backend": "process",
             "workload_argv_sha256": sha256_json(list(spec.workload.argv)),
             "created_at": utc_now(),
+            "monitoring": monitor.declaration(spec),
         }
         atomic_write_json(_binding_path(control_root), binding)
         atomic_write_json(
@@ -285,6 +291,7 @@ def launch(stage_root: Path) -> dict[str, Any]:
             "state": "launched",
             "control_root": str(control_root),
             "session": spec.session.name,
+            "monitoring": binding["monitoring"],
         }
     except BaseException as exc:
         if not executor_started:
@@ -297,10 +304,25 @@ def _conda_command(spec: RunSpec, extra: dict[str, str]) -> list[str]:
 
 
 def execute(control_root: Path) -> int:
+    # 先取得整个执行期的唯一拥有权；重复 execute 不得重启 workload 或改坏原状态。
+    with operation_lock(control_root, "monitor"):
+        binding = load_json(_binding_path(control_root))
+        if binding.get("executor_pid") or (control_root / "monitor.json").exists():
+            raise RRCError(
+                "execute_already_started",
+                "bound worker was already started; inspect its state",
+                "monitor",
+            )
+        return _execute_owned(control_root)
+
+
+def _execute_owned(control_root: Path) -> int:
     spec = _load_spec(control_root / "run_spec.json")
     output_root = Path(spec.remote.output_root)
     console_path = control_root / "console.log"
     lease: dict[str, Any] = {}
+    process: subprocess.Popen | None = None
+    watcher: monitor.Monitor | None = None
     try:
         executor_identity = _process_identity(os.getpid())
         if (
@@ -326,6 +348,7 @@ def execute(control_root: Path) -> int:
             },
         )
         mark_launched(control_root, run_id=spec.run_id)
+        watcher = monitor.Monitor(spec, control_root)
         lease = acquire_resources(spec, control_root)
         _update_binding(control_root, {"resources": lease})
         output_root.parent.mkdir(parents=True, exist_ok=True)
@@ -359,54 +382,29 @@ def execute(control_root: Path) -> int:
                 {
                     "workload_pid": process.pid,
                     "workload_started_at": utc_now(),
-                    "workload_process_group_id": os.getpgid(process.pid),
+                    "workload_process_group_id": executor_identity["process_group_id"],
                     **identity_values,
                 },
             )
-            return_code = process.wait()
-        cleanup_output(
+            return_code = watcher.supervise(process)
+        watcher.data["monitor_status"] = "finalizing"
+        watcher.heartbeat()
+        status = finalize_exit(
             spec,
-            terminal_state="workload_exit_zero" if return_code == 0 else "failed",
-        )
-        current = read_status(control_root).get("state")
-        if current in TERMINAL_STATES or (control_root / "stop_request.json").exists():
-            return return_code
-        if return_code != 0:
-            transition(
-                control_root,
-                run_id=spec.run_id,
-                next_state="failed",
-                reason="workload_exit_nonzero",
-                detail={"exit_code": return_code},
-            )
-            return return_code
-        if current == "launched":
-            first = evaluate_health(
-                spec,
-                control_root,
-                phase="first_step",
-                process_required=False,
-                transition_lifecycle=True,
-            )
-            if not first.gate_passed:
-                transition(
-                    control_root,
-                    run_id=spec.run_id,
-                    next_state="failed",
-                    reason="first_step_health_failed_after_fast_exit",
-                    detail={"health": first.to_dict()},
-                )
-                return 1
-        transition(
             control_root,
-            run_id=spec.run_id,
-            next_state="workload_complete",
-            reason="workload_exit_zero_awaiting_external_completion",
-            detail={"exit_code": 0},
+            return_code,
+            check=lambda phase: watcher.check(phase, process_required=False),
+            heartbeat=watcher.heartbeat,
         )
-        return 0
+        watcher.finish(status)
+        return return_code if return_code else (0 if status["state"] == "completed" else 2)
     except BaseException as exc:
-        _fail(control_root, spec, exc, "execute")
+        if process is None:
+            _fail(control_root, spec, exc, "execute")
+        # 检查器或监控器故障不能冒充 workload 的退出，也不能自动停止活进程。
+        if watcher is not None:
+            with suppress(Exception):
+                watcher.finish(read_status(control_root), error_code="monitor_failed")
         raise
     finally:
         if lease:
@@ -414,6 +412,8 @@ def execute(control_root: Path) -> int:
 
 
 def health(control_root: Path, phase: str) -> dict[str, Any]:
+    if monitor.protocol(load_json(_binding_path(control_root))):
+        return monitor.read_health(control_root, phase)
     spec = _load_spec(control_root / "run_spec.json")
     result = evaluate_health(
         spec,
@@ -422,18 +422,21 @@ def health(control_root: Path, phase: str) -> dict[str, Any]:
         process_required=phase != "completion",
         transition_lifecycle=True,
     )
-    return result.to_dict()
+    return {**result.to_dict(), "monitoring_mode": "client_compatibility"}
 
 
 def inspect(control_root: Path) -> dict[str, Any]:
-    status, recovered = recover_status(control_root)
     binding = load_json(_binding_path(control_root))
+    if monitor.protocol(binding):
+        return monitor.read_observation(control_root)
+    status, recovered = recover_status(control_root)
     return {
         "run_id": status["run_id"],
         "status": status,
         "status_recovered": recovered,
         "binding": binding,
         "control_root": str(control_root),
+        "monitoring_mode": "client_compatibility",
     }
 
 
@@ -456,62 +459,26 @@ def diagnostics(control_root: Path) -> dict[str, Any]:
 
 def complete(control_root: Path) -> dict[str, Any]:
     spec = _load_spec(control_root / "run_spec.json")
-    if read_status(control_root).get("state") != "workload_complete":
-        raise RRCError(
-            "complete_state",
-            "completion is only valid after workload_complete",
-            "health",
-        )
-    completion = evaluate_health(
-        spec,
-        control_root,
-        phase="completion",
-        process_required=False,
-        transition_lifecycle=False,
-    )
-    if not completion.healthy or not completion.complete:
-        raise RRCError(
-            "completion_health_failed",
-            "completion health contract did not pass",
-            "health",
-            details={"health": completion.to_dict()},
-        )
-    manifest = build_artifact_manifest(
-        run_id=spec.run_id,
-        output_root=Path(spec.remote.output_root),
-        declared=spec.artifacts,
-        adapter_paths=completion.adapter.artifacts if completion.adapter else (),
-        destination=control_root / "artifact_manifest.json",
-    )
-    manifest["provenance"] = {
-        "run_spec_sha256": spec.digest,
-        "commit": spec.source.commit,
-        "branch": spec.source.branch,
-        "spec_id": spec.metadata.get("spec_id"),
-        "exp_id": spec.metadata.get("exp_id"),
-        "pipeline_name": spec.metadata.get("pipeline_name"),
-        "pipeline_stages_sha256": spec.metadata.get("pipeline_stages_sha256"),
-    }
-    atomic_write_json(control_root / "artifact_manifest.json", manifest)
-    transition(
-        control_root,
-        run_id=spec.run_id,
-        next_state="completed",
-        reason="external_completion_and_artifact_contract_passed",
-        detail={"exit_code": 0, "artifact_count": len(manifest["entries"])},
-    )
-    return read_status(control_root)
+    binding = load_json(_binding_path(control_root))
+    if monitor.protocol(binding):
+        if read_status(control_root)["state"] == "completed":
+            read_completion(spec, control_root, binding)
+            return read_status(control_root)
+        raise RRCError("monitor_owned", "completion belongs to the bound worker", "monitor")
+    return complete_existing(spec, control_root)
 
 
 def fail_completed_workload(control_root: Path, reason: str) -> dict[str, Any]:
     spec = _load_spec(control_root / "run_spec.json")
+    if monitor.protocol(load_json(_binding_path(control_root))):
+        raise RRCError("monitor_owned", "completion belongs to the bound worker", "monitor")
     if read_status(control_root).get("state") != "workload_complete":
         raise RRCError(
             "fail_state",
             "terminal health failure requires workload_complete",
             "health",
         )
-    transition(
+    transition_if_open(
         control_root,
         run_id=spec.run_id,
         next_state="failed",
@@ -537,16 +504,6 @@ def abort(
             "abort terminal state must be failed or aborted",
             "ownership",
         )
-    if status.get("state") == "workload_complete":
-        cleanup_output(spec, terminal_state=terminal_state)
-        transition(
-            control_root,
-            run_id=spec.run_id,
-            next_state=terminal_state,
-            reason=reason,
-            detail={"cleanup": "workload_already_exited"},
-        )
-        return read_status(control_root)
     if spec.session.backend != "process":
         raise RRCError(
             "legacy_backend_read_only",
@@ -563,20 +520,18 @@ def abort(
     except RRCError as exc:
         if exc.code != "abort_process_missing":
             raise
+        request_stop(control_root, run_id=spec.run_id, reason=reason, state=terminal_state)
         # 已确认进程消失时，显式停止请求仍可关闭运行；不伪造工作负载退出码。
         cleanup_output(spec, terminal_state=terminal_state)
         release_resources(binding.get("resources", {}), spec, control_root)
-        return transition(
+        return transition_if_open(
             control_root,
             run_id=spec.run_id,
             next_state=terminal_state,
             reason="owned_process_already_gone",
             detail={"exit_code": None, "cleanup": "no_live_process"},
         )
-    atomic_write_json(
-        control_root / "stop_request.json",
-        {"reason": reason, "at": utc_now(), "state": terminal_state},
-    )
+    request_stop(control_root, run_id=spec.run_id, reason=reason, state=terminal_state)
     with suppress(ProcessLookupError):
         os.killpg(owned_pgid, signal.SIGTERM)
     term_deadline = time.monotonic() + 10
@@ -594,7 +549,7 @@ def abort(
     if not remaining:
         cleanup_output(spec, terminal_state=terminal_state)
         release_resources(binding.get("resources", {}), spec, control_root)
-    transition(
+    transition_if_open(
         control_root,
         run_id=spec.run_id,
         next_state=terminal_state,
@@ -630,6 +585,11 @@ def parser() -> argparse.ArgumentParser:
     execute_parser.add_argument("--control", type=Path, required=True)
     inspect_parser = commands.add_parser("inspect")
     inspect_parser.add_argument("--control", type=Path, required=True)
+    observe_parser = commands.add_parser("observe")
+    observe_parser.add_argument("--control", type=Path, required=True)
+    observe_parser.add_argument("--timeout-seconds", type=float, required=True)
+    observe_parser.add_argument("--after-event")
+    observe_parser.add_argument("--until", choices=("event", "first_step"), default="event")
     diagnostic_parser = commands.add_parser("diagnostics")
     diagnostic_parser.add_argument("--control", type=Path, required=True)
     health_parser = commands.add_parser("health")
@@ -658,6 +618,15 @@ def main(argv: list[str] | None = None) -> int:
             return execute(args.control)
         elif args.command == "inspect":
             _print(inspect(args.control))
+        elif args.command == "observe":
+            _print(
+                monitor.observe(
+                    args.control,
+                    timeout_seconds=args.timeout_seconds,
+                    after_event=args.after_event,
+                    until=args.until,
+                )
+            )
         elif args.command == "diagnostics":
             _print(diagnostics(args.control))
         elif args.command == "health":

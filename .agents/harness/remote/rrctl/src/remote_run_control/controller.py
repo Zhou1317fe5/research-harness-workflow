@@ -19,6 +19,8 @@ from .artifacts import load_artifact_manifest
 from .errors import RRCError
 from .jsonutil import atomic_write_json, load_json, sha256_file, sha256_json
 from .models import RunSpec
+from .monitor import OBSERVE_MAX_SECONDS
+from .monitor import protocol as monitoring_protocol
 from .profiles import DEFAULT_PROFILE_PATH, ProfileStore
 from .readiness import ReadinessResult, validate_run_spec
 from .security import redact, redact_data
@@ -323,6 +325,42 @@ class Controller:
         )
         self.index.save(ref, spec, launched)
         try:
+            if monitoring_protocol({"monitoring": launched.get("monitoring")}):
+                budget = (
+                    min(spec.health.first_step.timeout_seconds, max_wait_seconds)
+                    if max_wait_seconds
+                    else spec.health.first_step.timeout_seconds
+                )
+                observed = self._observe_remote(
+                    spec.run_id,
+                    deadline=time.monotonic() + budget,
+                    interval=spec.health.first_step.poll_interval_seconds,
+                    until="first_step",
+                )
+                state = observed.get("status", {}).get("state")
+                if state in {"failed", "aborted"}:
+                    raise RRCError(
+                        "first_step_terminal", f"run entered {state}", "health", details=observed
+                    )
+                if observed["observation"] == "timeout":
+                    raise RRCError(
+                        "first_step_observer_timeout",
+                        "first-step observation expired; workload preserved",
+                        "observer",
+                        details={"last": observed, "remote_workload_preserved": True},
+                    )
+                if observed["observation"] == "attention":
+                    raise RRCError(
+                        "first_step_attention",
+                        "first-step monitoring needs attention",
+                        "observer",
+                        details=observed,
+                    )
+                return {
+                    "launch": launched,
+                    "first_step": observed.get("first_step", "completed_fast"),
+                    "inspect": observed,
+                }
             budget = (
                 min(spec.health.first_step.timeout_seconds, max_wait_seconds)
                 if max_wait_seconds
@@ -377,10 +415,11 @@ class Controller:
         profile = self.profile_store.load(ref.profile)
         return ref, spec, transport_for(profile)
 
-    def inspect(self, run_id: str) -> dict[str, Any]:
+    def inspect(self, run_id: str, *, timeout_seconds: float = 180) -> dict[str, Any]:
         ref, spec, transport = self._runtime(run_id)
         result = transport.run(
-            [ref.remote_python, ref.worker_path, "inspect", "--control", ref.control_root]
+            [ref.remote_python, ref.worker_path, "inspect", "--control", ref.control_root],
+            timeout_seconds=timeout_seconds,
         )
         value = _parse_worker_result(result, phase="inspect", secret_values=transport.secret_values)
         self.index.save(ref, spec, value.get("status"))
@@ -490,7 +529,179 @@ class Controller:
             details={"last": last, "remote_state_preserved": True},
         )
 
+    @staticmethod
+    def _timeout(run_id: str, last: dict[str, Any] | None) -> dict[str, Any]:
+        return {
+            **(last or {"run_id": run_id}),
+            "observation": "timeout",
+            "remote_workload_preserved": True,
+            "resume_argv": ["rrctl", "wait", run_id],
+        }
+
+    def _observe_remote(
+        self,
+        run_id: str,
+        *,
+        deadline: float | None,
+        interval: float,
+        until: str = "event",
+        after_event: str | None = None,
+    ) -> dict[str, Any]:
+        ref, spec, transport = self._runtime(run_id)
+        last = None
+        failures = 0
+        requests = 0
+        while True:
+            remaining = deadline - time.monotonic() if deadline is not None else 180.0
+            if remaining <= 0:
+                value = self._timeout(run_id, last)
+                value["observer_requests"] = requests
+                return value
+            transport_budget = min(180.0, remaining)
+            margin = min(10.0, transport_budget / 4)
+            remote_budget = min(OBSERVE_MAX_SECONDS, interval, transport_budget - margin)
+            argv = [
+                ref.remote_python,
+                ref.worker_path,
+                "observe",
+                "--control",
+                ref.control_root,
+                "--timeout-seconds",
+                str(remote_budget),
+                "--until",
+                until,
+            ]
+            if after_event is not None:
+                argv += ["--after-event", after_event]
+            try:
+                requests += 1
+                result = transport.run(argv, timeout_seconds=transport_budget)
+                if result.returncode == 255:
+                    raise RRCError(
+                        "transport_connection", "observation connection failed", "observer"
+                    )
+                last = _parse_worker_result(
+                    result, phase="observe", secret_values=transport.secret_values
+                )
+            except RRCError as exc:
+                if exc.code not in {"transport_timeout", "transport_connection"}:
+                    raise
+                failures += 1
+                if deadline is not None and time.monotonic() >= deadline:
+                    value = self._timeout(run_id, last)
+                    value["remote_state_unknown"] = True
+                    return value
+                if failures >= 3:
+                    raise RRCError(
+                        "observation_unavailable",
+                        "bounded observation retries exhausted",
+                        "observer",
+                        details={"run_id": run_id, "remote_workload_preserved": True},
+                    ) from exc
+                delay = min(2 ** (failures - 1), 5)
+                if deadline is not None:
+                    delay = min(delay, max(0, deadline - time.monotonic()))
+                time.sleep(delay)
+                continue
+            failures = 0
+            if monitoring_protocol(last.get("binding", {})) is None:
+                raise RRCError(
+                    "monitor_protocol", "observe response lost its capability", "observer"
+                )
+            if (
+                last.get("run_id") != run_id
+                or last["binding"].get("run_spec_sha256") != spec.digest
+                or not isinstance(last.get("status"), dict)
+            ):
+                raise RRCError(
+                    "observe_identity", "observation belongs to a different run", "observer"
+                )
+            if last.get("observation") not in {
+                "no_event",
+                "terminal",
+                "attention",
+                "unavailable",
+                "first_step",
+            }:
+                raise RRCError("observe_response", "invalid observation response", "observer")
+            if last.get("status", {}).get("state") in {"failed", "aborted"}:
+                last["observation"] = "terminal"
+            if (
+                last["observation"] == "terminal"
+                and last["status"].get("state") not in {"completed", "failed", "aborted"}
+            ) or (last["observation"] == "first_step" and until != "first_step"):
+                raise RRCError(
+                    "observe_response", "observation is not an authoritative result", "observer"
+                )
+            if last["observation"] == "unavailable":
+                raise RRCError(
+                    "monitor_unavailable",
+                    "monitor snapshot is stale, lost or unavailable",
+                    "observer",
+                    details={"snapshot": last, "remote_workload_preserved": True},
+                )
+            if last["observation"] != "no_event":
+                self.index.save(ref, spec, last.get("status"))
+                last["observer_requests"] = requests
+                return last
+            # 无事件响应只在当前客户端内续等，不向 CLI 或模型输出。
+
     def wait(
+        self,
+        run_id: str,
+        *,
+        poll_seconds: float | None = None,
+        max_wait_seconds: float = 900,
+        after_event: str | None = None,
+    ) -> dict[str, Any]:
+        interval = 600 if poll_seconds is None else poll_seconds
+        if (
+            not math.isfinite(interval)
+            or interval <= 0
+            or not math.isfinite(max_wait_seconds)
+            or max_wait_seconds < 0
+        ):
+            raise RRCError(
+                "wait_budget",
+                "poll must be positive and max-wait nonnegative finite seconds",
+                "observer",
+            )
+        deadline = time.monotonic() + max_wait_seconds if max_wait_seconds else None
+        try:
+            try:
+                initial = self.inspect(
+                    run_id, timeout_seconds=min(180, max_wait_seconds) if max_wait_seconds else 180
+                )
+            except RRCError as exc:
+                if (
+                    exc.code == "transport_timeout"
+                    and deadline is not None
+                    and time.monotonic() >= deadline
+                ):
+                    return self._timeout(run_id, None)
+                raise
+            if monitoring_protocol(initial.get("binding", {})):
+                return self._observe_remote(
+                    run_id,
+                    deadline=deadline,
+                    interval=interval,
+                    after_event=after_event,
+                )
+            if after_event is not None:
+                raise RRCError(
+                    "event_cursor_unsupported",
+                    "legacy worker has no monitor event cursor",
+                    "observer",
+                )
+            remaining = max(0, deadline - time.monotonic()) if deadline is not None else 0
+            if deadline is not None and remaining <= 0:
+                return self._timeout(run_id, initial)
+            value = self._wait_legacy(run_id, poll_seconds=interval, max_wait_seconds=remaining)
+            return {**value, "monitoring_mode": "client_compatibility"}
+        except BaseException as exc:
+            self._raise_observer_error(run_id, exc)
+
+    def _wait_legacy(
         self,
         run_id: str,
         *,

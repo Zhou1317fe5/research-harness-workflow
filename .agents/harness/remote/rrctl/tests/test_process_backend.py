@@ -218,7 +218,9 @@ class ProcessBackendTests(unittest.TestCase):
         time.sleep(0.1)
         report = self.control.health(spec.run_id, phase="periodic")
         self.assertTrue(report["observations"]["workload_alive"])
-        self.assertEqual(report["status"], "degraded")
+        self.assertEqual(report["status"], "unavailable")
+        self.assertEqual(report["monitor_status"], "lost")
+        self.assertFalse(report["healthy"])
         self.assertEqual(self.control.abort(spec.run_id, confirmed=True)["state"], "aborted")
 
     def test_explicit_abort_checks_pid_identity_and_preserves_other_process(self):

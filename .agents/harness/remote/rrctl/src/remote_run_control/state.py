@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from .errors import RRCError
-from .jsonutil import append_jsonl, atomic_write_json, load_json, utc_now
+from .jsonutil import append_jsonl, atomic_write_json, load_json, sha256_json, utc_now
 
 SCHEMA_VERSION = "rrctl.status.v1"
 TERMINAL_STATES = {"completed", "failed", "aborted"}
@@ -21,7 +21,7 @@ TRANSITIONS = {
     "launched": {"first_step_passed", "failed", "aborted"},
     "first_step_passed": {"running", "failed", "aborted"},
     # Direct completed remains readable for v0.1 recovery; new workers use
-    # workload_complete so controller-side cleanup is verified first.
+    # workload_complete so cleanup and evidence are verified before publication.
     "running": {"workload_complete", "completed", "failed", "aborted"},
     "workload_complete": {"completed", "failed", "aborted"},
     "completed": set(),
@@ -36,6 +36,20 @@ def control_lock(control_root: Path) -> Iterator[None]:
     lock_path = control_root / ".state.lock"
     with lock_path.open("a+") as handle:
         fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
+@contextmanager
+def operation_lock(control_root: Path, name: str) -> Iterator[None]:
+    """长操作使用独立非阻塞锁，不占用生命周期短锁。"""
+    with (control_root / f".{name}.lock").open("a+") as handle:
+        try:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as exc:
+            raise RRCError(f"{name}_busy", f"another {name} owner is active", "monitor") from exc
         try:
             yield
         finally:
@@ -238,6 +252,8 @@ def mark_first_step_passed(
         status = read_status(control_root)
         if status["run_id"] != run_id:
             raise RRCError("state_run_mismatch", "status belongs to a different run", "state")
+        if (control_root / "stop_request.json").exists():
+            return status
         if status["state"] not in {"launched", "first_step_passed"}:
             return status
         if status["state"] == "launched":
@@ -265,7 +281,10 @@ def mark_launched(control_root: Path, *, run_id: str) -> dict[str, Any]:
         if status["state"] != "staged":
             return status
         return _transition_locked(
-            control_root, run_id=run_id, next_state="launched", reason="process_worker_started",
+            control_root,
+            run_id=run_id,
+            next_state="launched",
+            reason="process_worker_started",
         )
 
 
@@ -285,3 +304,70 @@ def update_status_detail(
         status["updated_at"] = utc_now()
         atomic_write_json(control_root / "status.json", status)
         return status
+
+
+def transition_if_open(
+    control_root: Path,
+    *,
+    run_id: str,
+    next_state: str,
+    reason: str,
+    detail: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """在短锁内核对终态和停止请求，避免观察到的旧状态覆盖并发停止。"""
+    with control_lock(control_root):
+        status = read_status(control_root)
+        if status["run_id"] != run_id:
+            raise RRCError("state_run_mismatch", "status belongs to a different run", "state")
+        if status["state"] in TERMINAL_STATES:
+            return status
+        stop = control_root / "stop_request.json"
+        if stop.exists() and load_json(stop).get("state") != next_state:
+            return status
+        return _transition_locked(
+            control_root, run_id=run_id, next_state=next_state, reason=reason, detail=detail
+        )
+
+
+def request_stop(control_root: Path, *, run_id: str, reason: str, state: str) -> dict[str, Any]:
+    with control_lock(control_root):
+        current = read_status(control_root)
+        if current["run_id"] != run_id:
+            raise RRCError("state_run_mismatch", "status belongs to a different run", "state")
+        if current["state"] in TERMINAL_STATES:
+            raise RRCError("abort_terminal", "cannot abort a terminal run", "ownership")
+        atomic_write_json(
+            control_root / "stop_request.json", {"reason": reason, "at": utc_now(), "state": state}
+        )
+        return current
+
+
+def publish_completed(
+    control_root: Path,
+    *,
+    run_id: str,
+    manifest: dict[str, Any],
+    receipt: dict[str, Any],
+) -> dict[str, Any]:
+    """哈希和检查在锁外完成；证据持久化后才在同一短锁内发布终态。"""
+    with control_lock(control_root):
+        status = read_status(control_root)
+        if status["run_id"] != run_id:
+            raise RRCError("state_run_mismatch", "status belongs to a different run", "state")
+        if status["state"] in TERMINAL_STATES or (control_root / "stop_request.json").exists():
+            return status
+        if status["state"] != "workload_complete":
+            raise RRCError("complete_state", "completion requires workload_complete", "health")
+        atomic_write_json(control_root / "artifact_manifest.json", manifest)
+        atomic_write_json(control_root / "completion.json", receipt)
+        return _transition_locked(
+            control_root,
+            run_id=run_id,
+            next_state="completed",
+            reason="completion_and_artifact_contract_passed",
+            detail={
+                "exit_code": 0,
+                "artifact_count": len(manifest["entries"]),
+                "completion_sha256": sha256_json(receipt),
+            },
+        )

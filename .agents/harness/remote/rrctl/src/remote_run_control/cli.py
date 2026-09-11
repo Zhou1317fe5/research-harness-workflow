@@ -11,7 +11,9 @@ from typing import Any
 from . import __version__
 from .controller import Controller
 from .errors import RRCError
+from .jsonutil import atomic_write_json, sha256_file, sha256_json
 from .models import RunSpec
+from .monitor import PROTOCOL
 from .security import redact
 
 
@@ -20,6 +22,32 @@ def _emit(value: dict[str, Any], *, machine: bool) -> None:
         print(json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")))
     else:
         print(json.dumps(value, ensure_ascii=False, sort_keys=True, indent=2))
+
+
+def _compact_wait(value: dict[str, Any], controller: Controller) -> dict[str, Any]:
+    if value.get("monitoring_mode") != "worker":
+        return value
+    path = controller.index.root / value["run_id"] / "last_observation.json"
+    try:
+        atomic_write_json(path, value)
+    except OSError:
+        return value
+    compact = {key: item for key, item in value.items() if key not in {"binding", "first_step"}}
+    status = dict(compact.get("status", {}))
+    status["detail"] = {
+        key: item
+        for key, item in status.get("detail", {}).items()
+        if key
+        in {
+            "exit_code",
+            "failure_kind",
+            "artifact_count",
+            "completion_sha256",
+        }
+    }
+    compact["status"] = status
+    compact["details_path"] = str(path)
+    return compact
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -52,13 +80,28 @@ def build_parser() -> argparse.ArgumentParser:
     inspect = commands.add_parser("inspect", help="inspect authoritative remote state")
     inspect.add_argument("run_id")
 
-    health = commands.add_parser("health", help="run a health phase")
+    health = commands.add_parser(
+        "health", help="read cached health; legacy workers use compatibility probes"
+    )
     health.add_argument("run_id")
     health.add_argument("--phase", choices=("first_step", "periodic", "completion"), required=True)
 
-    wait = commands.add_parser("wait", help="poll until terminal state or health failure")
+    wait = commands.add_parser(
+        "wait", help="observe silently until terminal state or required attention"
+    )
     wait.add_argument("run_id")
-    wait.add_argument("--poll-seconds", type=float, default=600)
+    wait.add_argument(
+        "--poll-seconds",
+        type=float,
+        default=600,
+        help="client observation window; does not change worker health sampling",
+    )
+    wait.add_argument(
+        "--after-event", help="explicit run-bound event cursor; active alerts replay when omitted"
+    )
+    wait.add_argument(
+        "--full-output", action="store_true", help="include full binding and verdict details"
+    )
     wait.add_argument(
         "--max-wait-seconds",
         type=float,
@@ -92,13 +135,28 @@ def main(argv: list[str] | None = None) -> int:
                 "ok": True,
                 "version": __version__,
                 "implementation": str(Path(__file__).resolve().parent),
+                "implementation_sha256": sha256_json(
+                    {
+                        path.name: sha256_file(path)
+                        for path in sorted(Path(__file__).resolve().parent.glob("*.py"))
+                    }
+                ),
                 "backends": ["process"],
                 "capabilities": [
                     "environment-preflight",
                     "gpu-leases",
                     "observer-deadline",
                     "idempotent-pull",
+                    "worker-monitoring",
+                    "remote-finalization",
+                    "cached-health",
+                    "bounded-observe",
+                    "monitor-events",
                 ],
+                "monitor_protocols": [PROTOCOL],
+                "wait_default_seconds": 900,
+                "wait_indefinite_value": 0,
+                "server_health_checked": False,
                 "wait_exit_codes": {
                     "completed": 0,
                     "failed_or_aborted": 1,
@@ -125,7 +183,10 @@ def main(argv: list[str] | None = None) -> int:
             value = controller.health(args.run_id, phase=args.phase)
         elif args.command == "wait":
             value = controller.wait(
-                args.run_id, poll_seconds=args.poll_seconds, max_wait_seconds=args.max_wait_seconds
+                args.run_id,
+                poll_seconds=args.poll_seconds,
+                max_wait_seconds=args.max_wait_seconds,
+                after_event=args.after_event,
             )
         elif args.command == "pull":
             value = controller.pull(args.run_id, diagnostic=args.diagnostic)
@@ -138,11 +199,28 @@ def main(argv: list[str] | None = None) -> int:
         run_status = value.get("status") if isinstance(value, dict) else None
         state = run_status.get("state") if isinstance(run_status, dict) else None
         failed = args.command == "wait" and state in {"failed", "aborted"}
-        _emit({"ok": not failed, "result": value}, machine=args.json)
+        attention = args.command == "wait" and value.get("observation") == "attention"
+        if args.command == "wait":
+            if (
+                not failed
+                and not attention
+                and state != "completed"
+                and value.get("observation") != "timeout"
+            ):
+                raise RRCError(
+                    "wait_result_incomplete",
+                    "wait did not produce an authoritative result",
+                    "observer",
+                )
+            if not args.full_output:
+                value = _compact_wait(value, controller)
+        _emit({"ok": not failed and not attention, "result": value}, machine=args.json)
         if args.command == "wait" and value.get("observation") == "timeout":
             return 124
         if failed:
             return 1
+        if attention:
+            return 2
         return 0
     except RRCError as exc:
         _emit({"ok": False, "error": exc.to_dict()}, machine=args.json)

@@ -1,6 +1,6 @@
 # Remote Run Control
 
-rrctl 0.2 使用 Linux 独立进程会话承载远端 worker，不依赖 tmux 或常驻的本地服务。
+rrctl 0.3 使用 Linux 独立进程会话承载远端 worker，不依赖 tmux 或常驻的本地服务。
 包名为 `remote-run-control`，Python 模块为 `remote_run_control`。
 
 ```bash
@@ -29,6 +29,40 @@ rrctl --json pull RUN-ID
 | 124 | 本次观察期限已到 | 对同一 RunID 继续 wait |
 
 `--max-wait-seconds 0` 可持续等待。外层工具超时应大于观察预算及一次控制请求的时间。首步 gate 默认由生成器设置为 600 秒；它与整个训练时长分开。首步观察未通过但进程已启动时保留绑定，记录 gate pending，不重新 launch。
+
+新 worker 自主执行首步、周期检查和完成验收。退出本地 wait 或关闭 agent 后，检查继续按 RunSpec 的健康策略运行；成功退出的 workload 先进入 workload_complete，通过原有验收、smoke 清理和必需产物检查，封存报告与 manifest 后才进入 completed。非零退出保留真实退出码。检查器超时与异常单独记录，活任务保持运行；完成检查持续不可用时保留待验收状态并报告 attention。
+
+正常监控只有一个写入者，使用独立的 monitor 锁；状态锁只用于短期发布。心跳约每 30 秒写入一次，不执行 adapter。昂贵检查遵守各阶段间隔，adapter 有独立超时，工作负载退出通过有超时的 process.wait 及时检测。心跳过期阈值覆盖 adapter 的预算和采样时间；失联、过期或损坏的缓存会报告未知，不据此伪造训练失败或完成。
+
+新模式下 inspect、health、wait 只读已发布结果；多个观察者不会放大 adapter 次数。首步通过后不重复推进生命周期，已完成运行使用封存的验收记录，重连不再调用 completion adapter。health 返回的 run_state、health_status、monitor_status 分别描述运行、检查和监控器状态。
+
+| control 文件 | 用途 |
+|---|---|
+| monitor.json | 协议、固定策略、拥有者、心跳、检查计数和当前告警 |
+| health-latest/阶段.json | 原子替换的完整检查结果及采样时间 |
+| monitor-events.jsonl | 独立的告警打开与恢复事件，序号单调 |
+| health.jsonl | 由 worker 按检查周期保存的检查历史 |
+| workload-exit.json | 实际工作负载退出码 |
+| completion.json | 绑定运行身份及 manifest 摘要的验收记录 |
+| finalization-error.json | 检查或发布不可用的诊断依据 |
+
+既有 status.json 和 events.jsonl 继续保存生命周期及可恢复的转换链。诊断快照包含上述监控证据，保留原大小上限及截断标记。普通拉取仍校验文件内容的大小和 SHA。
+
+wait 的远端 observe 请求最多持续 120 秒，仅读缓存。无事件响应在当前客户端内部续等，不输出给调用者。传输预算按每次请求设置，并随剩余客户端期限缩短。--poll-seconds 表示客户端观察窗口上界，不改变 worker 的采样频率。连接故障最多尝试三次，协议错误不会静默回退为另一套监控。
+
+告警指纹由运行、阶段、原因代码和固定对象组成，不包含时间、step 或即时 GPU 百分比。可重试的检查故障连续出现三次才打开告警；明确硬故障立即报告。同一问题更新计数，恢复后再次发生会形成新的事件轮次。advisory 的 GPU 波动不自动升级为必须干预。
+
+默认会重放仍有效的必要告警。调用者明确传入上一响应中的 monitor.event_cursor，才会跳过已确认的事件：
+
+```bash
+rrctl --json wait RUN-ID --max-wait-seconds 0 --after-event RUN_IDENTITY:SEQUENCE
+```
+
+游标绑定本次运行，不能跨运行复用，也不承诺跨连接精确一次投递。wait 默认输出状态摘要和证据路径，完整观察响应保存在本机运行索引的 last_observation.json；wait --full-output 可直接输出完整结果。正常持续等待只在终态或必要告警时对外返回一次。
+
+默认 900 秒及显式期限保持原义，到期返回 124；0 仍是已有的持续等待选项。外层 remote_run.py 默认显式转发 900 秒，因此只升级 rrctl 不会消除这类每 15 分钟的返回。可以使用已有 --max-wait-seconds 0 参数；宿主工具的硬超时、模型自主调用和压缩不由 rrctl 控制，程序调用次数也不等于模型 token 使用量。
+
+monitoring 能力及有效策略写入新运行的 binding，RunSpec 摘要格式保持不变。未声明该能力的旧 process worker 继续走 client_compatibility 路径；不覆盖活跃任务的 zipapp，不改写其 SHA，不自动重启或迁移任务。worker 被杀或服务器重启后不会自动恢复监控，重连报告最后状态及失联信息。doctor 显示本机版本、实现路径、源码摘要和监控协议能力，不代表已经检查服务器健康。
 
 一键入口支持从请求生成配置，以及恢复已有运行：
 

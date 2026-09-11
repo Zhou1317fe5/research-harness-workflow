@@ -4,13 +4,17 @@ from __future__ import annotations
 
 import json
 import os
+import signal
 import subprocess
+import tempfile
+from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from .errors import RRCError
 from .jsonutil import canonical_bytes
+from .processes import process_identity
 from .security import redact
 
 
@@ -76,6 +80,29 @@ def parse_adapter_result(value: Any) -> AdapterResult:
     return AdapterResult(healthy, complete, progress, observations, tuple(artifacts))
 
 
+def _stop_checker(process: subprocess.Popen) -> None:
+    """超时只停止本次检查器的子树，保持 worker/workload 的进程组存活。"""
+    identities = {}
+    for path in Path("/proc").iterdir():
+        if path.name.isdigit():
+            with suppress(RRCError):
+                identity = process_identity(int(path.name))
+                identities[identity["pid"]] = identity
+    descendants = []
+    parents = {process.pid}
+    while parents:
+        children = [item for item in identities.values() if item["parent_pid"] in parents]
+        descendants.extend(children)
+        parents = {item["pid"] for item in children}
+    for item in reversed(descendants):
+        with suppress(RRCError, ProcessLookupError, PermissionError):
+            if process_identity(item["pid"])["start_ticks"] == item["start_ticks"]:
+                os.kill(item["pid"], signal.SIGKILL)
+    with suppress(ProcessLookupError):
+        process.kill()
+    process.wait(timeout=5)
+
+
 def run_adapter(
     argv: tuple[str, ...],
     context: dict[str, Any],
@@ -88,36 +115,45 @@ def run_adapter(
     if not argv:
         return None
     command = [*environment_command, *argv]
-    try:
-        result = subprocess.run(
+    # 临时文件避免子进程继承 stdout pipe 后让 communicate 在超时清理中继续阻塞。
+    with tempfile.TemporaryFile() as stdout, tempfile.TemporaryFile() as stderr:
+        with subprocess.Popen(
             command,
-            input=canonical_bytes(context) + b"\n",
-            check=False,
-            capture_output=True,
+            stdin=subprocess.PIPE,
+            stdout=stdout,
+            stderr=stderr,
             cwd=cwd,
             env=env or os.environ.copy(),
-            timeout=timeout_seconds,
-        )
-    except subprocess.TimeoutExpired as exc:
-        raise RRCError(
-            "adapter_timeout",
-            f"adapter exceeded {timeout_seconds}s timeout",
-            "adapter",
-        ) from exc
-    if result.returncode != 0:
+        ) as process:
+            try:
+                process.communicate(canonical_bytes(context) + b"\n", timeout=timeout_seconds)
+            except subprocess.TimeoutExpired as exc:
+                _stop_checker(process)
+                raise RRCError(
+                    "adapter_timeout",
+                    f"adapter exceeded {timeout_seconds}s timeout",
+                    "adapter",
+                ) from exc
+            return_code = process.returncode
+        stdout.seek(0)
+        output = stdout.read()
+        stderr.seek(0, 2)
+        stderr.seek(max(0, stderr.tell() - 4000))
+        error_text = stderr.read().decode("utf-8", errors="replace")
+    if return_code != 0:
         raise RRCError(
             "adapter_exit",
-            f"adapter exited with code {result.returncode}",
+            f"adapter exited with code {return_code}",
             "adapter",
-            details={"stderr": redact(result.stderr.decode("utf-8", errors="replace")[-4000:])},
+            details={"stderr": redact(error_text)},
         )
     try:
-        value = json.loads(result.stdout)
+        value = json.loads(output)
     except json.JSONDecodeError as exc:
         raise RRCError(
             "adapter_json",
             f"adapter emitted invalid JSON: {exc}",
             "adapter",
-            details={"stdout": redact(result.stdout.decode("utf-8", errors="replace")[-4000:])},
+            details={"stdout": redact(output.decode("utf-8", errors="replace")[-4000:])},
         ) from exc
     return parse_adapter_result(value)

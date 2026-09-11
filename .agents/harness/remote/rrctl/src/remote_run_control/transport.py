@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import shlex
 import shutil
@@ -32,7 +33,9 @@ class Transport:
     def secret_values(self) -> tuple[str, ...]:
         return ()
 
-    def run(self, argv: list[str], *, input_data: bytes | None = None) -> CommandResult:
+    def run(
+        self, argv: list[str], *, input_data: bytes | None = None, timeout_seconds: float = 180
+    ) -> CommandResult:
         raise NotImplementedError
 
     def mkdir_exclusive(self, path: str) -> None:
@@ -66,10 +69,13 @@ class Transport:
 
 
 class LocalTransport(Transport):
-    def run(self, argv: list[str], *, input_data: bytes | None = None) -> CommandResult:
+    def run(
+        self, argv: list[str], *, input_data: bytes | None = None, timeout_seconds: float = 180
+    ) -> CommandResult:
+        _validate_timeout(timeout_seconds)
         try:
             result = subprocess.run(
-                argv, input=input_data, check=False, capture_output=True, timeout=180
+                argv, input=input_data, check=False, capture_output=True, timeout=timeout_seconds
             )
         except subprocess.TimeoutExpired as exc:
             raise RRCError(
@@ -136,7 +142,10 @@ class SSHTransport(Transport):
             command = ["sshpass", "-e", *command]
         return command, environment
 
-    def run(self, argv: list[str], *, input_data: bytes | None = None) -> CommandResult:
+    def run(
+        self, argv: list[str], *, input_data: bytes | None = None, timeout_seconds: float = 180
+    ) -> CommandResult:
+        _validate_timeout(timeout_seconds)
         base, environment = self._base_command()
         remote_command = shlex.join(argv)
         try:
@@ -146,7 +155,7 @@ class SSHTransport(Transport):
                 check=False,
                 capture_output=True,
                 env=environment,
-                timeout=180,
+                timeout=timeout_seconds,
             )
         except subprocess.TimeoutExpired as exc:
             raise RRCError(
@@ -220,3 +229,10 @@ def transport_for(profile: Profile) -> Transport:
     if profile.kind == "local":
         return LocalTransport()
     return SSHTransport(profile)
+
+
+def _validate_timeout(value: float) -> None:
+    if not math.isfinite(value) or value <= 0:
+        raise RRCError(
+            "transport_budget", "transport timeout must be positive and finite", "transport"
+        )
