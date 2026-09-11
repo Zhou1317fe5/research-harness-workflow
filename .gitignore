@@ -21,6 +21,7 @@ issues/**/readiness*.json
 /.claude/settings.local.json
 /temp/
 /docs/reviews/
+/docs/adr/
 /.agents/harness/.memory/
 /.agents/harness/config/research-memory.json
 /.ruff_cache
