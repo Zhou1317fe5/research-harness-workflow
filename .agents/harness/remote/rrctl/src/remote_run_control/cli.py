@@ -14,7 +14,11 @@ from .errors import RRCError
 from .jsonutil import atomic_write_json, sha256_file, sha256_json
 from .models import RunSpec
 from .monitor import PROTOCOL
-from .security import redact
+from .output_limits import CONTROL_OUTPUT_LIMIT
+from .security import redact, redact_data
+
+CLI_SCHEMA = "rrctl.cli.v1"
+OPERATIONS = {"ready", "launch", "inspect", "health", "wait", "pull", "resume", "abort", "doctor"}
 
 
 def _emit(value: dict[str, Any], *, machine: bool) -> None:
@@ -50,8 +54,20 @@ def _compact_wait(value: dict[str, Any], controller: Controller) -> dict[str, An
     return compact
 
 
-def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
+def build_parser(*, machine: bool = False) -> argparse.ArgumentParser:
+    class Parser(argparse.ArgumentParser):
+        def error(self, message):
+            if machine:
+                raise RRCError(
+                    "cli_arguments",
+                    "invalid command arguments; use the operation help",
+                    "cli",
+                    details={"usage": self.format_usage().strip()},
+                    retryable=False,
+                )
+            super().error(message)
+
+    parser = Parser(
         prog="rrctl",
         description="Daemonless fail-closed control plane for remote workloads",
     )
@@ -60,9 +76,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--state-root", type=Path, help="local run index root")
     commands = parser.add_subparsers(dest="command", required=True)
 
-    commands.add_parser(
-        "doctor", help="show the installed implementation and supported capabilities"
+    doctor = commands.add_parser(
+        "doctor", help="show installation or diagnose a profile without launching a run"
     )
+    doctor.add_argument("--profile", help="check connection and environment for this profile")
+    doctor.add_argument(
+        "--env-file", type=Path, help="check file permissions only; never read or source its values"
+    )
+    doctor.add_argument("--offline", action="store_true", help="only perform local profile checks")
 
     ready = commands.add_parser("ready", help="validate RunSpec and remote prerequisites")
     ready.add_argument("run_spec", type=Path)
@@ -127,86 +148,144 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def installation_info() -> dict[str, Any]:
+    package = Path(__file__).resolve().parent
+    return {
+        "ok": True,
+        "version": __version__,
+        "implementation": str(package),
+        "implementation_sha256": sha256_json(
+            {path.name: sha256_file(path) for path in sorted(package.glob("*.py"))}
+        ),
+        "backends": ["process"],
+        "capabilities": [
+            "environment-preflight",
+            "gpu-leases",
+            "observer-deadline",
+            "idempotent-pull",
+            "worker-monitoring",
+            "remote-finalization",
+            "cached-health",
+            "bounded-observe",
+            "monitor-events",
+            "unknown-operation-outcome",
+            "bounded-control-output",
+            "cli-result-envelope",
+            "connection-doctor",
+        ],
+        "monitor_protocols": [PROTOCOL],
+        "cli_schema_version": CLI_SCHEMA,
+        "control_output_limit_bytes": CONTROL_OUTPUT_LIMIT,
+        "wait_default_seconds": 900,
+        "wait_indefinite_value": 0,
+        "server_health_checked": False,
+        "wait_exit_codes": {
+            "completed": 0,
+            "failed_or_aborted": 1,
+            "attention_or_error": 2,
+            "observer_timeout": 124,
+        },
+    }
+
+
+def _envelope(
+    operation: str,
+    status: str,
+    *,
+    result: dict[str, Any] | None = None,
+    error: dict[str, Any] | None = None,
+    run_id: str | None = None,
+    ok: bool = True,
+    control_output: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    # ready/doctor 的旧顶层字段仍是现有 wrapper 的发现接口。
+    value = dict(result or {}) if operation in {"ready", "doctor"} else {}
+    value.update(
+        {
+            "schema_version": CLI_SCHEMA,
+            "operation": operation,
+            "status": status,
+            "run_id": run_id,
+            "ok": ok,
+            "result": result or {},
+            "error": error or {},
+        }
+    )
+    if control_output and not error:
+        value["control_output"] = control_output
+    return value
+
+
+def _operation_hint(argv: list[str]) -> str:
+    index = 0
+    while index < len(argv):
+        token = argv[index]
+        if token in {"--profiles", "--state-root"}:
+            index += 2
+            continue
+        if not token.startswith("-"):
+            return token if token in OPERATIONS else "unknown"
+        index += 1
+    return "unknown"
+
+
 def main(argv: list[str] | None = None) -> int:
-    args = build_parser().parse_args(argv)
-    if args.command == "doctor":
-        _emit(
-            {
-                "ok": True,
-                "version": __version__,
-                "implementation": str(Path(__file__).resolve().parent),
-                "implementation_sha256": sha256_json(
-                    {
-                        path.name: sha256_file(path)
-                        for path in sorted(Path(__file__).resolve().parent.glob("*.py"))
-                    }
-                ),
-                "backends": ["process"],
-                "capabilities": [
-                    "environment-preflight",
-                    "gpu-leases",
-                    "observer-deadline",
-                    "idempotent-pull",
-                    "worker-monitoring",
-                    "remote-finalization",
-                    "cached-health",
-                    "bounded-observe",
-                    "monitor-events",
-                ],
-                "monitor_protocols": [PROTOCOL],
-                "wait_default_seconds": 900,
-                "wait_indefinite_value": 0,
-                "server_health_checked": False,
-                "wait_exit_codes": {
-                    "completed": 0,
-                    "failed_or_aborted": 1,
-                    "attention_or_error": 2,
-                    "observer_timeout": 124,
-                },
-            },
-            machine=args.json,
-        )
-        return 0
-    controller = Controller(profiles_path=args.profiles, state_root=args.state_root)
+    tokens = list(sys.argv[1:] if argv is None else argv)
+    machine = "--json" in tokens
+    operation = _operation_hint(tokens)
+    run_id = None
+    controller = None
     try:
-        if args.command == "ready":
-            value = controller.ready(RunSpec.from_path(args.run_spec), offline=args.offline)
-            _emit(value, machine=args.json)
-            return 0 if value.get("ready") else 1
-        if args.command == "launch":
-            value = controller.launch(
-                RunSpec.from_path(args.run_spec), max_wait_seconds=args.max_wait_seconds
-            )
-        elif args.command == "inspect":
+        args = build_parser(machine=machine).parse_args(tokens)
+        operation = args.command
+        run_id = getattr(args, "run_id", None)
+        controller = Controller(profiles_path=args.profiles, state_root=args.state_root)
+        code = 0
+        status = "succeeded"
+        ok = True
+        if operation == "doctor":
+            if not args.profile and (args.env_file or args.offline):
+                raise RRCError("doctor_profile_required", "doctor flags require --profile", "cli")
+            value = installation_info()
+            if args.profile:
+                value.update(
+                    controller.doctor(args.profile, env_file=args.env_file, offline=args.offline)
+                )
+                if not value["ok"]:
+                    code, status, ok = 2, "failed", False
+        elif operation in {"ready", "launch"}:
+            spec = RunSpec.from_path(args.run_spec)
+            run_id = spec.run_id
+            if operation == "ready":
+                value = controller.ready(spec, offline=args.offline)
+                if not value.get("ready"):
+                    code, status, ok = 1, "failed", False
+            else:
+                value = controller.launch(spec, max_wait_seconds=args.max_wait_seconds)
+        elif operation == "inspect":
             value = controller.inspect(args.run_id)
-        elif args.command == "health":
+            if value.get("observation") in {"attention", "unavailable"}:
+                status = "attention"
+        elif operation == "health":
             value = controller.health(args.run_id, phase=args.phase)
-        elif args.command == "wait":
+            if value.get("status") in {"unhealthy", "unavailable", "starting", "stale"}:
+                status = "attention"
+        elif operation == "wait":
             value = controller.wait(
                 args.run_id,
                 poll_seconds=args.poll_seconds,
                 max_wait_seconds=args.max_wait_seconds,
                 after_event=args.after_event,
             )
-        elif args.command == "pull":
-            value = controller.pull(args.run_id, diagnostic=args.diagnostic)
-        elif args.command == "resume":
-            value = controller.resume(profile_name=args.profile, control_root=args.control_path)
-        elif args.command == "abort":
-            value = controller.abort(args.run_id, confirmed=args.yes)
-        else:
-            raise AssertionError(args.command)
-        run_status = value.get("status") if isinstance(value, dict) else None
-        state = run_status.get("state") if isinstance(run_status, dict) else None
-        failed = args.command == "wait" and state in {"failed", "aborted"}
-        attention = args.command == "wait" and value.get("observation") == "attention"
-        if args.command == "wait":
-            if (
-                not failed
-                and not attention
-                and state != "completed"
-                and value.get("observation") != "timeout"
-            ):
+            run_status = value.get("status")
+            state = run_status.get("state") if isinstance(run_status, dict) else None
+            if value.get("observation") == "timeout":
+                code, status = 124, "attention"
+            elif state in {"failed", "aborted"}:
+                code, status, ok = 1, "failed", False
+            elif value.get("observation") == "attention":
+                code, status, ok = 2, "attention", False
+            elif state != "completed":
                 raise RRCError(
                     "wait_result_incomplete",
                     "wait did not produce an authoritative result",
@@ -214,28 +293,76 @@ def main(argv: list[str] | None = None) -> int:
                 )
             if not args.full_output:
                 value = _compact_wait(value, controller)
-        _emit({"ok": not failed and not attention, "result": value}, machine=args.json)
-        if args.command == "wait" and value.get("observation") == "timeout":
-            return 124
-        if failed:
-            return 1
-        if attention:
-            return 2
-        return 0
+        elif operation == "pull":
+            value = controller.pull(args.run_id, diagnostic=args.diagnostic)
+        elif operation == "resume":
+            value = controller.resume(profile_name=args.profile, control_root=args.control_path)
+        elif operation == "abort":
+            value = controller.abort(args.run_id, confirmed=args.yes)
+        else:
+            raise AssertionError(operation)
+        run_id = run_id or value.get("run_id")
+        error = None
+        if operation in {"doctor", "ready"} and status == "failed":
+            error = {
+                "code": operation + "_checks_failed",
+                "message": "see the failed checks in result",
+                "phase": operation,
+                "outcome": "failed",
+                "retryable": False,
+                "next_actions": [{"argv": ["rrctl", operation, "--help"]}],
+            }
+        _emit(
+            _envelope(
+                operation,
+                status,
+                result=value,
+                error=error,
+                run_id=run_id,
+                ok=ok,
+                control_output=getattr(controller, "control_output", None),
+            ),
+            machine=machine,
+        )
+        return code
     except RRCError as exc:
-        _emit({"ok": False, "error": exc.to_dict()}, machine=args.json)
+        run_id = run_id or exc.details.get("run_id")
+        status = exc.outcome or ("attention" if exc.phase in {"observer", "health"} else "failed")
+        if exc.code in {"first_step_terminal", "completion_health", "launch_budget", "wait_budget"}:
+            status = "failed"
+        error = exc.to_dict()
+        error.setdefault("outcome", status)
+        error.setdefault("retryable", False)
+        if not error.get("next_actions"):
+            error["next_actions"] = (
+                controller.recovery_actions(run_id)
+                if run_id and hasattr(controller, "recovery_actions")
+                else [
+                    {"argv": ["rrctl", *([operation] if operation in OPERATIONS else []), "--help"]}
+                ]
+            )
+        _emit(
+            _envelope(operation, status, error=redact_data(error), run_id=run_id, ok=False),
+            machine=machine,
+        )
         return 2
     except Exception as exc:
         _emit(
-            {
-                "ok": False,
-                "error": {
+            _envelope(
+                operation,
+                "failed",
+                run_id=run_id,
+                ok=False,
+                error={
                     "code": "unhandled",
                     "message": redact(str(exc)),
                     "phase": "cli",
+                    "outcome": "failed",
+                    "retryable": False,
+                    "next_actions": [{"argv": ["rrctl", "--help"]}],
                 },
-            },
-            machine=args.json,
+            ),
+            machine=machine,
         )
         return 3
 

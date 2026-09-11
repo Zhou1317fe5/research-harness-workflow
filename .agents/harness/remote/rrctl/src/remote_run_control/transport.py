@@ -7,15 +7,15 @@ import math
 import os
 import shlex
 import shutil
-import subprocess
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 from .errors import RRCError
 from .jsonutil import sha256_file
 from .models import EnvironmentSpec
+from .output_limits import CONTROL_OUTPUT_LIMIT, OutputCapture, run_bounded
 from .profiles import Profile
-from .security import redact
+from .security import StreamRedactor, redact, redact_data
 
 
 @dataclass(frozen=True, slots=True)
@@ -23,15 +23,108 @@ class CommandResult:
     returncode: int
     stdout: bytes
     stderr: bytes
+    output: dict = field(default_factory=dict)
 
     def json_text(self) -> str:
         return self.stdout.decode("utf-8", errors="replace")
 
+    @property
+    def stdout_truncated(self) -> bool:
+        return self.output.get("streams", {}).get("stdout", {}).get("truncated", False)
+
+    @property
+    def truncated(self) -> bool:
+        return self.output.get("truncated", False)
+
+    def diagnostics(self, secret_values: tuple[str, ...] = ()) -> dict:
+        if self.output:
+            return self.output
+        captures = []
+        for data in (self.stdout, self.stderr):
+            capture = OutputCapture(CONTROL_OUTPUT_LIMIT, StreamRedactor(secret_values))
+            capture.feed(data)
+            capture.finish()
+            captures.append(capture)
+        return _output_details(*captures, complete=True)
+
+
+def _output_details(stdout: OutputCapture, stderr: OutputCapture, *, complete: bool) -> dict:
+    return {
+        "truncated": stdout.raw.truncated or stderr.raw.truncated,
+        "stdout": stdout.preview().decode("utf-8", errors="replace")
+        if stdout.raw.limit is not None
+        else "",
+        "stderr": stderr.preview().decode("utf-8", errors="replace"),
+        "streams": {
+            "stdout": stdout.metadata(complete=complete),
+            "stderr": stderr.metadata(complete=complete),
+        },
+    }
+
+
+def _capture_command(
+    argv: list[str],
+    *,
+    input_data: bytes | None,
+    timeout_seconds: float,
+    env: dict[str, str] | None = None,
+    secret_values: tuple[str, ...] = (),
+    stdout_limit: int | None = CONTROL_OUTPUT_LIMIT,
+) -> CommandResult:
+    _validate_timeout(timeout_seconds)
+    try:
+        captured = run_bounded(
+            argv,
+            input_data=input_data,
+            env=env,
+            timeout_seconds=timeout_seconds,
+            stdout_limit=stdout_limit,
+            redactors=(
+                StreamRedactor(secret_values) if stdout_limit is not None else None,
+                StreamRedactor(secret_values),
+            ),
+        )
+    except OSError as exc:
+        raise RRCError(
+            "transport_spawn",
+            "control executable could not start; check installed tools and profile",
+            "transport",
+            details={"type": type(exc).__name__},
+            retryable=False,
+        ) from exc
+    output = _output_details(captured.stdout, captured.stderr, complete=not captured.timed_out)
+    if captured.timed_out:
+        raise RRCError(
+            "transport_timeout",
+            "control response timed out; remote outcome is not confirmed",
+            "observer",
+            details={"remote_state_unknown": True, "control_output": output},
+        )
+    return CommandResult(
+        captured.returncode,
+        captured.stdout.preview() if captured.stdout.raw.truncated else captured.stdout.raw.bytes(),
+        captured.stderr.preview(),
+        output,
+    )
+
+
+def _check_connection(result: CommandResult) -> None:
+    if result.returncode == 255 or result.returncode < 0:
+        raise RRCError(
+            "transport_connection",
+            "connection ended before the remote outcome was confirmed",
+            "observer",
+            details={"remote_state_unknown": True, "control_output": result.diagnostics()},
+        )
+
 
 class Transport:
+    last_control_output: dict | None = None
+    redaction_values: tuple[str, ...] = ()
+
     @property
     def secret_values(self) -> tuple[str, ...]:
-        return ()
+        return self.redaction_values
 
     def run(
         self, argv: list[str], *, input_data: bytes | None = None, timeout_seconds: float = 180
@@ -48,14 +141,40 @@ class Transport:
         raise NotImplementedError
 
     def preflight(self, *, python: str, environment: EnvironmentSpec) -> dict:
-        # 直接执行同一份标准库实现，避免 SSH 和 worker 各维护一套环境规则。
-        source = Path(__file__).with_name("environment.py").read_text(encoding="utf-8")
+        # 在内存中加载 canonical 探针及输出预算；不上传文件或创建运行目录。
+        sources = {
+            name: Path(__file__).with_name(name + ".py").read_text(encoding="utf-8")
+            for name in ("errors", "security", "output_limits", "environment")
+        }
+        source = (
+            "import json,sys,types\n"
+            "if sys.version_info < (3,10):\n"
+            " print(json.dumps({'ok':False,'errors':[{'code':'python_version',"
+            "'required':'>=3.10'}]}));sys.exit(2)\n"
+            "package=types.ModuleType('_rrctl_preflight');package.__path__=[]\n"
+            "sys.modules[package.__name__]=package\n"
+            f"for name,source in {sources!r}.items():\n"
+            " module=types.ModuleType(package.__name__+'.'+name)\n"
+            " module.__package__=package.__name__;sys.modules[module.__name__]=module\n"
+            " exec(compile(source,name,'exec'),module.__dict__)\n"
+            "answer=module.preflight(json.load(sys.stdin))\n"
+            "print(json.dumps(answer,separators=(',',':')))\n"
+            "sys.exit(0 if answer.get('ok') else 2)\n"
+        )
         result = self.run(
             [python, "-c", source],
             input_data=json.dumps(asdict(environment)).encode(),
         )
+        if result.stdout_truncated:
+            raise RRCError(
+                "control_output_truncated",
+                "preflight response exceeded the control output budget",
+                "transport",
+                details={"control_output": result.diagnostics()},
+                retryable=False,
+            )
         try:
-            value = json.loads(result.stdout)
+            value = redact_data(json.loads(result.stdout), self.secret_values)
         except ValueError:
             value = {"ok": False, "errors": [{"code": "bootstrap_python_failed"}]}
         if result.returncode != 0 or not isinstance(value, dict) or value.get("ok") is not True:
@@ -72,19 +191,16 @@ class LocalTransport(Transport):
     def run(
         self, argv: list[str], *, input_data: bytes | None = None, timeout_seconds: float = 180
     ) -> CommandResult:
-        _validate_timeout(timeout_seconds)
-        try:
-            result = subprocess.run(
-                argv, input=input_data, check=False, capture_output=True, timeout=timeout_seconds
-            )
-        except subprocess.TimeoutExpired as exc:
-            raise RRCError(
-                "transport_timeout",
-                "control command timed out; detached workload ownership is unchanged",
-                "observer",
-                details={"remote_state_unknown": True},
-            ) from exc
-        return CommandResult(result.returncode, result.stdout, result.stderr)
+        result = _capture_command(
+            argv,
+            input_data=input_data,
+            timeout_seconds=timeout_seconds,
+            secret_values=self.secret_values,
+        )
+        if result.truncated:
+            self.last_control_output = result.diagnostics()
+        _check_connection(result)
+        return result
 
     def mkdir_exclusive(self, path: str) -> None:
         try:
@@ -131,7 +247,7 @@ class SSHTransport(Transport):
 
     @property
     def secret_values(self) -> tuple[str, ...]:
-        return self.profile.secret_values
+        return (*self.profile.secret_values, *self.redaction_values)
 
     def _base_command(self) -> tuple[list[str], dict[str, str]]:
         environment = os.environ.copy()
@@ -145,26 +261,19 @@ class SSHTransport(Transport):
     def run(
         self, argv: list[str], *, input_data: bytes | None = None, timeout_seconds: float = 180
     ) -> CommandResult:
-        _validate_timeout(timeout_seconds)
         base, environment = self._base_command()
         remote_command = shlex.join(argv)
-        try:
-            result = subprocess.run(
-                [*base, remote_command],
-                input=input_data,
-                check=False,
-                capture_output=True,
-                env=environment,
-                timeout=timeout_seconds,
-            )
-        except subprocess.TimeoutExpired as exc:
-            raise RRCError(
-                "transport_timeout",
-                "SSH control command timed out; detached workload ownership is unchanged",
-                "observer",
-                details={"remote_state_unknown": True},
-            ) from exc
-        return CommandResult(result.returncode, result.stdout, result.stderr)
+        result = _capture_command(
+            [*base, remote_command],
+            input_data=input_data,
+            env=environment,
+            timeout_seconds=timeout_seconds,
+            secret_values=self.secret_values,
+        )
+        if result.truncated:
+            self.last_control_output = result.diagnostics()
+        _check_connection(result)
+        return result
 
     def mkdir_exclusive(self, path: str) -> None:
         result = self.run(
@@ -212,7 +321,17 @@ class SSHTransport(Transport):
             )
 
     def download(self, remote_path: str) -> bytes:
-        result = self.run(["cat", remote_path])
+        # 文件传输保留完整二进制 stdout；只有诊断 stderr 使用控制预算。
+        base, environment = self._base_command()
+        result = _capture_command(
+            [*base, shlex.join(["cat", remote_path])],
+            input_data=None,
+            env=environment,
+            timeout_seconds=180,
+            secret_values=self.secret_values,
+            stdout_limit=None,
+        )
+        _check_connection(result)
         if result.returncode != 0:
             message = redact(
                 result.stderr.decode("utf-8", errors="replace"), self.profile.secret_values

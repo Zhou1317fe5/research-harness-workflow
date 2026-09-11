@@ -16,8 +16,9 @@ from pathlib import Path
 from typing import Any
 
 from .artifacts import load_artifact_manifest
+from .doctor import connection_doctor
 from .errors import RRCError
-from .jsonutil import atomic_write_json, load_json, sha256_file, sha256_json
+from .jsonutil import atomic_write_json, load_json, sha256_file, sha256_json, utc_now
 from .models import RunSpec
 from .monitor import OBSERVE_MAX_SECONDS
 from .monitor import protocol as monitoring_protocol
@@ -107,6 +108,14 @@ class RunIndex:
 def _parse_worker_result(
     result: CommandResult, *, phase: str, secret_values: tuple[str, ...] = ()
 ) -> dict[str, Any]:
+    if result.stdout_truncated:
+        raise RRCError(
+            "control_output_truncated",
+            "worker response exceeded the control output budget",
+            phase,
+            details={"control_output": result.diagnostics(secret_values)},
+            retryable=False,
+        )
     try:
         value = json.loads(result.stdout)
     except json.JSONDecodeError as exc:
@@ -114,14 +123,7 @@ def _parse_worker_result(
             "worker_output",
             f"worker emitted invalid JSON during {phase}",
             phase,
-            details={
-                "stdout": redact(
-                    result.stdout.decode("utf-8", errors="replace")[-4000:], secret_values
-                ),
-                "stderr": redact(
-                    result.stderr.decode("utf-8", errors="replace")[-4000:], secret_values
-                ),
-            },
+            details={"control_output": result.diagnostics(secret_values)},
         ) from exc
     value = redact_data(value, secret_values)
     if result.returncode != 0 or (isinstance(value, dict) and value.get("ok") is False):
@@ -145,6 +147,107 @@ class Controller:
     ):
         self.profile_store = ProfileStore(profiles_path or DEFAULT_PROFILE_PATH)
         self.index = RunIndex(state_root)
+        self.control_output: dict[str, Any] | None = None
+
+    def doctor(
+        self, profile_name: str, *, env_file: Path | None = None, offline: bool = False
+    ) -> dict[str, Any]:
+        return connection_doctor(
+            self.profile_store, profile_name, env_file=env_file, offline=offline
+        )
+
+    def _parse_result(
+        self, result: CommandResult, *, phase: str, secret_values: tuple[str, ...] = ()
+    ) -> dict[str, Any]:
+        if result.truncated:
+            self.control_output = {"operation": phase, **result.diagnostics(secret_values)}
+        return _parse_worker_result(result, phase=phase, secret_values=secret_values)
+
+    def recovery_actions(self, run_id: str, ref: RunRef | None = None) -> list[dict[str, Any]]:
+        prefix = [
+            "rrctl",
+            "--profiles",
+            str(self.profile_store.path),
+            "--state-root",
+            str(self.index.root),
+        ]
+        actions = [
+            {"operation": name, "argv": [*prefix, name, run_id]} for name in ("inspect", "wait")
+        ]
+        if ref is not None:
+            actions.append(
+                {
+                    "operation": "resume",
+                    "argv": [
+                        *prefix,
+                        "resume",
+                        "--profile",
+                        ref.profile,
+                        "--control-path",
+                        ref.control_root,
+                    ],
+                }
+            )
+        return actions
+
+    def _unknown(self, exc: RRCError, ref: RunRef, *, operation: str) -> None:
+        exc.outcome = "unknown"
+        exc.retryable = False
+        exc.next_actions = self.recovery_actions(ref.run_id, ref)
+        exc.details.update(
+            {
+                "run_id": ref.run_id,
+                "operation": operation,
+                "remote_state_unknown": True,
+                "automatic_retry_allowed": False,
+            }
+        )
+        if operation in {"launch", "stage"}:
+            exc.details["remote_workload_preserved"] = True
+        exc.message = (
+            f"remote {operation} outcome is unknown; do not repeat it; inspect the same RunID"
+        )
+        path = self.index.root / ref.run_id / "operation-latest.json"
+        with suppress(OSError):
+            atomic_write_json(
+                path,
+                {
+                    "run_id": ref.run_id,
+                    "operation": operation,
+                    "at": utc_now(),
+                    "status": "unknown",
+                    "error": exc.to_dict(),
+                },
+            )
+
+    def _mutating_request(
+        self, ref: RunRef, transport: Transport, argv: list[str], *, operation: str
+    ) -> dict[str, Any]:
+        try:
+            result = transport.run(argv)
+            value = self._parse_result(
+                result, phase=operation, secret_values=transport.secret_values
+            )
+            if getattr(transport, "last_control_output", None):
+                self.control_output = transport.last_control_output
+            return value
+        except (KeyboardInterrupt, RRCError) as error:
+            exc = (
+                error
+                if isinstance(error, RRCError)
+                else RRCError("transport_interrupted", "control request interrupted", "transport")
+            )
+            if exc.code in {
+                "transport_timeout",
+                "transport_connection",
+                "transport_interrupted",
+                "worker_output",
+                "control_output_truncated",
+            }:
+                self._unknown(exc, ref, operation=operation)
+            if exc is error:
+                raise
+            raise exc from error
 
     def ready(self, spec: RunSpec, *, offline: bool = False) -> dict[str, Any]:
         result = validate_run_spec(spec, profile_store=self.profile_store, load_profile=True)
@@ -155,6 +258,8 @@ class Controller:
                 python=spec.remote.python,
                 environment=spec.environment,
             )
+            if transport.last_control_output:
+                output["control_output"] = transport.last_control_output
         elif offline:
             output["remote_preflight"] = "skipped"
         return output
@@ -179,6 +284,7 @@ class Controller:
             subprocess.run(
                 ["git", "-C", str(repo), "update-ref", temporary_ref, spec.source.commit],
                 check=True,
+                stdout=subprocess.DEVNULL,
             )
             subprocess.run(
                 [
@@ -193,6 +299,7 @@ class Controller:
                     temporary_ref,
                 ],
                 check=True,
+                stdout=subprocess.DEVNULL,
             )
             subprocess.run(
                 ["git", "bundle", "verify", str(destination)], check=True, capture_output=True
@@ -307,21 +414,70 @@ class Controller:
             raise RRCError(
                 "launch_budget", "max-wait must be nonnegative finite seconds", "observer"
             )
-        readiness, transport = self._require_ready(spec)
-        ref = self._stage(spec, readiness, transport)
+        if (self.index.root / spec.run_id / "run_ref.json").exists():
+            ref = self.index.load_ref(spec.run_id)
+            raise RRCError(
+                "run_already_indexed",
+                "RunID is already registered; inspect or resume it instead of launching again",
+                "recovery",
+                details={"run_id": spec.run_id},
+                retryable=False,
+                next_actions=self.recovery_actions(spec.run_id, ref),
+            )
+        try:
+            readiness, transport = self._require_ready(spec)
+        except RRCError as exc:
+            exc.outcome = "failed"
+            exc.retryable = False
+            exc.details.update({"run_id": spec.run_id, "launch_dispatched": False})
+            exc.next_actions = [
+                {
+                    "operation": "doctor",
+                    "argv": [
+                        "rrctl",
+                        "--profiles",
+                        str(self.profile_store.path),
+                        "doctor",
+                        "--profile",
+                        spec.remote.profile,
+                    ],
+                }
+            ]
+            raise
+        try:
+            ref = self._stage(spec, readiness, transport)
+        except RRCError as exc:
+            if exc.code in {
+                "transport_timeout",
+                "transport_connection",
+                "control_output_truncated",
+            }:
+                ref = RunRef(
+                    spec.run_id,
+                    spec.remote.profile,
+                    spec.remote.stage_root,
+                    spec.remote.control_root,
+                    f"{spec.remote.stage_root}/rrctl-worker.pyz",
+                    spec.remote.python,
+                    spec.digest,
+                )
+                self.index.save(ref, spec)
+                exc.details["launch_dispatched"] = False
+                self._unknown(exc, ref, operation="stage")
+            raise
         # 启动失败也保留恢复定位，允许通过同一控制面拉取诊断。
         self.index.save(ref, spec)
-        result = transport.run(
+        launched = self._mutating_request(
+            ref,
+            transport,
             [
                 ref.remote_python,
                 ref.worker_path,
                 "launch",
                 "--stage",
                 ref.stage_root,
-            ]
-        )
-        launched = _parse_worker_result(
-            result, phase="launch", secret_values=transport.secret_values
+            ],
+            operation="launch",
         )
         self.index.save(ref, spec, launched)
         try:
@@ -421,7 +577,7 @@ class Controller:
             [ref.remote_python, ref.worker_path, "inspect", "--control", ref.control_root],
             timeout_seconds=timeout_seconds,
         )
-        value = _parse_worker_result(result, phase="inspect", secret_values=transport.secret_values)
+        value = self._parse_result(result, phase="inspect", secret_values=transport.secret_values)
         self.index.save(ref, spec, value.get("status"))
         return value
 
@@ -442,7 +598,7 @@ class Controller:
                 phase,
             ]
         )
-        return _parse_worker_result(result, phase="health", secret_values=transport.secret_values)
+        return self._parse_result(result, phase="health", secret_values=transport.secret_values)
 
     @staticmethod
     def _health_status(value: dict[str, Any]) -> str:
@@ -468,10 +624,12 @@ class Controller:
         self, run_id: str, argv: list[str], *, phase: str
     ) -> dict[str, Any]:
         ref, _, transport = self._runtime(run_id)
-        result = transport.run(
-            [ref.remote_python, ref.worker_path, *argv, "--control", ref.control_root]
+        return self._mutating_request(
+            ref,
+            transport,
+            [ref.remote_python, ref.worker_path, *argv, "--control", ref.control_root],
+            operation=phase,
         )
-        return _parse_worker_result(result, phase=phase, secret_values=transport.secret_values)
 
     def _fail_completed_workload(self, run_id: str, reason: str) -> dict[str, Any]:
         ref, _, transport = self._runtime(run_id)
@@ -497,10 +655,7 @@ class Controller:
             "--reason",
             reason,
         ]
-        result = transport.run(command)
-        return _parse_worker_result(
-            result, phase="monitor_cleanup", secret_values=transport.secret_values
-        )
+        return self._mutating_request(ref, transport, command, operation="fail-completed")
 
     def _finalize_completed_workload(self, run_id: str) -> dict[str, Any]:
         _, spec, _ = self._runtime(run_id)
@@ -580,7 +735,7 @@ class Controller:
                     raise RRCError(
                         "transport_connection", "observation connection failed", "observer"
                     )
-                last = _parse_worker_result(
+                last = self._parse_result(
                     result, phase="observe", secret_values=transport.secret_values
                 )
             except RRCError as exc:
@@ -969,7 +1124,7 @@ class Controller:
         result = transport.run(
             [ref.remote_python, ref.worker_path, "inspect", "--control", ref.control_root]
         )
-        inspected = _parse_worker_result(
+        inspected = self._parse_result(
             result, phase="resume", secret_values=transport.secret_values
         )
         self.index.save(ref, spec, inspected["status"])
@@ -986,7 +1141,9 @@ class Controller:
                 "process ownership is required for new lifecycle mutations",
                 "ownership",
             )
-        result = transport.run(
-            [ref.remote_python, ref.worker_path, "abort", "--control", ref.control_root]
+        return self._mutating_request(
+            ref,
+            transport,
+            [ref.remote_python, ref.worker_path, "abort", "--control", ref.control_root],
+            operation="abort",
         )
-        return _parse_worker_result(result, phase="abort", secret_values=transport.secret_values)

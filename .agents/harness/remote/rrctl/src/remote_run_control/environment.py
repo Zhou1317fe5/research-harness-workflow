@@ -1,12 +1,14 @@
-"""运行环境与无副作用的导入预检；本文件可独立经 SSH 执行。"""
+"""运行环境与只读导入预检；与控制通道共享输出预算。"""
 
 from __future__ import annotations
 
 import json
 import os
-import subprocess
 import sys
 from typing import Any
+
+from .output_limits import run_bounded
+from .security import StreamRedactor
 
 
 def make_environment(
@@ -50,18 +52,19 @@ def activation_argv(
 
 
 IMPORT_PROBE = r"""
-import contextlib, importlib, io, json, os, sys
+import contextlib, importlib, json, os, sys
 request = json.load(sys.stdin)
 errors = []
 if sys.version_info < (3, 10):
     errors.append({"code": "python_version", "required": ">=3.10"})
-for name in request.get("required_modules", []):
-    try:
-        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
-            importlib.import_module(name)
-    except Exception as exc:
-        errors.append({"code": "import_failed", "module": name,
-                       "type": type(exc).__name__, "message": str(exc)[:500]})
+with open(os.devnull, "w") as sink:
+    for name in request.get("required_modules", []):
+        try:
+            with contextlib.redirect_stdout(sink), contextlib.redirect_stderr(sink):
+                importlib.import_module(name)
+        except Exception as exc:
+            errors.append({"code": "import_failed", "module": name,
+                           "type": type(exc).__name__, "message": str(exc)[:500]})
 result = {"ok": not errors, "python": sys.executable, "version": list(sys.version_info[:3]),
           "required_modules": request.get("required_modules", []), "errors": errors}
 print(json.dumps(result, separators=(",", ":")))
@@ -73,35 +76,59 @@ def preflight(settings: dict[str, Any]) -> dict[str, Any]:
     if sys.platform != "linux" or not os.path.isfile("/proc/sys/kernel/random/boot_id"):
         return {"ok": False, "errors": [{"code": "linux_process_identity_required"}]}
     try:
-        result = subprocess.run(
+        result = run_bounded(
             activation_argv(
                 ["python", "-c", IMPORT_PROBE],
                 overrides={**settings.get("variables", {}), "CUDA_VISIBLE_DEVICES": ""},
             ),
-            input=json.dumps({"required_modules": settings.get("required_modules", [])}),
-            capture_output=True,
-            text=True,
+            input_data=json.dumps(
+                {"required_modules": settings.get("required_modules", [])}
+            ).encode(),
             env=make_environment(settings),
-            timeout=90,
+            timeout_seconds=90,
+            redactors=(StreamRedactor(), StreamRedactor()),
         )
-    except (OSError, subprocess.TimeoutExpired) as exc:
+    except OSError as exc:
         return {
             "ok": False,
             "errors": [{"code": "environment_probe_failed", "type": type(exc).__name__}],
         }
+    if result.timed_out or result.stdout.raw.truncated:
+        return {
+            "ok": False,
+            "errors": [
+                {
+                    "code": "environment_probe_timeout"
+                    if result.timed_out
+                    else "environment_output_truncated"
+                }
+            ],
+            "control_output": {
+                "stdout": result.stdout.metadata(complete=not result.timed_out),
+                "stderr": result.stderr.metadata(complete=not result.timed_out),
+                "stderr_tail": result.stderr.preview().decode("utf-8", errors="replace"),
+            },
+        }
     try:
-        value = json.loads(result.stdout)
+        value = json.loads(result.stdout.raw.bytes())
     except (ValueError, TypeError):
         return {
             "ok": False,
             "errors": [{"code": "environment_activation_failed", "exit_code": result.returncode}],
+            "control_output": {
+                "stderr": result.stderr.metadata(complete=True),
+                "stderr_tail": result.stderr.preview().decode("utf-8", errors="replace"),
+            },
         }
     if result.returncode or not isinstance(value, dict) or value.get("ok") is not True:
-        return (
-            value
-            if isinstance(value, dict)
-            else {"ok": False, "errors": [{"code": "environment_probe_invalid"}]}
-        )
+        if isinstance(value, dict):
+            return {**value, "ok": False}
+        return {"ok": False, "errors": [{"code": "environment_probe_invalid"}]}
+    if result.stderr.raw.truncated:
+        value["control_output"] = {
+            "truncated": True,
+            "stderr": result.stderr.metadata(complete=True),
+        }
     return value
 
 

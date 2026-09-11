@@ -1,6 +1,6 @@
 # Remote Run Control
 
-rrctl 0.3 使用 Linux 独立进程会话承载远端 worker，不依赖 tmux 或常驻的本地服务。
+rrctl 0.4 使用 Linux 独立进程会话承载远端 worker，不依赖 tmux 或常驻的本地服务。
 包名为 `remote-run-control`，Python 模块为 `remote_run_control`。
 
 ```bash
@@ -76,3 +76,52 @@ python3 .agents/harness/remote/remote_run.py runspec.json --execute --resume
 输入 `--request -` 从 stdin 读取。入口默认只打印状态、路径和退出码；完整响应存于本机 `.local/state/rrctl/client-results/<RunID>/`，`--full-output` 可输出全文。`--resume` 核对 RunSpec 摘要后只执行 inspect/wait/pull。
 
 完成校验直接依赖的 progress/summary 会进入最小产物清单。pull 返回真实 destination；重复拉取会核对已有文件的大小与 SHA 后复用，内容不同则拒绝覆盖。失败诊断使用 `pull --diagnostic`，其 control/output 目录结构不等同于正式产物根。
+
+0.4 为所有操作提供 `rrctl.cli.v1` 外层结果。`operation` 表示当前操作，`status` 为 succeeded、failed、unknown 或 attention，`run_id` 在适用时给出。原有阶段结果保存在 `result`，错误保存在 `error`。无结果或无错误时使用空对象，兼容旧 wrapper 的 `.get()` 调用；ready 和 doctor 原有的顶层发现字段也继续保留。
+
+```json
+{
+  "schema_version": "rrctl.cli.v1",
+  "operation": "inspect",
+  "status": "succeeded",
+  "run_id": "RUN-ID",
+  "ok": true,
+  "result": {"status": {"state": "running"}},
+  "error": {}
+}
+```
+
+外层描述操作结果，运行状态仍在原结果中。例如 inspect 成功读到 failed 运行时，查询本身仍为 succeeded；成功的 abort 返回 aborted 运行状态。`ok` 保留旧接口含义，健康查询或观察期限到期可以同时为 ok=true、status=attention。退出码继续有效：wait 保持 0/1/2/124，ready 校验不通过为 1，控制错误为 2，未处理程序错误为 3。
+
+launch、abort 或其他远端副作用请求发出后，如果连接中断、响应丢失或无法解析完整响应，返回 status=unknown、error.outcome=unknown 和 retryable=false。客户端不自动重发；错误包含原 RunID 及 inspect/wait/resume 的 next_actions。当前不确定操作写入已有本机运行索引的 operation-latest.json，供恢复时查阅。已登记的 RunID 再次 launch 会先报错，提示观察原运行。若连接预检就失败，结果明确说明 launch_dispatched=false。
+
+unknown 不表示训练失败，也不能用来判断 abort 是否已经生效。首步观察和正常 wait 到期仍保持原观察语义；只读观察继续使用有界重试。Source/manifest 的 SHA 校验和重复目录保护不放宽。
+
+SSH/本地控制请求的 stdout 和 stderr 各使用统一的 256 KiB 预算，边读取边保留头尾；超限后返回截断标记、完整读取时的 original_bytes 或中断时的 observed_bytes。先执行跨块脱敏，再进入有界缓存，覆盖口令、JSON 转义表示、凭据字段及私钥文本。正常小型 JSON 的阶段字段保持原样；截断的 JSON 不冒充完整成功响应。
+
+文件下载的二进制 stdout 不套用这项小上限，仍按 manifest 的大小和 SHA 校验。控制诊断的 stderr 保持有界。`--full-output` 仍用于查看完整结构化结果，不绕过控制通道预算；完整实验日志通过 artifact 规则单独拉取。
+
+不带 profile 的 doctor 继续只报告安装信息。连接诊断沿用同一命令：
+
+```bash
+rrctl --json --profiles .agents/harness/config/profiles.json doctor --profile PROFILE_NAME
+```
+
+先按项目约定在调用环境中提供凭据和 Conda 变量。doctor 只显示变量名及 set/unset，不自动读取或 source `.env`。默认检查 profiles.json 同目录的 `.env` 权限；`--env-file PATH` 可指定需要检查的文件。`--offline` 只做本地检查，这两个选项都与 `--profile` 一起使用。
+
+profile 可以增加以下可选诊断配置；省略时使用示例中的默认值：
+
+```json
+{
+  "diagnostics": {
+    "python": "/usr/bin/python3",
+    "conda_env_var": "REMOTE_CONDA_ENV",
+    "conda_sh_var": "REMOTE_CONDA_SH",
+    "directories": ["~"]
+  }
+}
+```
+
+`password_env` 和两个 Conda 配置项都只保存环境变量名。初始化脚本路径通过指定变量提供，需为绝对路径。`ssh_argv` 登记 SSH 可执行文件、选项和一个目标，远端命令由 rrctl 提供；现有 SSH 选项原样传递。诊断配置不覆盖 RunSpec 中实际运行的环境设置。
+
+doctor 检查 profile/JSON、工具、适用的文件权限和变量状态，然后只读验证登录、远程 Python、指定目录可访问性和 Conda 激活。每项失败都有原因代码和修复提示。诊断不创建 RunID、staging 或运行目录，不上传源文件、申请 GPU、启动训练或停止任务；它也不代替具体 RunSpec 的 ready 检查。
