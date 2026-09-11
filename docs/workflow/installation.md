@@ -17,7 +17,7 @@ Hindsight 可以在本地流程跑顺后再接。已有项目的升级和科研�
 
 本地需要 Python 3.11+，以及能在项目里工作的 Codex、Claude Code 或 Pi。选择 Pi 时，按 [Pi 安装与配置](Pi_配置说明.md)准备全局 packages、模型、MCP 和会话压缩。项目也要有 Git 历史；如果还是一个普通目录，先初始化 Git 并保存已有代码，后面才能关联每次实验所用的版本。
 
-远程实验这边，rrctl 的本地控制端和远程主机使用 Linux。远程需要 Python 3.10+、SSH、Git、conda，以及项目依赖和数据。rrctl 0.2 使用独立后台 worker，不需要 tmux。Python 3.10 还需安装 `.agents/harness/requirements.txt` 中的 tomli。使用密码登录时，本地需要 sshpass。
+远程实验这边，rrctl 的本地控制端和远程主机使用 Linux。远程需要 Python 3.10+、SSH、Git、conda，以及项目依赖和数据。rrctl 0.4 使用独立后台 worker，并由远端执行监控与完成验收，不需要 tmux。Python 3.10 还需安装 `.agents/harness/requirements.txt` 中的 tomli。使用密码登录时，本地需要 sshpass。
 
 模板带有任务执行相关技能，`humanizer-zh` 需要在 agent 环境中另外安装。代码语义检索与外部资料查询可以按需接入 `fast-context-mcp` 和 `smart-search`；它们是可选工具，不是首次接入的前置条件。
 

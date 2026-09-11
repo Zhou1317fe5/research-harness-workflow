@@ -32,7 +32,7 @@
 多组模块/消融脚本使用命名 pipelines。先通过 `run_pipeline.py --list-pipelines` 确认组合，再在请求或生成入口选择 `--pipeline <名称>`。所选阶段、名称和 SHA 固定到 RunSpec；恢复同一个 RunID 时不能换组合。
 
 1. 先构造 `mission.remote-route.v1` 请求并运行路由器；official 请求携带必要 formal verdict，pre-review smoke 请求携带 `execution_purpose:pre_review_smoke` 和 commit/1–100 steps/GPU/隔离输出/禁指标/禁 ingest/用户授权/正式命令绑定/fail-on-collision/checkpoint cleanup 合同。只有 `decision:proceed, route:rrctl` 才继续，blocked 禁止回退 legacy。
-2. 运行 `rrctl --json doctor`，确认实际安装的是项目内置 0.2+ 控制包且支持 process 后端。不可用时记录 `rrctl_unavailable` 并修复安装，不得回退为临时 SSH/nohup 命令。新运行显式声明 CPU 或 GPU 资源；未绑定不重叠 GPU 的任务使用独占资源。
+2. 运行 `rrctl --json doctor`，确认实际安装的是项目内置 0.4+ 控制包且支持 process、worker-monitoring 与 unknown-operation-outcome。不可用时记录 `rrctl_unavailable` 并修复安装，不得回退为临时 SSH/nohup 命令。新运行显式声明 CPU 或 GPU 资源；未绑定不重叠 GPU 的任务使用独占资源。需要诊断连接时使用 `rrctl --json --profiles <profiles.json> doctor --profile <profile>`；本地 doctor 不代表服务器已通过检查，连接诊断也不替代该 RunSpec 的 ready。
 3. 从已批准 intent、当前 gated run row 和 route/review evidence 生成显式 `mission.rrctl-request.v1` request；通过 stdin 直接交给 builder，不把 request 写入 artifact root。禁止生成器推断实验命令，禁止把密码写入 request。`route=rrctl` 时禁止新增承担通用 stage/launch/health/cleanup ownership 的一次性脚本；自定义脚本只允许项目 adapter 或科学语义解析。
 4. 直接生成该 RunID 唯一保留的 canonical RunSpec：
 
@@ -70,6 +70,8 @@
    ```
 
    `launch` 通过 first-step gate 后才能推进下游步骤。启动后记录 `command_owner:rrctl`、RunID、profile、PID/PGID、control/output root、`pre_run_code_commit` 和恢复命令。若返回 first_step_observer_timeout 且远端进程已启动，记录 `remote_state=running_remote` 与 `first_step_gate:pending`，继续观察同一 RunID，不重新 launch。首步默认预算 600 秒，CLI 的单次观察预算默认 900 秒；整个训练时长交给 wait。
+
+   控制操作返回 `status:unknown` 或 `error.outcome:unknown` 时，只能确认操作结果暂不确定，不能记为训练失败或停止成功。保留原 RunID 与路径，按返回的 `next_actions` 用 inspect/wait/resume 核对；不要自动重发 launch/abort，也不要换 RunID 重启同一实验。
 8. periodic unhealthy 或 Stop Trigger 不自动转换为 abort：**健康检查负责报告事实，不自动取得停止权**。**硬故障仅包括**：目标进程确认消失、显存 OOM、最新 progress 出现 NaN/Inf、明确未恢复的 fatal traceback，以及 Spec 明确声明的 Stop Condition；确认命中并记录证据后才显式执行 `rrctl abort <RunID> --yes`。单次低 GPU、单次日志延迟、checkpoint 写盘、旧日志历史错误、身份暂时不可读或一次检查失败只记 `degraded`，不得停止训练；至少连续两次复核仍异常才升级诊断。`rrctl wait` 返回一次结构化 attention，远端 workload 保持运行。停止操作必须核对本次独立进程组的 RunID、control root、PID 启动身份和 boot ID，禁止直接按进程名批量终止。
 9. launch 通过首步 gate 后，长训练在当前会话使用**一个前台阻塞调用**等待终态：
 
@@ -77,7 +79,9 @@
    rrctl --json wait <RunID> --poll-seconds 600 --max-wait-seconds 900
    ```
 
-   `rrctl wait` 在进程内部低频 inspect/health，不输出中间日志。退出码 0 表示 completed，1 表示 failed/aborted，2 表示 attention/控制错误，124 表示观察期限到达且运行保留。外层工具预算需大于观察预算及一次控制请求时间；124 后直接继续同一 RunID 的 wait，不标 failed、不拉诊断、不重复 launch。也可用一键入口的 `--execute --resume` 恢复。若工具只是 yield，继续等待同一工具 session；按宿主要求提供必要进度，不重读 skill 或重复输出未变化状态。completed 后立即 pull/ingest；出现 attention 时按硬/软条件处理，保持 `fallback_allowed=false`。
+   新运行的首步、周期检查与完成验收由远端 worker 自主执行；`rrctl wait` 只观察已发布的结果，不输出中间日志，多个观察者不会重复执行检查器。结束本地等待或关闭 agent 后，远端检查仍会继续。既有运行保留启动时的 worker，本地升级不会原地迁移或重启它。
+
+   退出码 0 表示 completed，1 表示 failed/aborted，2 表示 attention/控制错误，124 表示观察期限到达且运行保留。外层工具预算需大于观察预算及一次控制请求时间；124 后直接继续同一 RunID 的 wait，不标 failed、不拉诊断、不重复 launch。也可用一键入口的 `--execute --resume` 恢复。若工具只是 yield，继续等待同一工具 session；按宿主要求提供必要进度，不重读 skill 或重复输出未变化状态。completed 后立即 pull/ingest；出现 attention 时按硬/软条件处理，保持 `fallback_allowed=false`。
 
 ### 运行类型
 

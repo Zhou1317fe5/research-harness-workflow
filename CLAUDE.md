@@ -34,7 +34,7 @@
 
 **本地**负责代码正确性、单元测试、编译、参数链路与配置解析；**真实训练启动、step 级验证、GPU 显存、loss/log/checkpoint 必须走远程**。
 
-远程执行统一经 **rrctl** 控制面，`fallback_allowed` 必须为 `false`：rrctl 不可用、readiness 失败或 launch 失败时停在当前 row，**不得回退临时 SSH/tmux 拼接冒充同一控制面**。生命周期、首步 gate、巡检口径与拉取策略见 `mission-csv-execute/references/remote-run.md`。
+远程执行统一经 **rrctl 的 process 后端**，`fallback_allowed` 必须为 `false`：rrctl 不可用、readiness 失败或 launch 失败时停在当前 row，**不得回退临时 SSH/nohup 拼接冒充同一控制面**。GPU 运行取得资源归属后才启动；观察超时沿用原 RunID 恢复。生命周期、首步 gate、巡检口径与拉取策略见 `mission-csv-execute/references/remote-run.md`。
 
 测试是 commit、push、PR 前的硬门禁。只报告实际运行过的命令、退出码和结果。测试范围分级、`validation_gap` 标注与 claim 终态规则见 `mission-csv-execute`。
 

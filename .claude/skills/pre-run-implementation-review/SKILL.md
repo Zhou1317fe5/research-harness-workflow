@@ -189,7 +189,13 @@ The packet has no attempt, lineage, generation, resolution mode, frozen coverage
 
 ## One Reviewer
 
-Call one independent reviewer with only the lean packet, approved source, committed diff, and referenced evidence. Use an independent context such as `fork_turns=none` or an independent read-only exec. Do not send the main conversation or the main agent's conclusions.
+Call one independent reviewer with only the lean packet, approved source, committed diff, and referenced evidence.
+
+<!-- reviewer-launcher:start -->
+Prefer a direct independent reviewer with `fork_turns=none`; otherwise use an independent read-only `codex exec`.
+<!-- reviewer-launcher:end -->
+
+Do not send the main conversation or the main agent's conclusions.
 
 The reviewer must inspect the committed code and return all currently evaluable scientific findings in one response. Its result is exactly one of:
 

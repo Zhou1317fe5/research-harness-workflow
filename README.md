@@ -9,7 +9,7 @@
 多个模块/消融实验使用命名 `pipelines`，每次通过 `--pipeline <名称>` 选择自己的脚本组合；
 模板中的 baseline 与 module_variant 只是示例名称，支持继续添加其他组合。
 
-远程执行使用 rrctl 0.2 的独立进程后端，运行前检查 Conda 依赖和 GPU 占用。
+远程执行使用 rrctl 0.4 的独立进程后端，运行前检查 Conda 依赖和 GPU 占用。
 `rrctl --json doctor` 显示实际安装路径与能力；`wait` 默认观察 900 秒，超时后沿用同一 RunID 继续。
 接口和退出码见 [rrctl 使用说明](.agents/harness/remote/rrctl/README.md)。
 
@@ -26,7 +26,7 @@
 
 | 位置 | 内容 |
 |---|---|
-| .codex/skills/、.claude/skills/ | 两套同步的技能与执行协议 |
+| .codex/skills/、.claude/skills/ | Codex 技能及其完整 Claude 镜像，共用相同执行协议 |
 | .agents/skills | 指向 .codex/skills 的发现入口 |
 | .pi/ | Pi 项目配置、扩展与 Reviewer 入口 |
 | .agents/harness/ | 程序实现、配置与模板 |
@@ -34,5 +34,7 @@
 | issues/、docs/specs/ | 任务台账与实验方案 |
 | research_workspace/ | 科研状态、结论和实验分析 |
 | remote_artifacts/ | 原始运行证据 |
+
+技能统一在 `.codex/skills/` 维护，完整同步到 `.claude/skills/`，包括审查启动指引。Pi 通过共享入口读取这些技能，科学审查使用 `.pi/skills/` 中的启动适配。
 
 本仓库基于 [Missions](https://github.com/flowing-water1/Missions) 整理科研执行流程。
