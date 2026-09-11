@@ -135,7 +135,8 @@ def main(argv: list[str] | None = None) -> int:
             value = controller.abort(args.run_id, confirmed=args.yes)
         else:
             raise AssertionError(args.command)
-        state = value.get("status", {}).get("state") if isinstance(value, dict) else None
+        run_status = value.get("status") if isinstance(value, dict) else None
+        state = run_status.get("state") if isinstance(run_status, dict) else None
         failed = args.command == "wait" and state in {"failed", "aborted"}
         _emit({"ok": not failed, "result": value}, machine=args.json)
         if args.command == "wait" and value.get("observation") == "timeout":

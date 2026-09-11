@@ -309,6 +309,22 @@ class ProcessBackendTests(unittest.TestCase):
 
 
 class ProtocolTests(unittest.TestCase):
+    def test_cli_health_keeps_string_status_separate_from_run_state(self):
+        for status in ("healthy", "degraded", "unhealthy"):
+            value = {"status": status, "healthy": status != "unhealthy", "complete": False}
+            output = io.StringIO()
+            with (
+                patch.object(
+                    cli,
+                    "Controller",
+                    return_value=SimpleNamespace(health=lambda *a, _value=value, **kw: _value),
+                ),
+                contextlib.redirect_stdout(output),
+            ):
+                code = cli.main(["--json", "health", "audit", "--phase", "periodic"])
+            self.assertEqual(code, 0)
+            self.assertEqual(json.loads(output.getvalue())["result"]["status"], status)
+
     def test_wait_exit_codes_distinguish_failure_and_observation(self):
         for value, expected in (
             ({"status": {"state": "completed"}}, 0),
