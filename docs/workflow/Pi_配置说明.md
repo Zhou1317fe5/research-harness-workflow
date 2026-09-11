@@ -242,6 +242,8 @@ npx @cortexkit/magic-context@latest doctor --harness pi
 
 更新项目扩展后，在现有 Pi 会话中执行 `/reload`，或开启新会话，使新的 TS 注入逻辑生效。Python 会先清除旧版扩展的危险注入，保留本地采集；新版扩展握手后恢复历史快照展示。身份隔离和停用设置在下次回调就生效，不需要终止正在运行的实验。
 
+项目的 `workflow-output.ts` 扩展将超过 10,000 字符的普通工具输出保留首尾，并把完整工具文本写到 `.pi/workflow-output/`。相同输出在当前上下文已有后续副本时，较早的副本只保留路径。错误状态和图片保持不变，首次读取 AGENTS.md / SKILL.md 仍提供全文；用户消息与科研记忆快照不参与截取。需要中间内容时按行或字段读取保存的文件，避免再次输出整段。
+
 ```text
 当前 Pi 会话上下文
 → Magic Context

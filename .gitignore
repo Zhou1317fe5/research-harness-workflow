@@ -31,3 +31,4 @@ issues/**/readiness*.json
 issues/.missions.lock
 issues/.missions.json
 /.pi/settings.json
+/.pi/workflow-output/
