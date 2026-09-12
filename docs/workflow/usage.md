@@ -136,6 +136,29 @@ python .agents/harness/workflow/mission_state.py transition --task-id <task-id> 
 
 代码和 `research_workspace` 分别提交、分别推送。代码仓库推送成功，并不表示科研记录也已经推送；交付时需要分别检查。
 
+## 刷新实验记录
+
+拉取当前实验后，从项目根运行：
+
+```bash
+python3 .agents/harness/records/experiment_records.py build --exp <ExpID>
+python3 .agents/harness/records/experiment_records.py derive
+```
+
+指定 ExpID 会重新计算已有 record，内容不变则不写。无参数 `build` 保留只补建缺失记录的行为；显式 `--force` 才批量刷新已有生成记录，未知格式或扩展字段不会被静默覆盖。
+
+ExpID 表示实验实体或轮次，可包含多个 RunID；fold、seed、ablation 的分组由项目协议决定。`record.runs` 仍允许一个 Run 下多份 summary，索引的 `Runs` 统一计独立 RunID。投影版本 2 不再用 CSV 中的后续账本 commit 补猜运行源码；缺失来源保留待核验。多份结果没有聚合合同就不计算总体指标。
+
+`completed` 只说明 worker 结束。record 中每个正式 Run 都必须与其 RunSpec、manifest 的 RunID、ExpID、SpecID、源码 commit 和 RunSpec digest 对齐；summary 还要匹配 manifest 中的路径、大小和 SHA。缺来源或身份冲突的历史原件保留，生成器将缺口写进 `_pending`，不纳入正式 runs、来源或指标。当前行写成 `ingested` 前，程序再核 record 和索引，不能靠同一 ExpID 下另一份合法结果替它过门。
+
+RunSpec 中要求拉取的必需文件和目录也会复核是否齐全、是否与 manifest 的大小和 SHA 一致；optional 与 on_demand 产物不被强制要求存在。CSV 已登记的正式 Run 缺少目录或有效证据时，`_pending` 标明对应 RunID，已有单次结果仍保留在 `runs`，实验级指标保持待定。受限 smoke/probe 不计入应交付的正式 Run；补齐证据后，重新 build/derive 即可恢复投影。
+
+新运行使用 [remote-run-snippet](../../.codex/skills/remote-run-snippet/SKILL.md) 的公共入口，程序核现有 route、CSV/row、生命周期、批准 Spec、源码和适用审查。`no_prerun` 不要求历史 PRERUN；micro/smoke validation 要求对应探针，targeted/full review 才要求正式 gate。smoke/只读 probe 也保留身份和隔离输出检查。
+
+已有运行沿原 RunSpec `--resume`，核对原 RunID 和远端 digest 后只观察/拉取；暂停、取消不授予新启动权限。普通任务中说“继续”会沿当前任务推进，不因仓库里存在旧 Mission 而自动切换。
+
+最终完成统一由 `csv_completion_errors()` 判断；`final_ready.py` 通过仅代表可以进入 closing。handoff、Outcome Contract、review JSON 等引用只能落在选定的 `--workdir` 内；绝对路径、目录回退或 symlink 导致越界时都会被拒绝。外部兼容 CSV 须显式将其 Mission 工作区选为 `--workdir`，CSV 所在目录本身不额外授予访问范围。
+
 ## 科研记录与召回
 
 假设这一轮发现：新采样策略只在某种条件下有改善，其他条件下没有稳定收益。下一轮讨论时，这个范围应该一起带回来。

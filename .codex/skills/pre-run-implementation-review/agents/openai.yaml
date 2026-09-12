@@ -1,4 +1,5 @@
 interface:
-  display_name: "Pre-run Scientific Review"
-  short_description: "Verify scientific implementation and data flow once before a run"
-  default_prompt: "Review the approved scientific intent, committed implementation, critical source-to-sink data flow, computation sinks, experiment identity, smoke evidence, and official command exactly once before allowing training or evaluation."
+  display_name: Pre-run Scientific Review
+  short_description: Route research changes to the required checks and review
+  default_prompt: Use $pre-run-implementation-review to classify the current change
+    and apply its required validation or review before a research run.

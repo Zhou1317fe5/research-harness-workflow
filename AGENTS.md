@@ -12,9 +12,11 @@
 - `mission <CSV|目录>`：执行合法 CSV；执行态持续到终态，或用户明确暂停、取消、改变边界。
 - `mission <approved spec>`：校验已提交且未改动后，由 `mission-approved-doc` 生成 `issues/<stem>/` 并执行。
 - `mission <draft spec|Markdown|自然语言>`：由 `mission-spec` 讨论、写 draft、取得明确批准。
-- `mission`、`continue`、`resume`、`继续`：由 `mission-recovery` 只扫描 `issues/`。
+- 明确请求 Mission 恢复（包括无参数 `mission`），或已选定 Mission 需要恢复上下文时，由 `mission-recovery` 只扫描 `issues/`。
 - 普通任务目标和验收清楚时直接执行；多步任务维护 plan。
 - 分析、审查、解释、Q&A 直接回答。
+
+普通任务完成用户要求的实现或产物、适用验证及本次改动引起的问题修复后，再交付结果与限制。已有授权内继续推进；用户要求只分析、先审方案、暂停或不提交时，遵守该边界。
 
 **何时进 mission**：任务产生进入台账的新科研结论（新 ExpID、新指标、baseline 对照）时才进，走 CSV 全账。画图、选样例、论文正文、复用已有结果不进，直接执行并留一份 `result-summary.md`。不允许跑完整 PRERUN 却不建 CSV。
 
@@ -54,7 +56,7 @@ research_workspace/
     analysis/*.md                   诊断附件，不参与结论
 ```
 
-读取顺序：`STATE.md → CONCLUSIONS.md → EXPERIMENTS.csv → record.json → analysis.md`；只有需要核验具体实验时才读 `remote_artifacts/<ExpID>/`。`record.json` 中路径以项目根解析。
+需要科研历史或恢复科研任务时，按 `STATE.md → CONCLUSIONS.md → EXPERIMENTS.csv` 定位相关实验，再读对应 `record.json → analysis.md`。普通代码或文档任务先读待改文件及必要调用方。已读且仍在当前上下文中的未变化内容可复用；内容变化、上下文丢失或出现新疑点时再定向补读。只有核验具体实验时才读对应 `remote_artifacts/<ExpID>/`；`record.json` 中路径以项目根解析。
 
 研究产物最低关联：SpecID + ExpID + Branch + Commit；多次远程运行补 RunID。
 

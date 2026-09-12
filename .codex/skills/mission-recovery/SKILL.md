@@ -1,6 +1,6 @@
 ---
 name: mission-recovery
-description: Use when the user wants to continue, resume, or recover interrupted mission work and the agent needs to locate unfinished CSV artifacts before execution resumes.
+description: Locate unfinished Mission artifacts under issues/ after an explicit recovery request or context loss for an already selected Mission.
 ---
 
 你现在是「任务恢复扫描器」。
@@ -12,12 +12,14 @@ description: Use when the user wants to continue, resume, or recover interrupted
 # 触发条件
 
 - `mission` 无参数调用
-- 用户说 "continue" / "resume" / "继续" / "接着做"
-- 检测到上下文丢失（compaction / 会话重启）
+- 用户明确请求恢复 Mission，或对当前已选定的 Mission 说“继续”/“resume”
+- 当前已选定 Mission 的上下文丢失（compaction / 会话重启）
+
+普通任务的“继续”与上下文恢复沿当前任务处理，不触发扫描；旧 registry 不能覆盖当前会话已选任务。
 
 # 扫描顺序
 
-只扫描 `issues/`。运行确定性扫描器；它复用 closing 的四状态、remote terminal、review contract 与 artifact 判定：
+只扫描 `issues/`。运行确定性扫描器；它复用 `csv_completion_errors()`，核验行状态、实际 Git、ingest、claim 和 handoff：
 
 ```bash
 python <skill-dir>/scripts/scan_recovery.py --repo-root <repo-root>
@@ -31,21 +33,7 @@ python <skill-dir>/scripts/scan_recovery.py --repo-root <repo-root>
 `mission_state.py transition` 恢复 active（已有 CSV）或 preparing（尚无 CSV），再恢复。
 cancelled/superseded/completed 不进入候选；当前指针损坏或缺文件时报告具体错误，不回退旧任务。
 
-```
-扫描: issues/*/*.csv
-条件: 任一行 NOT 同时满足
-  dev_state=已完成 AND review_initial_state=已完成
-  AND review_regression_state=已完成 AND git_state=已提交
-  AND remote_state in {not_applicable, completed, ingested}
-或最终 REVIEW 行缺少非 pending 的 review result / scientific outcome / claim coverage、review JSON、handoff 或 claim ledger
-优先级: 最近修改的文件优先
-
-扫描: issues/*.csv
-排除: issues/TEMPLATE.csv（schema/template authority，不是任务工件）
-条件: 同上
-优先级: 若 `issues/*/*.csv` 无可恢复项，再按最近修改时间排序；若同 stem 同时存在目录化和平铺 CSV，优先目录化 CSV
-
-```
+没有适用当前指针时，扫描器优先目录化 CSV，再检查 legacy 平铺 CSV，并排除 `issues/TEMPLATE.csv`。各组按修改时间排序；同 stem 优先目录化工件。远程 `completed` 只表示 worker 结束，不能代替科研结果的 pull/ingest 和最终闭环。
 
 恢复器不扫描其他目录。用户显式提供的任意合法外部 CSV 仍由 `mission` 直接路由到 `mission-csv-execute`。
 
@@ -77,7 +65,7 @@ cancelled/superseded/completed 不进入候选；当前指针损坏或缺文件�
 3. 交叉检查状态一致性：
    - `git_state=已提交` 但代码实际未提交？→ 重置为 `未提交`
    - `dev_state=已完成` 但 `review_*` 还是 `未开始`？→ 从 review 阶段恢复
-   - `dev_state=进行中` → 从实现阶段恢复（先重新收集上下文）
+   - `dev_state=进行中` → 从实现阶段恢复（补齐缺失或已变化的上下文）
 4. 发现不一致则修正 CSV 状态后再恢复
 
 # 多个可恢复任务

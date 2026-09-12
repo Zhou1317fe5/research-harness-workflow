@@ -1,6 +1,6 @@
 ---
 name: pre-run-implementation-review
-description: Run isolated GPU smoke after local validation, then perform one scientific implementation review before official training, evaluation, remote run, or experiment-result generation.
+description: Apply risk-based implementation checks before official research runs; require formal review only for targeted_review or full_review.
 ---
 
 # Pre-run Scientific Implementation Review
@@ -107,7 +107,7 @@ Pretrained input weights belong outside the smoke cleanup root.
 
 Smoke failures stay in the implementation row. Fix and rerun smoke without creating `FIX-*` or `PRERUN-REVIEW-*` rows. A smoke on an older commit cannot validate a new scientific candidate.
 
-Local validation before smoke is risk graded, not exhaustive: compile affected Python files and run 1–3 directly relevant tests/probes for ordinary changes. Shared-core or high-risk changes may use their relevant regression set. Full-repository tests are reserved for release, breaking migration, broad shared-infrastructure changes, explicit user request, or a demonstrated gap that targeted regressions cannot cover.
+Local validation before smoke follows risk and affected behavior: compile affected Python files and select tests/probes that cover direct dependencies and relevant failure boundaries. Reuse successful evidence while it still covers the current code, configuration, inputs, environment, and unresolved questions; rerun affected checks when these change. Before committing, confirm that passing validation covers the staged content and test any uncovered changes. Shared-core or high-risk changes use their relevant regression set. Full-repository tests are reserved for release, breaking migration, broad shared-infrastructure changes, explicit user request, or a demonstrated gap that targeted regressions cannot cover. Test counts are not a quota; the bounded GPU smoke budget still applies.
 
 ### Baseline-Equivalence Probe
 
@@ -222,7 +222,7 @@ The reviewer must inspect the committed code and return all currently evaluable 
 - `scientifically_incorrect`: one or more reproducible scientific correctness blockers exist; do not run until fixed.
 - `not_evaluable`: name the exact missing scientific evidence; do not infer correctness from smoke or scaffolding.
 
-Treat quota errors, launcher failures, and silence before any scientific verdict as review-service failures. A `running` status alone is not evidence of progress. After a bounded wait appropriate to the review size, stop the unresponsive execution, record the concrete failure, and, when another independent execution context is available, redispatch the same packet once. Keep the candidate commit, evidence, review scope, and single PRERUN row unchanged. Continue within existing task authorization.
+Treat quota errors, launcher failures, and silence before any scientific verdict as review-service failures. A `running` status alone is not evidence of progress. After a bounded wait appropriate to the review size, stop the unresponsive execution, record the concrete failure, and, when another independent execution context is available, redispatch the same packet with a bounded service-retry policy (default maximum: one replacement). Confirm the original execution has stopped and no verdict is available before replacing it. Keep the candidate commit, evidence, review scope, and single PRERUN row unchanged. Continue within existing task authorization.
 
 This replaces a failed execution of the same review; it does not request another scientific opinion. A returned scientific verdict, including `not_evaluable`, ends service recovery and must be handled on its merits. Formatting problems in an available verdict can be normalized without repeating the review. If the replacement also fails, record the capability gap once and continue independent work; do not loop, infer a pass, or weaken the scientific gate. Any user-authorized exception belongs in the project's run record, with the unfulfilled review requirement stated explicitly.
 

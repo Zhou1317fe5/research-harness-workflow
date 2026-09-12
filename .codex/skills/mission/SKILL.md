@@ -1,6 +1,6 @@
 ---
 name: mission
-description: Use when a task starts from a canonical mission spec, an existing task CSV, a natural-language mission request, or a recovery request and needs deterministic routing to the matching mission workflow.
+description: Route explicit Mission requests, supplied Mission specs or task CSVs, and research tasks that require new experiment records.
 ---
 
 # Mission
@@ -24,12 +24,12 @@ Check in this order; the first match wins.
    - Invalid metadata hard-stops; do not infer a route from prose or path names.
 3. **Existing Markdown without `mission: spec` frontmatter**
    - Treat it as reference material and route to `mission-spec` for canonicalization and approval.
-4. **Empty input or continue/resume wording**
-   - Route to `mission-recovery`.
+4. **Explicit Mission recovery, including `mission` without arguments**
+   - Route to `mission-recovery`. Continue/resume wording or context loss triggers recovery only for an already selected Mission.
 5. **Natural-language request passed to `mission`**
    - Route to `mission-spec`.
 
-Ordinary work with a clear goal and acceptance criteria does not need mission. Execute it directly with an ordinary plan when useful.
+Ordinary work with a clear goal and acceptance criteria does not need mission. Execute it directly with an ordinary plan when useful. Continue the task selected in the current conversation; an old Mission registry entry cannot take it over.
 
 ## Execution stickiness
 
