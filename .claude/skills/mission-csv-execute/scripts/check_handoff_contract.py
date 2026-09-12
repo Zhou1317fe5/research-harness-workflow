@@ -10,6 +10,7 @@ import re
 import sys
 from pathlib import Path
 
+from mission_completion import parse_note_tags, resolve_reference_path
 from lint_handoff import lint
 from run_vision_review import validate_review_result
 from validate_deferred_ledger import COVERAGE_RE, load_csv_deferred
@@ -17,10 +18,6 @@ from validate_outcome_contract import load_contract
 
 
 HANDOFF_SUFFIX = ".handoff.md"
-OUTCOME_RE = re.compile(r"(?:^|;\s*)outcome_contract:([^;]+)")
-REVIEW_JSON_RE = re.compile(r"(?:^|;\s*)review_json:([^;]+)")
-REVIEW_RESULT_RE = re.compile(r"(?:^|;\s*)review_result:([^;]+)")
-HUMANIZED_RE = re.compile(r"(?:^|;\s*)handoff_humanized:([^;]+)")
 DEFERRED_MARKER_RE = re.compile(r"<!--\s*deferred:(DF-\d{3,})\s*-->")
 
 
@@ -33,43 +30,27 @@ def infer_csv_path(handoff_path: Path) -> Path | None:
 
 
 def normalize_path_text(value: str) -> str:
-    return value.strip().strip("\"'").replace("\\", "/").lstrip("./")
+    return value.strip().strip("\"'").replace("\\", "/")
 
 
-def note_value_matches_handoff(value: str, handoff_path: Path, csv_path: Path) -> bool:
+def note_value_matches_handoff(
+    value: str, handoff_path: Path, csv_path: Path, *, workdir: Path | None = None
+) -> bool:
     normalized = normalize_path_text(value)
     if not normalized:
         return False
     if normalized.startswith(("generation_failed", "lint_failed", "contract_failed")):
         return False
 
-    value_path = Path(normalized)
-    handoff_resolved = handoff_path.resolve()
-    candidates = []
-    if value_path.is_absolute():
-        candidates.append(value_path)
-    else:
-        candidates.append((csv_path.parent / value_path))
-        if value_path.parent != Path("."):
-            candidates.append((Path.cwd() / value_path))
-
-    for candidate in candidates:
-        if candidate.resolve() == handoff_resolved:
-            return True
-
-    if value_path.parent != Path("."):
-        return normalize_path_text(handoff_path.as_posix()).endswith(normalized)
-
-    return False
+    try:
+        return resolve_reference_path(normalized, csv_path.parent, workdir or Path.cwd()) == handoff_path.resolve()
+    except ValueError:
+        return False
 
 
 def handoff_note_values(notes: str) -> list[str]:
-    values: list[str] = []
-    for part in notes.split(";"):
-        token = part.strip()
-        if token.startswith("handoff:"):
-            values.append(token.split(":", 1)[1].strip())
-    return values
+    value = parse_note_tags(notes).get("handoff")
+    return [value] if value else []
 
 
 def load_review_notes(csv_path: Path) -> tuple[list[str], list[str]]:
@@ -82,7 +63,9 @@ def load_review_notes(csv_path: Path) -> tuple[list[str], list[str]]:
             if "id" not in reader.fieldnames or "notes" not in reader.fieldnames:
                 return [], ["CSV 缺少 id 或 notes 列"]
             rows = list(reader)
-    except OSError as exc:
+        for row in rows:
+            parse_note_tags(row.get("notes") or "")
+    except (OSError, ValueError, csv.Error) as exc:
         return [], [f"CSV 读取失败: {exc}"]
 
     review_notes = [
@@ -96,18 +79,19 @@ def load_review_notes(csv_path: Path) -> tuple[list[str], list[str]]:
     return review_notes, missing
 
 
-def load_outcome_contract(csv_path: Path) -> tuple[dict | None, list[str]]:
+def load_outcome_contract(csv_path: Path, *, workdir: Path | None = None) -> tuple[dict | None, list[str]]:
     try:
         with csv_path.open(encoding="utf-8-sig", newline="") as handle:
             rows = list(csv.DictReader(handle))
-    except OSError as exc:
+        for row in rows:
+            parse_note_tags(row.get("notes") or "")
+    except (OSError, ValueError, csv.Error) as exc:
         return None, [f"CSV read failed while discovering outcome contract: {exc}"]
 
     values: list[str] = []
     for row in rows:
-        match = OUTCOME_RE.search(str(row.get("notes") or ""))
-        if match:
-            value = match.group(1).strip()
+        value = parse_note_tags(row.get("notes") or "").get("outcome_contract")
+        if value:
             if value not in values:
                 values.append(value)
     if not values:
@@ -115,17 +99,21 @@ def load_outcome_contract(csv_path: Path) -> tuple[dict | None, list[str]]:
     if len(values) > 1:
         return None, ["CSV references multiple outcome contracts: " + ", ".join(values)]
 
-    value_path = Path(normalize_path_text(values[0])).expanduser()
-    contract_path = value_path if value_path.is_absolute() else csv_path.parent / value_path
-    data, errors = load_contract(contract_path.resolve())
+    try:
+        contract_path = resolve_reference_path(normalize_path_text(values[0]), csv_path.parent, workdir or Path.cwd())
+    except ValueError as exc:
+        return None, [str(exc)]
+    data, errors = load_contract(contract_path)
     return data, errors
 
 
-def load_review_json(csv_path: Path) -> tuple[dict | None, list[str]]:
+def load_review_json(csv_path: Path, *, workdir: Path | None = None) -> tuple[dict | None, list[str]]:
     try:
         with csv_path.open(encoding="utf-8-sig", newline="") as handle:
             rows = list(csv.DictReader(handle))
-    except OSError as exc:
+        for row in rows:
+            parse_note_tags(row.get("notes") or "")
+    except (OSError, ValueError, csv.Error) as exc:
         return None, [f"CSV read failed while discovering review JSON: {exc}"]
 
     review_rows = [
@@ -137,24 +125,26 @@ def load_review_json(csv_path: Path) -> tuple[dict | None, list[str]]:
     if not review_rows:
         return None, ["CSV contains no REVIEW row for review JSON selection"]
     latest_notes = str(review_rows[-1].get("notes") or "")
-    review_match = REVIEW_JSON_RE.search(latest_notes)
-    if not review_match:
+    tags = parse_note_tags(latest_notes)
+    if not tags.get("review_json"):
         return None, []
-    value_path = Path(normalize_path_text(review_match.group(1).strip())).expanduser()
-    review_path = value_path if value_path.is_absolute() else csv_path.parent / value_path
+    try:
+        review_path = resolve_reference_path(normalize_path_text(tags["review_json"]), csv_path.parent, workdir or Path.cwd())
+    except ValueError as exc:
+        return None, [str(exc)]
     if not review_path.is_file():
         return None, [f"review JSON does not exist: {review_path.resolve()}"]
     try:
         data = json.loads(review_path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError as exc:
+    except (OSError, ValueError) as exc:
         return None, [f"review JSON is not valid JSON: {review_path.resolve()}: {exc}"]
     if not isinstance(data, dict):
         return None, ["review JSON root must be an object"]
     errors: list[str] = []
-    result_match = REVIEW_RESULT_RE.search(latest_notes)
-    if not result_match:
+    result_value = tags.get("review_result")
+    if not result_value:
         errors.append("latest REVIEW notes missing review_result:<result>")
-    elif result_match.group(1).strip() != data.get("result"):
+    elif result_value != data.get("result"):
         errors.append("CSV review_result differs from review JSON result")
     return data, errors
 
@@ -201,31 +191,38 @@ def validate_handoff_against_review(text: str, contract: dict, review: dict) -> 
     return errors
 
 
-def check_contract(handoff_path: Path, csv_path: Path | None = None) -> list[str]:
+def check_contract(
+    handoff_path: Path, csv_path: Path | None = None, *, workdir: Path | None = None
+) -> list[str]:
     missing: list[str] = []
 
     if not handoff_path.name.endswith(HANDOFF_SUFFIX):
         missing.append("handoff 文件名必须以 .handoff.md 结尾")
 
+    root = (workdir or Path.cwd()).resolve()
+    effective_csv_path = csv_path or infer_csv_path(handoff_path)
+    if effective_csv_path is None:
+        return missing + ["无法从 handoff 路径推导同名前缀 CSV"]
+    try:
+        handoff_path = resolve_reference_path(str(handoff_path), root, root)
+        effective_csv_path = resolve_reference_path(str(effective_csv_path), root, root)
+    except ValueError as exc:
+        return missing + [str(exc)]
     try:
         text = handoff_path.read_text(encoding="utf-8")
     except OSError as exc:
         return [f"handoff 读取失败: {exc}"]
 
-    effective_csv_path = csv_path or infer_csv_path(handoff_path)
-    if effective_csv_path is None:
-        missing.append("无法从 handoff 路径推导同名前缀 CSV")
-        return missing
     if not effective_csv_path.exists():
         missing.append(f"CSV 不存在: {effective_csv_path}")
         return missing
 
-    outcome_contract, outcome_errors = load_outcome_contract(effective_csv_path)
+    outcome_contract, outcome_errors = load_outcome_contract(effective_csv_path, workdir=workdir)
     missing.extend(outcome_errors)
     if outcome_contract is None:
         missing.extend(lint(text))
     else:
-        review_json, review_errors = load_review_json(effective_csv_path)
+        review_json, review_errors = load_review_json(effective_csv_path, workdir=workdir)
         missing.extend(review_errors)
         if review_json is None and not review_errors:
             missing.append("Outcome Contract handoff requires review_json:<path> in CSV notes")
@@ -243,18 +240,15 @@ def check_contract(handoff_path: Path, csv_path: Path | None = None) -> list[str
     review_notes, csv_missing = load_review_notes(effective_csv_path)
     missing.extend(csv_missing)
     if review_notes:
-        humanized_match = HUMANIZED_RE.search(review_notes[-1])
-        if not humanized_match or humanized_match.group(1).strip().lower() != "true":
-            missing.append("latest REVIEW notes must record handoff_humanized:true")
         has_handoff_path = any(
-            note_value_matches_handoff(value, handoff_path, effective_csv_path)
+            note_value_matches_handoff(value, handoff_path, effective_csv_path, workdir=workdir)
             for value in handoff_note_values(review_notes[-1])
         )
         if not has_handoff_path:
             missing.append("latest REVIEW notes 未记录 handoff:<path>")
 
     findings, _, deferred_errors, _ = load_csv_deferred(
-        effective_csv_path.resolve(), Path.cwd().resolve()
+        effective_csv_path.resolve(), (workdir or Path.cwd()).resolve()
     )
     missing.extend(deferred_errors)
     open_ids = {
@@ -293,11 +287,13 @@ def main() -> int:
     )
     parser.add_argument("handoff_path", help="要检查的 .handoff.md")
     parser.add_argument("--csv", dest="csv_path", help="显式指定 CSV；默认用同名前缀 .csv")
+    parser.add_argument("--workdir", type=Path, default=Path("."), help="项目根目录，用于解析引用")
     args = parser.parse_args()
 
-    handoff_path = Path(args.handoff_path)
-    csv_path = Path(args.csv_path) if args.csv_path else None
-    missing = check_contract(handoff_path, csv_path)
+    root = args.workdir.expanduser().resolve()
+    handoff_path = root / args.handoff_path
+    csv_path = root / args.csv_path if args.csv_path else None
+    missing = check_contract(handoff_path, csv_path, workdir=root)
     if missing:
         sys.stderr.write(f"check_handoff_contract: {handoff_path} 不合格，缺以下合同条件：\n")
         for item in missing:

@@ -19,7 +19,9 @@ from typing import Any, Callable
 sys.path.insert(0, str(Path(__file__).resolve().parents[4] / ".agents"))
 from harness.common.locking import file_lock
 
-from mission_completion import EXPECTED_FIELDS, REMOTE_STATES, read_mission_csv
+from mission_completion import (
+    EXPECTED_FIELDS, REMOTE_STATES, parse_note_tags, read_mission_csv, upsert_note_tags,
+)
 
 
 SCHEMA = "mission.csv-state-update.v1"
@@ -35,11 +37,8 @@ COMMIT_BOUNDARIES = {
     "terminal",
     "final_review",
 }
-CLAIMS_RE = re.compile(r"(?:^|;\s*)claims:([^;]+)")
-LEDGER_RE = re.compile(r"(?:^|;\s*)claim_ledger:([^;]+)")
 NOTE_ITEM_LIMIT = 512
 NOTE_APPEND_LIMIT = 1024
-NOTE_VALUE_RE = re.compile(r"(?:^|;\s*){key}:([^;]+)")
 
 
 class StateUpdateError(ValueError):
@@ -57,7 +56,7 @@ def _canonical_json(value: Any) -> bytes:
 
 def _read_csv(path: Path) -> tuple[list[dict[str, str]], bool]:
     try:
-        _, rows, has_bom = read_mission_csv(path, allow_compat=True)
+        _, rows, has_bom = read_mission_csv(path, allow_compat=True, validate_notes=False)
     except (ValueError, csv.Error) as error:
         raise StateUpdateError(str(error)) from error
     return rows, has_bom
@@ -88,8 +87,7 @@ def _validate_rows(rows: list[dict[str, str]]) -> None:
 
 
 def _note_value(notes: str, key: str) -> str | None:
-    match = re.search(NOTE_VALUE_RE.pattern.format(key=re.escape(key)), notes)
-    return match.group(1).strip() if match else None
+    return parse_note_tags(notes).get(key)
 
 
 def _is_closed(row: dict[str, str]) -> bool:
@@ -103,7 +101,7 @@ def _is_closed(row: dict[str, str]) -> bool:
 
 def _is_prerun(row: dict[str, str]) -> bool:
     return row["id"].startswith("PRERUN-REVIEW-") or (
-        "review_kind:pre_run_implementation" in row["notes"]
+        _note_value(row["notes"], "review_kind") == "pre_run_implementation"
     )
 
 
@@ -130,7 +128,7 @@ def _validate_single_prerun(
     gates: dict[str, list[str]] = {}
     for row in active:
         notes = row["notes"]
-        if "root_budget_enforced:true" in notes or _note_value(
+        if _note_value(notes, "root_budget_enforced") == "true" or _note_value(
             notes, "formal_attempt"
         ):
             raise StateUpdateError(
@@ -173,7 +171,7 @@ def _validate_single_prerun(
             raise StateUpdateError(
                 f"prerun_review_mode_result_mismatch: {row['id']}"
             )
-        if "pre_run_result:pass" in notes:
+        if _note_value(notes, "pre_run_result") == "pass":
             direct_pass = result in {
                 "scientifically_correct",
                 "targeted_correct",
@@ -197,57 +195,27 @@ def _validate_single_prerun(
         )
 
 
-def _resolve_ledger(csv_path: Path, value: str) -> Path:
-    candidate = Path(value)
-    if candidate.is_absolute():
-        return candidate
-    relative_to_csv = csv_path.parent / candidate
-    if relative_to_csv.exists():
-        return relative_to_csv
-    return Path.cwd() / candidate
-
-
 def _validate_claims(csv_path: Path, rows: list[dict[str, str]]) -> None:
-    claims: set[str] = set()
-    ledgers: set[str] = set()
-    for row in rows:
-        notes = row["notes"]
-        claim_match = CLAIMS_RE.search(notes)
-        ledger_match = LEDGER_RE.search(notes)
-        if claim_match:
-            claims.update(
-                item.strip()
-                for item in claim_match.group(1).split(",")
-                if item.strip()
-            )
-            if not ledger_match:
-                raise StateUpdateError(
-                    f"claim_ledger_missing: {row['id']} references claims"
-                )
-        if ledger_match:
-            ledgers.add(ledger_match.group(1).strip())
-    for value in sorted(ledgers):
-        path = _resolve_ledger(csv_path, value)
-        try:
-            payload = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, UnicodeError, json.JSONDecodeError) as error:
-            raise StateUpdateError(
-                f"claim_ledger_invalid: {path}: {error}"
-            ) from error
-        if not isinstance(payload, dict) or not isinstance(payload.get("claims"), list):
-            raise StateUpdateError(
-                f"claim_ledger_invalid: {path}: expected object with claims array"
-            )
-        ledger_ids = {
-            item.get("claim_id")
-            for item in payload.get("claims", [])
-            if isinstance(item, dict)
-        }
-        missing = sorted(claims - ledger_ids)
-        if missing:
-            raise StateUpdateError(
-                "claim_id_missing: " + ",".join(missing)
-            )
+    from validate_claim_ledger import resolve_path, validate_ledger
+
+    root = Path(_git(["rev-parse", "--show-toplevel"], csv_path.parent) or csv_path.parent)
+    ledgers: dict[Path, set[str]] = {}
+    try:
+        for row in rows:
+            tags = parse_note_tags(row["notes"])
+            claims = {x.strip() for x in tags.get("claims", "").split(",") if x.strip()}
+            value = tags.get("claim_ledger")
+            if claims and not value:
+                raise StateUpdateError(f"claim_ledger_missing:{row['id']}")
+            if value:
+                path = resolve_path(value, csv_path.parent, root)
+                ledgers.setdefault(path, set()).update(claims)
+        for path, claims in ledgers.items():
+            errors = validate_ledger(path, csv_path, claims, rows=rows, workdir=root)
+            if errors:
+                raise StateUpdateError("; ".join(errors))
+    except ValueError as exc:
+        raise StateUpdateError(str(exc)) from exc
 
 
 def _encode_csv(rows: list[dict[str, str]], has_bom: bool) -> bytes:
@@ -349,6 +317,7 @@ def _apply_update_locked(csv_path, request, *, replace):
         "row_id",
         "set",
         "append_notes",
+        "set_note_tags",
         "event",
         "commit_boundary",
         "expected_sha256",
@@ -418,6 +387,12 @@ def _apply_update_locked(csv_path, request, *, replace):
             f"notes_growth_too_large: maximum growth {NOTE_APPEND_LIMIT}; use event"
         )
     target.update(updates)
+    try:
+        target["notes"] = upsert_note_tags(target["notes"], request.get("set_note_tags", {}))
+    except ValueError as exc:
+        raise StateUpdateError(str(exc)) from exc
+    if len(target["notes"]) - len(original_notes) > NOTE_APPEND_LIMIT:
+        raise StateUpdateError("notes_growth_too_large: use event for long evidence")
 
     event_digest = ""
     sidecar_path = csv_path.with_suffix(".events.json")
@@ -437,8 +412,23 @@ def _apply_update_locked(csv_path, request, *, replace):
         target["notes"] = target["notes"] + prefix + "; ".join(append_notes)
 
     _validate_rows(rows)
+    try:
+        for row in rows:
+            parse_note_tags(row["notes"])
+    except ValueError as exc:
+        raise StateUpdateError(f"{exc}:row={row['id']}") from exc
     _validate_single_prerun(rows, row_id)
     _validate_claims(csv_path, rows)
+    from git_isolation import row_git_errors
+    git_errors = row_git_errors(csv_path, target)
+    if git_errors:
+        raise StateUpdateError("; ".join(git_errors))
+    if target.get("remote_state") == "ingested":
+        from mission_completion import ingest_completion_errors
+        root = Path(_git(["rev-parse", "--show-toplevel"], csv_path.parent) or csv_path.parent)
+        ingest_errors = ingest_completion_errors(csv_path, [target], workdir=root)
+        if ingest_errors:
+            raise StateUpdateError("; ".join(ingest_errors))
     csv_bytes = _encode_csv(rows, has_bom)
     if hashlib.sha256(csv_path.read_bytes()).hexdigest() != original_hash:
         raise StateUpdateError("csv_version_conflict: CSV 被其他写者修改")

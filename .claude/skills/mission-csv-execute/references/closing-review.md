@@ -240,7 +240,7 @@ flowchart LR
 - 每条开放记录都用自然中文说明“发现了什么、证据是什么、为什么不阻塞本轮、需要用户决定什么”。
 - 每条正文前保留隐藏标记 `<!-- deferred:DF-001 -->`，用于机械覆盖检查；可见标题和正文不得出现 `DF-001`、`deferred_improvement`、snake_case 等内部审计文本。
 - 不得把当前 scope/acceptance gap 写进该章节。未完成的当前承诺仍放在“还剩什么”，并由正式 follow-up issue 负责。
-- machine ledger 不经过 `humanizer-zh`；handoff 的可见正文必须经过 `humanizer-zh`。隐藏标记、trace id、路径和结构化证据不得改写。
+- machine ledger 不经过 `humanizer-zh`；handoff 的可见正文可按需用 `humanizer-zh` 润色。隐藏标记、trace id、路径和结构化证据不得改写。
 
 ### 风格硬规则
 
@@ -265,31 +265,15 @@ flowchart LR
 - handoff 完成后在最新 REVIEW notes 回填 `deferred_coverage:<covered>/<open>`。
 - **落盘后必须跑 handoff contract check**（机械验收，不信 reviewer 自报）：
   - 运行 `python <skill-dir>/scripts/check_handoff_contract.py <handoff-path> --csv <csv-path>`。
-  - contract check 会确认 `.handoff.md` 命名、REVIEW notes 的 `handoff:<path>`、markdown 骨架；存在开放 Deferred Findings 时，还会逐条核对隐藏标记、`deferred_coverage` 和 `handoff_humanized:true`。
-  - 新任务存在 `outcome_contract:<path>` 时，CSV notes 还必须有 `review_json:<path>` 和 `handoff_humanized:true`；contract check 会校验 contract schema、review JSON 自洽性、每个 reader question/blocked claim 与 handoff 表格逐字段一致、核心语义章节与答案列齐全。缺任一项均失败。
-  - 退出码 0 = 通过；在 REVIEW 行 `notes` 追加 `handoff_contract:passed`。
+  - contract check 会确认 `.handoff.md` 命名、REVIEW notes 的 `handoff:<path>`、markdown 骨架；存在开放 Deferred Findings 时，还会逐条核对隐藏标记、`deferred_coverage` 。
+  - 新任务存在 `outcome_contract:<path>` 时，CSV notes 还必须有 `review_json:<path>` ；contract check 会校验 contract schema、review JSON 自洽性、每个 reader question/blocked claim 与 handoff 表格逐字段一致、核心语义章节与答案列齐全。缺任一项均失败。
+  - 退出码 0 = 通过；用 `set_note_tags` 更新 REVIEW 行 `handoff_contract:passed`。
   - 退出码 1 = 不合格：如果是路径或 notes 缺失，先修正 CSV notes 后重跑；如果是 markdown 残件，**重生成一次** handoff 后重跑。
-  - 重试后仍失败：在 REVIEW 行 `notes` 追加 `handoff_contract:failed <缺项>`。允许代码交付继续收口，但不得把本轮 review 写成 `vision_met`，最终回复必须明说 handoff 不合格，不能声称"handoff 已完成"。
+  - 重试后仍失败：用 `set_note_tags` 更新 REVIEW 行 `handoff_contract:failed <缺项>`。允许代码交付继续收口，但不得把本轮 review 写成 `vision_met`，最终回复必须明说 handoff 不合格，不能声称"handoff 已完成"。
 
-### humanizer-zh 后处理（必须）
+### 可选文字润色
 
-reviewer 产出的 `handoff_markdown` 是草稿，落盘前**必须**经过 humanizer-zh 处理。目的是去除 AI 生成痕迹，让文档读起来像人写的。
-
-流程：
-
-1. reviewer 产出 `handoff_markdown` 草稿（信息完整性由 reviewer 保证）
-2. 主 agent 调用 `humanizer-zh` skill 对草稿进行语言润色
-3. 润色后的版本才是最终 handoff，写入 `<csv-path-without-.csv>.handoff.md`
-
-Outcome answer 表、blocked claim 表、Deferred Findings 隐藏标记、trace id 和结构化证据属于机械字段隔离区，`humanizer-zh` 不得改写；只润色可见说明文字。否则 handoff 无法与 review JSON / Outcome Contract / deferred ledger 对账，contract check 必须失败。
-
-润色规则以 humanizer-zh skill 本身为准。
-
-若 humanizer-zh 不可用（skill 未安装或调用失败）：
-- 只允许把原稿保存为 `<csv-path-without-.csv>.handoff.draft.md`，不得覆盖正式 `.handoff.md`
-- 在 REVIEW 行 `notes` 追加 `handoff_humanized:false; blocked:humanizer-zh unavailable`
-- `check_handoff_contract.py` 必须失败，当前 REVIEW 不得标记完成、不得写 `vision_met`
-- humanizer-zh 恢复后，从 draft 重新执行润色、写正式 handoff，并把 notes 更新为 `handoff_humanized:true`
+`humanizer-zh` 只辅助改善可读性，不是 REVIEW 或 handoff 的完成条件。缺少该工具不阻止交付。Outcome answer 表、blocked claim 表、Deferred Findings 标记、trace id、路径和证据必须保持与结构化来源一致；只润色解释文字。旧 `handoff_humanized` 标签仍可保留，但不参与机械放行。
 
 ### handoff 生成失败的降级（反卡死）
 
@@ -297,8 +281,8 @@ Outcome answer 表、blocked claim 表、Deferred Findings 隐藏标记、trace 
 
 - 在 REVIEW 行 `notes` 记 `handoff:generation_failed <reason>`。
 - 主 agent 用 review JSON + CSV + 代码现有数据，按上述内容结构手动渲染一份兜底 handoff，顶部标 `WARNING: auto-generation failed, rendered by main agent as fallback`。
-- 兜底草稿仍必须经过 humanizer-zh，机械字段隔离规则不变。处理后写入 `<csv-path-without-.csv>.handoff.md`，并在 REVIEW 行 `notes` 追加 `handoff:<path>; handoff_humanized:true`。
-- 随后运行 `check_handoff_contract.py`。若生成或 humanizer 仍失败，当前 REVIEW 保持未完成，不得静默降级为合格 handoff。
+- 兜底稿沿用机械字段隔离规则，写入 `<csv-path-without-.csv>.handoff.md`，用 `set_note_tags` 更新 `handoff:<path>`。
+- 随后运行 `check_handoff_contract.py`。若生成或合同校验仍失败，当前 REVIEW 保持未完成，不得静默降级为合格 handoff。
 
 ## 发现问题时
 

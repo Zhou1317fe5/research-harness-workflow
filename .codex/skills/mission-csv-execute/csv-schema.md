@@ -42,7 +42,7 @@ id,priority,phase,area,title,description,acceptance_criteria,test_mcp,required_s
 | `spec_id` | Associated SpecID. |
 | `exp_id` | Associated ExpID when relevant, otherwise empty. |
 | `run_id` | Associated RunID when relevant, otherwise empty. |
-| `remote_state` | Exact enum: empty before launch, `not_applicable`, `running_remote`, `completed`, `artifacts_pulled`, `ingested`, or `failed`. Only `not_applicable`, `completed`, and `ingested` are terminal for Mission closing. |
+| `remote_state` | Exact enum: empty before launch, `not_applicable`, `running_remote`, `completed`, `artifacts_pulled`, `ingested`, or `failed`. `completed` means only that the worker ended. Scientific result rows close after `ingested`; only an explicit `artifact_policy:none` maintenance row without ExpID may close at `completed`. |
 | `artifact_path` | Local or remote artifact path when relevant. |
 | `branch` | Expected branch. |
 | `commit_hash` | Commit hash evidence when available. For train/eval/remote rows this should identify the reviewed `pre_run_code_commit`; later artifact/analysis/review commits belong in `notes` unless the row itself is about those commits. |
@@ -55,7 +55,7 @@ id,priority,phase,area,title,description,acceptance_criteria,test_mcp,required_s
 - Never hand-concatenate CSV rows. Unescaped English commas are a format bug, not a design decision.
 - Preserve UTF-8 text. Follow the encoding/newline style of `issues/TEMPLATE.csv`; do not add a BOM unless the template has one.
 - Every row must have exactly the template header fields. Extra fields, missing fields, or `None` overflow columns are invalid.
-- An `ingested` row must point to an existing local file or directory through `artifact_path` or an explicit `artifact_evidence:<path>` note. A free-text mention of artifacts or a nonexistent path is not ingestion evidence.
+- An `ingested` row must reference its actual `remote_artifacts/<ExpID>/<RunID>/` evidence (the ExpID directory remains compatible). Its canonical `runs/<RunID>/runspec.json`, manifest identity and summary hashes, current record, and derived index must agree. A directory alone is not ingestion evidence. Run `build --exp <ExpID>` then `derive` before updating the row.
 - Malformed quoting, comma drift, line breaks inside unquoted fields, and typoed status enums are machine-detectable format errors and should be repaired without changing task semantics.
 
 Minimum structural check:
@@ -82,6 +82,12 @@ PY
 ```
 
 ## Notes Tags
+
+Control tags have one value per row. All readers use `mission_completion.parse_note_tags`; conflicting duplicates return `notes_conflict` instead of selecting the first or last value. Identical duplicates remain readable. `csv_state.py` accepts additive `set_note_tags` in the existing request schema to explicitly replace selected registered keys; it preserves other text and repeated `event`/`evidence` history. Use this field for state changes instead of appending a conflicting value.
+
+`git_state=已提交` requires a real immutable `commit_hash`, in the column or the compatibility note. The writer and completion checker verify the Git object and applicable file references. Use `git_repo:research_workspace` on an `artifact`, `analysis`, or `review` row whose commit belongs to that nested repository; it may still reference a RunID. Remote execution rows keep the source-code repository identity. Never replace a run's source commit with a later ledger commit.
+
+If such a result row also records `remote_state=ingested`, its `pre_run_code_commit` note identifies the source commit for RunSpec/manifest checks; its `commit_hash` continues to identify the result repository commit.
 
 Keep commonly used `notes` tags stable:
 
@@ -123,15 +129,15 @@ Keep commonly used `notes` tags stable:
 | `scientific_outcome:<hypothesis_supported\|hypothesis_not_supported\|gate_failed\|inconclusive\|not_applicable>` | Scientific result, separate from Mission execution success. |
 | `review_json:<path>` | Raw structured review output under artifact-root `reviews/`. |
 | `handoff:<path>` | Human-facing handoff path. Use `handoff:generation_failed <reason>` only while rendering a fallback. |
-| `handoff_humanized:<true\|false>` | Whether visible handoff prose was processed with `humanizer-zh`; machine tables remain byte-stable. |
+| `handoff_humanized:<true\|false>` | Optional historical information; no longer a completion gate. Structured tables remain unchanged by prose editing. |
 | `handoff_contract:<passed\|failed ...>` | Mechanical Handoff Contract result. |
 | `source_doc:<path>` | Approved canonical source document. |
 | `gated_run:<id>` | Run row gated by a pre-run review. |
 | `review_mode:<scientific_review\|targeted_review>` | Single pre-run reviewer scope for the gated run. |
 | `review_result:<scientifically_correct\|scientifically_incorrect\|not_evaluable\|targeted_correct\|targeted_incorrect>` | Result returned by the one independent pre-run reviewer. |
 | `blocker_closure_evidence:<path>` | Production/sink evidence that closes every blocker reported by the reviewer before `pre_run_result:pass`. |
-| `command_owner:<rrctl\|legacy>` | Remote control owner. Omission defaults actionable remote rows to rrctl; stored closed/running history is not rewritten. |
-| `legacy_reason:<reason>` | Required reason for an actionable `command_owner:legacy` exception. |
+| `command_owner:<rrctl\|legacy>` | New remote runs use rrctl. Legacy is read/resume-only; stored history is not rewritten. |
+| `legacy_reason:<reason>` | Historical context for existing legacy runs; it cannot authorize a new launch. |
 | `legacy_migration_deadline:<date>` | Legacy migration deadline; this or `legacy_migration_issue` is required. |
 | `legacy_migration_issue:<id>` | Legacy migration issue; this or `legacy_migration_deadline` is required. |
 | `legacy_responsible_component:<owner>` | Required component/owner responsible for the legacy exception. |
@@ -140,3 +146,9 @@ Keep commonly used `notes` tags stable:
 | `scientific_reviewer_gap:<reason>` | One recorded capability gap when the independent scientific reviewer is unavailable; do not create retry rows. |
 | `pre_run_code_commit:<hash>` | Code snapshot reviewed before training/eval/remote run. |
 | `pre_run_result:pass` | Pre-run review allowed the gated run. |
+
+### Claim reference checks
+
+Claim IDs must be unique; `covered_by` must name existing issues and agree with row references. `source_ref` and file evidence resolve relative to the ledger directory or project root; ambiguous paths fail. `path:line` and `path#anchor` remain accepted file citations. URL references and explicit `command:`, `manual:`, `session:` references are classified without executing commands or claiming live URL verification.
+
+A verified claim requires resolvable evidence. `real_e2e` additionally needs a local evidence artifact and a covered issue with `evidence_level:real_e2e`; a required production path needs `production_path:covered`. These checks cannot judge scientific sufficiency, and a non-empty label alone does not establish it. That judgment remains with the reviewer/researcher.

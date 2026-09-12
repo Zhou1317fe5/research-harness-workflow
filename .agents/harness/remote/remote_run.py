@@ -20,10 +20,174 @@ import shutil
 import subprocess
 import sys
 import tempfile
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from harness.common.paths import REPO_ROOT
-from harness.remote.build_rrctl_runspec import run_spec_digest
+from harness.remote.build_rrctl_runspec import RunSpecBuildError, canonical_run_spec, run_spec_digest
+
+
+def validate_mission_launch(spec: dict, *, resume: bool = False, spec_path: Path | None = None) -> None:
+    """核对任务绑定；新启动复用路由，恢复只允许观察已绑定的运行。"""
+    metadata = spec.get("metadata", {})
+    if not metadata.get("spec_id") or not metadata.get("exp_id"):
+        raise ValueError("Mission RunSpec requires both spec_id and exp_id")
+    repo = Path(spec["source"]["repo_root"]).resolve()
+    value, row_id = metadata.get("mission_csv"), metadata.get("mission_row_id")
+    legacy_resume = resume and value is None and row_id is None
+    if legacy_resume:
+        # 旧 RunSpec 保持原 digest，仅由其规范位置找同一 Mission 的 CSV。
+        path = spec_path.resolve() if spec_path is not None else None
+        if (path is None or not path.is_relative_to(repo) or path.name != "runspec.json"
+                or path.parent.name != spec["run_id"] or path.parent.parent.name != "runs"):
+            raise ValueError("resume mission binding missing: expected runs/<RunID>/runspec.json")
+        mission_root = path.parent.parent.parent
+        candidates = list(mission_root.glob("*.csv"))
+        if len(candidates) != 1:
+            raise ValueError("resume mission CSV missing or ambiguous")
+        value = candidates[0].relative_to(repo).as_posix()
+    elif not isinstance(row_id, str) or not row_id.strip():
+        raise ValueError("official Mission RunSpec requires metadata.mission_csv and mission_row_id")
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError("official Mission RunSpec requires metadata.mission_csv and mission_row_id")
+    csv_path = (repo / value).resolve()
+    if not csv_path.is_relative_to(repo):
+        raise ValueError("mission CSV is outside source repository")
+    skills = Path(__file__).resolve().parents[3] / ".codex/skills"
+    for directory in ("mission-csv-execute", "mission-spec", "pre-run-implementation-review"):
+        scripts = str(skills / directory / "scripts")
+        if scripts not in sys.path:
+            sys.path.insert(0, scripts)
+    from mission_completion import parse_note_tags, read_mission_csv
+    from git_isolation import verify_commit
+    from harness.workflow.mission_state import assert_launchable, task_for_csv
+    from validate_spec import validate_text
+    from remote_route import decide_remote_route
+    from harness.remote.build_rrctl_runspec import _gate_provenance
+
+    if resume:
+        task = task_for_csv(repo, csv_path)
+        if task and task["status"] == "preparing":
+            raise ValueError("resume requires an existing Mission run, not a preparing task")
+    else:
+        assert_launchable(repo, csv_path)
+    _, rows, _ = read_mission_csv(csv_path)
+    matches = [row for row in rows if row["run_id"] == spec["run_id"]] if legacy_resume else [row for row in rows if row["id"] == row_id]
+    if len(matches) != 1:
+        raise ValueError("mission run row missing or ambiguous")
+    row = matches[0]
+    row_id = row["id"]
+    tags = parse_note_tags(row["notes"])
+    separate_results = tags.get("git_repo") and (repo / tags["git_repo"]).resolve() != repo
+    if separate_results and not resume:
+        raise ValueError("mission run commit must belong to the source repository")
+    if not resume and row["remote_state"] not in ("", "not_applicable", "failed"):
+        raise ValueError("mission run already started; inspect/resume the existing RunID")
+    if tags.get("command_owner", "rrctl") != "rrctl":
+        raise ValueError("Mission rrctl entry cannot change a legacy run's control owner")
+    commit = spec["source"]["commit"]
+    for field, expected in (("spec_id", metadata["spec_id"]), ("exp_id", metadata["exp_id"])):
+        if row[field] != expected:
+            raise ValueError(f"mission RunSpec identity mismatch: {field}")
+    row_commit = tags.get("pre_run_code_commit") if separate_results else row["commit_hash"]
+    if row_commit != commit:
+        raise ValueError("mission RunSpec identity mismatch: commit_hash")
+    if row["run_id"] and row["run_id"] != spec["run_id"]:
+        raise ValueError("mission RunSpec identity mismatch: run_id")
+    if row["branch"] and row["branch"] != spec["source"]["branch"]:
+        raise ValueError("mission RunSpec identity mismatch: branch")
+    if resume:
+        if row["run_id"] != spec["run_id"] or row["remote_state"] not in {
+            "running_remote", "completed", "artifacts_pulled", "ingested", "failed",
+        }:
+            raise ValueError("resume requires the CSV row's existing RunID and remote state")
+        # paused/cancelled 等状态仅可观察；不改生命周期、不重新套用新启动 gate。
+        # execute 随后以远端 binding digest 核实身份，且只执行 inspect/wait/pull。
+        return
+    sources = {parse_note_tags(item["notes"]).get("source_doc") for item in rows} - {None, ""}
+    if len(sources) != 1:
+        raise ValueError("mission source_doc missing or ambiguous")
+    source_doc = next(iter(sources))
+    source = (repo / source_doc).resolve()
+    if not source.is_relative_to(repo):
+        raise ValueError("mission source_doc outside repository")
+    verify_commit(repo, commit, [source])
+    frozen = subprocess.run(["git", "show", f"{commit}:{source.relative_to(repo).as_posix()}"], cwd=repo, capture_output=True, check=True).stdout
+    approval, errors = validate_text(frozen.decode("utf-8"))
+    if errors or approval.get("status") != "approved" or frozen != source.read_bytes():
+        raise ValueError("mission source_doc must match the approved version in the source commit")
+
+    purpose = metadata.get("execution_purpose", "official")
+    restricted = purpose in {"pre_review_smoke", "preregistered_read_only_probe"}
+    if spec["session"]["backend"] != "process":
+        raise ValueError("new Mission runs require the rrctl process backend")
+    pull_root = Path(spec["local_pull_root"]).resolve()
+    if not pull_root.is_relative_to(repo):
+        raise ValueError("Mission local_pull_root is outside source repository")
+    if restricted:
+        if (not pull_root.is_relative_to(csv_path.parent) or
+                spec["run_id"] not in PurePosixPath(spec["remote"]["output_root"]).parts):
+            raise ValueError("restricted run requires isolated Mission output roots bound to RunID")
+        boundary = metadata.get(purpose)
+        if not isinstance(boundary, dict) or boundary.get("candidate_commit") != commit:
+            raise ValueError("restricted run boundary must bind the candidate commit")
+        if purpose == "pre_review_smoke":
+            resources = spec.get("resources", {})
+            if resources.get("device") != "gpu" or (resources.get("gpu_ids") and
+                    len(resources["gpu_ids"]) != boundary.get("gpu_count")):
+                raise ValueError("smoke GPU resources disagree with the declared boundary")
+            if spec.get("output_cleanup", {}).get("mode") != "pre_review_smoke":
+                raise ValueError("smoke checkpoint cleanup is required")
+
+    change = metadata.get("change_manifest")
+    gate = metadata.get("gate_provenance")
+    if gate is not None:
+        gate = _gate_provenance(gate, source_commit=commit)
+    request = {
+        "schema_version": "mission.remote-route.v1", "execution_kind": "remote",
+        "lifecycle": "failed_retry" if row["remote_state"] == "failed" else "not_started",
+        "has_running_evidence": False, "command_owner": tags.get("command_owner", "rrctl"),
+        # 本地准入先核路由；execute 在任何 rrctl 操作前另核实际安装和能力。
+        "rrctl": {"available": True, "readiness": "not_checked", "launch": "not_checked"},
+        "code_changed": change is not None, "change_manifest": change,
+        "execution_purpose": "official" if purpose == "pilot" else purpose,
+        "custom_control_scripts": metadata.get("custom_control_scripts", []),
+    }
+    if restricted:
+        request[purpose] = metadata[purpose]
+    if gate is not None:
+        request["formal_review"] = {
+            "passed": True, "candidate_commit": gate["pre_run_code_commit"],
+            "review_mode": gate["review_mode"], "review_result": gate["review_result"],
+            "reviewer_id": gate["reviewer_id"], "closure_evidence_paths": gate["blocker_closure_evidence"],
+        }
+    decision = decide_remote_route(request)
+    if decision["decision"] != "proceed" or decision["route"] != "rrctl" or decision["fallback_allowed"]:
+        raise ValueError("mission remote route blocked: " + "; ".join(decision["errors"] or decision["reason_codes"]))
+    route = decision["change_route"]
+    if route is not None:
+        if not route["valid"] or route["candidate_commit"] != commit:
+            raise ValueError("mission change route invalid or source commit mismatched")
+        base = verify_commit(repo, route["reviewed_commit"])
+        actual = subprocess.run(["git", "diff", "--name-only", "--no-renames", "-z", base, commit], cwd=repo, capture_output=True, check=True).stdout
+        if {x.decode() for x in actual.split(b"\0") if x} != {item["path"] for item in change["changes"]}:
+            raise ValueError("mission change manifest does not cover the actual Git diff")
+    needs_review = not restricted and (route is None or route["requires_prerun"])
+    if needs_review or (gate is not None and not restricted):
+        try:
+            gate = _gate_provenance(gate, source_commit=commit)
+        except RunSpecBuildError as exc:
+            raise ValueError(str(exc)) from exc
+        reviews = [parse_note_tags(item["notes"]) for item in rows
+                   if item["id"].startswith("PRERUN-REVIEW-") and parse_note_tags(item["notes"]).get("gated_run") == row_id]
+        if len(reviews) != 1 or any(reviews[0].get(key) != expected for key, expected in (
+            ("pre_run_code_commit", commit), ("pre_run_result", "pass"),
+            ("review_mode", gate["review_mode"]), ("review_result", gate["review_result"]),
+        )):
+            raise ValueError("mission scientific gate does not match the RunSpec")
+        from validate_claim_ledger import reference_file
+        for value in gate["blocker_closure_evidence"]:
+            if reference_file(value, csv_path.parent, repo) is None:
+                raise ValueError("scientific blocker closure requires a local evidence artifact")
 
 
 def rrctl_call(argv: list[str], repo_root: Path) -> subprocess.CompletedProcess:
@@ -50,9 +214,17 @@ def resolve_rrctl() -> str:
         report = json.loads(capability.stdout)
     except ValueError:
         report = {}
-    if capability.returncode or "process" not in report.get("backends", []) or "observer-deadline" not in report.get("capabilities", []):
+    if not isinstance(report, dict):
+        report = {}
+    backends, capabilities = report.get("backends"), report.get("capabilities")
+    required = {"observer-deadline", "worker-monitoring", "unknown-operation-outcome"}
+    available = {item for item in capabilities if isinstance(item, str)} if isinstance(capabilities, list) else set()
+    missing = sorted(required - available)
+    if not isinstance(backends, list) or "process" not in backends:
+        missing.insert(0, "process backend")
+    if capability.returncode or missing:
         raise ValueError(
-            f"rrctl at {executable} lacks the process backend/observer deadline; "
+            f"rrctl at {executable} failed doctor or lacks required capabilities: {', '.join(missing)}; "
             f"install this repository's control package with {install_hint} "
             "and place that environment first in PATH"
         )
@@ -95,6 +267,8 @@ def execute(
     run_id = spec.get("run_id")
     if spec.get("schema_version") != "rrctl.run.v1" or not isinstance(run_id, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", run_id):
         raise ValueError("expected a valid rrctl.run.v1 RunSpec")
+    spec = canonical_run_spec(spec)
+    validate_mission_launch(spec, resume=resume, spec_path=spec_path)
     prefix = [resolve_rrctl(), "--json"]
     if profiles:
         prefix += ["--profiles", str(profiles.resolve())]
@@ -191,6 +365,6 @@ def main() -> int:
             command += ["--profiles", str(profiles)]
         print(shlex.join(command))
         return 0
-    except (OSError, ValueError, KeyError) as exc:
+    except (OSError, ValueError, KeyError, RuntimeError, RunSpecBuildError, subprocess.CalledProcessError) as exc:
         print(f"[remote-run] {exc}", file=sys.stderr)
         return 2

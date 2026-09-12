@@ -13,6 +13,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from mission_completion import parse_note_tags, resolve_reference_path
+
 from validate_outcome_contract import load_contract
 
 
@@ -52,10 +54,6 @@ SCIENTIFIC_OUTCOMES = {
     "not_applicable",
 }
 
-CLAIMS_RE = re.compile(r"(?:^|;\s*)claims:([^;]+)")
-LEDGER_RE = re.compile(r"(?:^|;\s*)claim_ledger:([^;]+)")
-OUTCOME_RE = re.compile(r"(?:^|;\s*)outcome_contract:([^;]+)")
-DEFERRED_RE = re.compile(r"(?:^|;\s*)deferred_ledger:([^;]+)")
 OUTCOME_VERDICTS = {"pass", "fail", "partial", "unknown", "not_run"}
 OUTCOME_CONFIDENCE = {"high", "moderate", "low", "unknown"}
 
@@ -108,36 +106,28 @@ def run_codex_exec(cmd: list[str], prompt: str) -> subprocess.CompletedProcess[s
 
 
 def existing_file(value: str, workdir: Path) -> str:
-    path = Path(value).expanduser()
-    if not path.is_absolute():
-        path = workdir / path
-    if not path.is_file():
-        raise argparse.ArgumentTypeError(f"file does not exist: {value}")
-    return str(path.resolve())
+    return resolve_existing_file(value, workdir)
 
 
 def resolve_existing_file(value: str, workdir: Path, base_dir: Path | None = None) -> str:
-    path = Path(value).expanduser()
-    if path.is_absolute():
-        candidates = [path]
-    else:
-        candidates = []
-        if base_dir:
-            candidates.append(base_dir / path)
-        candidates.append(workdir / path)
-    for candidate in candidates:
-        if candidate.is_file():
-            return str(candidate.resolve())
+    try:
+        path = resolve_reference_path(value, base_dir or workdir, workdir)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from exc
+    if path.is_file():
+        return str(path)
     raise argparse.ArgumentTypeError(f"file does not exist: {value}")
 
 
 def artifact_output_path(value: str, workdir: Path, base_dir: Path | None = None) -> Path:
     path = Path(value).expanduser()
-    if path.is_absolute():
-        return path.resolve()
-    if base_dir and (not path.parts or path.parts[0] != "issues"):
-        return (base_dir / path).resolve()
-    return (workdir / path).resolve()
+    if not path.is_absolute():
+        base = base_dir if base_dir and (not path.parts or path.parts[0] != "issues") else workdir
+        path = base / path
+    try:
+        return resolve_reference_path(str(path), workdir, workdir)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from exc
 
 
 def optional_file(value: str | None, workdir: Path, base_dir: Path | None = None) -> str | None:
@@ -151,9 +141,8 @@ def optional_file(value: str | None, workdir: Path, base_dir: Path | None = None
     return str(path)
 
 
-def tag_value(pattern: re.Pattern[str], notes: str) -> str | None:
-    match = pattern.search(notes or "")
-    return match.group(1).strip() if match else None
+def tag_value(key: str, notes: str) -> str | None:
+    return parse_note_tags(notes or "").get(key)
 
 
 def discover_claim_ledger(csv_path: str, workdir: Path) -> str | None:
@@ -164,9 +153,9 @@ def discover_claim_ledger(csv_path: str, workdir: Path) -> str | None:
     ledger_values: list[str] = []
     for row in rows:
         notes = row.get("notes", "")
-        if tag_value(CLAIMS_RE, notes):
+        if tag_value("claims", notes):
             has_claims = True
-        ledger = tag_value(LEDGER_RE, notes)
+        ledger = tag_value("claim_ledger", notes)
         if ledger and ledger not in ledger_values:
             ledger_values.append(ledger)
     if not ledger_values:
@@ -184,7 +173,7 @@ def discover_outcome_contract(csv_path: str, workdir: Path) -> str | None:
         rows = list(csv.DictReader(handle))
     values: list[str] = []
     for row in rows:
-        value = tag_value(OUTCOME_RE, row.get("notes", ""))
+        value = tag_value("outcome_contract", row.get("notes", ""))
         if value and value not in values:
             values.append(value)
     if not values:
@@ -202,7 +191,7 @@ def discover_deferred_ledger(csv_path: str, workdir: Path) -> str | None:
         rows = list(csv.DictReader(handle))
     values: list[str] = []
     for row in rows:
-        value = tag_value(DEFERRED_RE, row.get("notes", ""))
+        value = tag_value("deferred_ledger", row.get("notes", ""))
         if value and value not in values:
             values.append(value)
     if not values:

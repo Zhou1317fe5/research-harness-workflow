@@ -865,24 +865,12 @@ def decide_remote_route(payload: Any) -> dict[str, Any]:
         route = "rrctl"
         reason_codes = ["failed_retry_migrates_to_rrctl"]
     elif owner == "legacy":
-        legacy_errors: list[str] = []
-        complete = _validate_legacy_exception(
-            payload.get("legacy_exception"), legacy_errors
-        )
-        if not complete or legacy_errors:
-            return {
-                **base,
-                "decision": "blocked",
-                "route": "legacy",
-                "reason_codes": ["legacy_exception_incomplete"],
-                "errors": sorted(legacy_errors),
-            }
         return {
             **base,
-            "decision": "proceed",
-            "route": "legacy",
-            "reason_codes": ["legacy_exception_accepted"],
-            "errors": [],
+            "decision": "blocked",
+            "route": None,
+            "reason_codes": ["legacy_new_launch_forbidden"],
+            "errors": ["legacy_new_launch_forbidden: existing runs may resume; new runs require rrctl"],
         }
     else:
         route = "rrctl"

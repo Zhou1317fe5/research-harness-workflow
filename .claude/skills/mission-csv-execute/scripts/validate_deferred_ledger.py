@@ -10,9 +10,9 @@ import re
 import sys
 from pathlib import Path
 
+from mission_completion import parse_note_tags, resolve_reference_path as resolve_path
 
-LEDGER_RE = re.compile(r"(?:^|;\s*)deferred_ledger:([^;]+)")
-FINDINGS_RE = re.compile(r"(?:^|;\s*)deferred_findings:([^;]+)")
+
 COVERAGE_RE = re.compile(r"(?:^|;\s*)deferred_coverage:(\d+)/(\d+)")
 FINDING_ID_RE = re.compile(r"DF-\d{3,}")
 ALLOWED_KINDS = {"deferred_improvement", "future_decision"}
@@ -25,24 +25,12 @@ REQUIRED_STRING_FIELDS = {
 }
 
 
-def tag_value(pattern: re.Pattern[str], notes: str) -> str | None:
-    match = pattern.search(notes or "")
-    return match.group(1).strip() if match else None
+def tag_value(key: str, notes: str) -> str | None:
+    return parse_note_tags(notes or "").get(key)
 
 
 def split_ids(value: str) -> list[str]:
     return [part.strip() for part in value.split(",") if part.strip()]
-
-
-def resolve_path(value: str, base_dir: Path, workdir: Path) -> Path:
-    path = Path(value.strip().strip("\"'")).expanduser()
-    if path.is_absolute():
-        return path.resolve()
-    for root in (base_dir, workdir):
-        candidate = (root / path).resolve()
-        if candidate.exists():
-            return candidate
-    return (base_dir / path).resolve()
 
 
 def _non_empty_strings(value: object) -> bool:
@@ -117,7 +105,9 @@ def load_csv_deferred(
     try:
         with csv_path.open(encoding="utf-8-sig", newline="") as handle:
             rows = list(csv.DictReader(handle))
-    except OSError as exc:
+        for row in rows:
+            parse_note_tags(row.get("notes") or "")
+    except (OSError, ValueError, csv.Error) as exc:
         return {}, None, [f"CSV read failed: {exc}"], []
 
     errors: list[str] = []
@@ -126,8 +116,8 @@ def load_csv_deferred(
     csv_issue_ids = {str(row.get("id") or "") for row in rows if row.get("id")}
     for row in rows:
         notes = str(row.get("notes") or "")
-        ledger_value = tag_value(LEDGER_RE, notes)
-        findings_value = tag_value(FINDINGS_RE, notes)
+        ledger_value = tag_value("deferred_ledger", notes)
+        findings_value = tag_value("deferred_findings", notes)
         if ledger_value:
             ledger_values.add(ledger_value)
         if findings_value:
@@ -143,7 +133,10 @@ def load_csv_deferred(
             errors.append("CSV references deferred findings but no deferred_ledger tag was found")
         return {}, None, errors, rows
 
-    ledger_path = resolve_path(next(iter(ledger_values)), csv_path.parent, workdir)
+    try:
+        ledger_path = resolve_path(next(iter(ledger_values)), csv_path.parent, workdir)
+    except ValueError as exc:
+        return {}, None, errors + [str(exc)], rows
     if not ledger_path.is_file():
         return {}, ledger_path, errors + [f"deferred ledger does not exist: {ledger_path}"], rows
     try:

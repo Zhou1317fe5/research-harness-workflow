@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import contextlib
 import csv
+import hashlib
 import io
 import json
 import subprocess
@@ -123,7 +124,24 @@ protocol_field = "evaluation.mode"
         run.mkdir(parents=True)
         (run / "summary.json").write_text(json.dumps({"metric": 1.25, "evaluation": {"mode": "protocol-a"}, "training": {"updates": 3},
                                                        "files": {"weights": "weights/model.bin"}}))
-        (run / "artifact_manifest.json").write_text(json.dumps({"provenance": {"commit": "b" * 40}}))
+        mission = self.root / "issues/T"
+        spec_path = mission / "runs/RUN-A/runspec.json"
+        spec_path.parent.mkdir(parents=True)
+        (mission / "tasks.csv").write_text("exp_id\nEXP-A\n")
+        request = self.request()
+        request["source"]["commit"] = "b" * 40
+        spec = build_runspec(request)
+        spec_path.write_text(json.dumps(spec))
+        progress_name = request["adapter_contract"]["progress_path"]
+        (run / progress_name).write_text('{"step": 3}\n')
+        (run / "artifact_manifest.json").write_text(json.dumps({
+            "schema_version": "rrctl.artifacts.v1", "run_id": "RUN-A",
+            "provenance": {"spec_id": "SPEC-A", "exp_id": "EXP-A", "commit": "b" * 40,
+                           "run_spec_sha256": run_spec_digest(spec)},
+            "entries": [{"path": name, "size": (run / name).stat().st_size,
+                         "sha256": hashlib.sha256((run / name).read_bytes()).hexdigest()}
+                        for name in ("summary.json", progress_name)],
+        }))
         with patch.object(experiment_records, "ARTIFACTS", artifacts), patch.object(experiment_records, "REPO_ROOT", self.root):
             record = experiment_records.build_record("EXP-A", {"commit": {"a" * 40}}, {
                 "protocol_field": "evaluation.mode", "steps_field": "training.updates", "checkpoint_field": "files.weights",
@@ -145,7 +163,7 @@ protocol_field = "evaluation.mode"
                 return subprocess.CompletedProcess(argv, 124, json.dumps({"ok": True, "result": {"status": {"state": "running"}, "observation": "timeout"}}), "")
             return subprocess.CompletedProcess(argv, 0, json.dumps({"ready": True} if stage == "ready" else {"ok": True, "result": {}}), "")
         output = io.StringIO()
-        with patch.object(remote_run, "resolve_rrctl", return_value="rrctl"), patch.object(remote_run, "rrctl_call", side_effect=call), patch.object(remote_run, "_emit_stage"), contextlib.redirect_stdout(output):
+        with patch.object(remote_run, "validate_mission_launch"), patch.object(remote_run, "resolve_rrctl", return_value="rrctl"), patch.object(remote_run, "rrctl_call", side_effect=call), patch.object(remote_run, "_emit_stage"), contextlib.redirect_stdout(output):
             code = remote_run.execute(path, profiles=None, poll_seconds=600)
         self.assertEqual(code, 124)
         self.assertEqual(calls, ["ready", "launch", "wait"])
@@ -161,7 +179,8 @@ protocol_field = "evaluation.mode"
             calls.append(stage)
             result = {"binding": {"run_spec_sha256": run_spec_digest(spec)}} if stage == "inspect" else {"status": {"state": "completed"}}
             return subprocess.CompletedProcess(argv, 0, json.dumps({"ok": True, "result": result}), "")
-        with patch.object(remote_run, "resolve_rrctl", return_value="rrctl"), patch.object(remote_run, "rrctl_call", side_effect=call), patch.object(remote_run, "_emit_stage"):
+        # 此处只测 rrctl 传输序列；真实 CSV/生命周期准入由 ResearchBindingTests 覆盖。
+        with patch.object(remote_run, "validate_mission_launch"), patch.object(remote_run, "resolve_rrctl", return_value="rrctl"), patch.object(remote_run, "rrctl_call", side_effect=call), patch.object(remote_run, "_emit_stage"):
             self.assertEqual(remote_run.execute(path, profiles=None, poll_seconds=600, resume=True), 0)
         self.assertEqual(calls, ["inspect", "wait", "pull"])
 
@@ -170,6 +189,21 @@ protocol_field = "evaluation.mode"
         with patch.object(remote_run.shutil, "which", return_value="/old/rrctl"), patch.object(remote_run.subprocess, "run", return_value=old):
             with self.assertRaises(ValueError):
                 remote_run.resolve_rrctl()
+
+    def test_capability_check_requires_every_process_contract_capability(self):
+        report = {"backends": ["process"], "capabilities": [
+            "observer-deadline", "worker-monitoring", "unknown-operation-outcome",
+        ]}
+        for missing in (None, "process", *report["capabilities"]):
+            with self.subTest(missing=missing):
+                value = {key: [item for item in values if item != missing] for key, values in report.items()}
+                result = subprocess.CompletedProcess([], 0, json.dumps(value), "")
+                with patch.object(remote_run.shutil, "which", return_value="/fixture/rrctl"), patch.object(remote_run.subprocess, "run", return_value=result):
+                    if missing is None:
+                        self.assertEqual(remote_run.resolve_rrctl(), "/fixture/rrctl")
+                    else:
+                        with self.assertRaisesRegex(ValueError, missing):
+                            remote_run.resolve_rrctl()
 
     def named_config(self, default=True):
         path = self.root / "named.toml"

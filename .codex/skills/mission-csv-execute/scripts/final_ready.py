@@ -12,9 +12,9 @@ from pathlib import Path
 from typing import Any
 
 from mission_completion import (
-    CLOSED_STATES,
-    TERMINAL_REMOTE_STATES,
+    row_terminal_errors,
     claim_completion_errors,
+    git_completion_errors,
     ingest_completion_errors,
     read_mission_csv,
 )
@@ -91,69 +91,10 @@ def _read_csv(path: Path, review_row_id: str, errors: list[str]) -> list[dict[st
         ids.add(row_id)
         if row_id == review_row_id:
             continue
-        for field, expected in CLOSED_STATES.items():
-            if row.get(field) != expected:
-                _error(
-                    errors,
-                    "row_not_closed",
-                    f"{row_id}.{field}",
-                    f"expected {expected}",
-                )
-        remote_state = row.get("remote_state", "not_applicable")
-        if remote_state not in TERMINAL_REMOTE_STATES:
-            _error(
-                errors,
-                "remote_state_not_terminal",
-                f"{row_id}.remote_state",
-                remote_state or "missing",
-            )
+        errors.extend(row_terminal_errors(row, allow_compat=True))
     if review_row_id not in ids:
         _error(errors, "review_row_missing", "review_row_id", review_row_id)
     return rows
-
-
-def _validate_claims(path: Path, errors: list[str]) -> None:
-    try:
-        ledger = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-        _error(errors, "claim_ledger_invalid", "claims_path", str(exc))
-        return
-    claims = ledger.get("claims") if isinstance(ledger, dict) else None
-    if not isinstance(claims, list) or not claims:
-        _error(errors, "claim_ledger_invalid", "claims_path", "claims array required")
-        return
-    for index, claim in enumerate(claims):
-        if not isinstance(claim, dict) or not claim.get("claim_id"):
-            _error(errors, "claim_invalid", f"claims[{index}]", "claim_id required")
-            continue
-        status = claim.get("status")
-        if not isinstance(status, str) or status not in {
-            "verified", "not_run_by_preregistered_gate", "out_of_scope"
-        }:
-            _error(
-                errors,
-                "claim_not_terminal",
-                str(claim.get("claim_id")),
-                str(status or "missing"),
-            )
-        if status == "not_run_by_preregistered_gate" and not claim.get("gate_evidence"):
-            _error(
-                errors,
-                "claim_gate_evidence_missing",
-                str(claim.get("claim_id")),
-                "gate_evidence required",
-            )
-        if (
-            status == "verified"
-            and claim.get("evidence_required") == "real_e2e"
-            and not claim.get("evidence_refs")
-        ):
-            _error(
-                errors,
-                "claim_real_e2e_evidence_missing",
-                str(claim.get("claim_id")),
-                "evidence_refs required",
-            )
 
 
 def _closing_route(value: Any, errors: list[str]) -> tuple[str | None, list[str]]:
@@ -242,6 +183,7 @@ def check_final_ready(payload: Any, *, workdir: Path | None = None) -> dict[str,
 
     if csv_path is not None and review_row_id:
         rows = _read_csv(csv_path, review_row_id, errors)
+        errors.extend(git_completion_errors(csv_path, [row for row in rows if row["id"] != review_row_id], workdir=root))
         errors.extend(ingest_completion_errors(csv_path, rows, workdir=root))
         errors.extend(claim_completion_errors(csv_path, rows, workdir=root))
         actual_run_ids = sorted(
@@ -267,8 +209,9 @@ def check_final_ready(payload: Any, *, workdir: Path | None = None) -> dict[str,
         for detail in HANDOFF.lint(handoff_path.read_text(encoding="utf-8")):
             _error(errors, "handoff_lint_failed", "handoff_path", detail)
 
-    if claims_path is not None:
-        _validate_claims(claims_path, errors)
+    if claims_path is not None and csv_path is not None:
+        from validate_claim_ledger import validate_ledger
+        errors.extend(validate_ledger(claims_path, csv_path, set(), require_terminal=True, workdir=root))
 
     for index, value in enumerate(provenance):
         _resolve_file(value, root, f"provenance_paths[{index}]", errors)
