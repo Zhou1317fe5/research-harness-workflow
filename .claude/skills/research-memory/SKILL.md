@@ -1,12 +1,14 @@
 ---
 name: research-memory
-description: Record and recall research decisions, findings, hypotheses, and experiment analyses when a research conversation changes direction, analysis files change, or a new task needs prior conclusions. Use the local research-memory queue; this does not launch experiments or authorize new runs.
+description: Record and recall research decisions, findings, hypotheses, and experiment analyses. Also use when the user requests a Hindsight publication preview, confirms a batch, or asks to resume its upload. This does not launch experiments or authorize new runs.
 ---
 
 # Research Memory
 
-使用项目中的 `.agents/harness/memory/research_memory.py`。本地脚本负责来源队列、
+短入口为 `./scripts/memory`，转发到 `.agents/harness/memory/research_memory.py`。本地脚本负责来源队列、
 结论整理和恢复；配置启用 Hindsight 时，由脚本补充同步与远端召回。
+
+仅办理入账预览、确认或续传时，直接按 [发布指引](references/publication.md) 执行；不先扫描对话、整理本地队列或恢复 Mission。
 
 在科研交流出现新决定或推断、实验分析更新，或新任务需要既有结论时，先核对本地上下文与相关待处理来源。
 宿主钩子通常已经完成采集；使用队列中的事件 ID，避免把同一条消息再录一份。
@@ -137,41 +139,10 @@ Hindsight 默认关闭；`hindsight_enabled: true` 开启按需召回和手工�
 `hindsight_auto_sync` 默认 false，不因每条对话或工具调用启动远端处理。
 普通原文、STATE、CONCLUSIONS 整篇投影和 record.json 不自动上传。
 整理后的有效决定、发现和执行事实以精简条目入队；OPEN/PROPOSED 留在本地。
-完成版实验分析优先使用批量入口。文件保存、Git 提交和实验退出都不能单独证明分析已定稿，
-因此不自动 publish。先在本地加载项目 `.env`（如存在，不打印内容），使敏感检查能识别当前凭据值；
-预览本身不联网、不扫描原始来源、不入同步队列：
 
-```bash
-python .agents/harness/memory/research_memory.py publish-batch
-python .agents/harness/memory/research_memory.py publish-batch --exp-id <ExpID_A> --exp-id <ExpID_B>
-```
-
-默认只选择 `research_workspace/experiments/*/analysis/analysis.md`，不跟随附件，不选对话、日志、
-草稿、STATE、CONCLUSIONS 或 record.json。检查凭据、显式草稿、原始对话/日志标记，要求
-Change / Result / Finding / Next 四段非空且按序；符号链接、不可读文件和超过 32 KiB 的主分析会被排除。
-已同步且内容、来源身份未变的文件跳过。`--limit` 只限制终端预览条数，不缩小批次。
-
-读取返回的 `preview_path` 及其链接的完整文件副本，核对分析是否完成、是否含敏感内容；
-模式检查无法识别所有敏感信息。向用户展示固定清单、排除项和总量，取得对该清单的一次确认后运行：
-
-```bash
-python .agents/harness/memory/research_memory.py publish-batch --confirm <BATCH_ID> --sync
-```
-
-`--confirm` 表示用户已审阅并确认这份清单，不能仅凭“文件已生成”自行执行。已有对应确认时不再询问。
-整批预检通过后一次入队；预览副本、分析内容或来源身份变化，需重新预览并确认变化后的清单。
-省略 `--sync` 只入队。批量同步只发送本批已确认的版本，不带上其他待同步记录。
-
-默认每次同步预算 120 秒，支持 `--seconds 1..900`；超过 20 份会自动分轮。
-`complete: true` 才表示本批全部远端完成。`submitted` 只表示已提交；预算耗尽或连接中断时沿用批次继续：
-
-```bash
-python .agents/harness/memory/research_memory.py sync --batch <BATCH_ID> --seconds 120
-```
-
-继续同步无需再次 publish 或再次确认未变化的内容；有 operation ID 时查询同一远端操作。
-报错或 `blocked` 需按返回原因处理，不能把入队数量当作上传成功数量。
-清单与副本保存在本地记忆控制目录的 `publications/`，不会作为研究产物提交。
+交付本轮更新的定稿主分析且 Hindsight 已启用时，按 [发布指引](references/publication.md) 准备本轮实验的固定预览。
+用户在对话中一次确认后，由 Agent 执行上传、等待和结果核验；多个实验可以合在一批。
+文件保存、Git 提交和实验退出不代表发布授权。待确认或同步失败不阻塞科研交付。
 
 单份已登记的完成版分析仍可显式使用 `publish <项目相对路径>`；
 `sync --limit 4` 则推进所有精选队列，适合用户明确要求同步整个队列时使用。

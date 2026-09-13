@@ -318,7 +318,7 @@ def payload_allowed(memory, state, key, version, payload, *, current=True):
     return isinstance(statuses, dict) and statuses.get(cid) not in {None, "OPEN", "PROPOSED"}
 
 
-def sync_batch(memory, batch_id, *, client=None, seconds=120):
+def sync_batch(memory, batch_id, *, client=None, seconds=120, wait=False):
     if type(seconds) is not int or not 1 <= seconds <= 900:
         raise MemoryError("批量同步 seconds 必须在 1 到 900 之间")
     plan = _load(memory, batch_id)
@@ -350,6 +350,28 @@ def sync_batch(memory, batch_id, *, client=None, seconds=120):
                     error = result.get("error_type") or "sync_busy_or_no_progress"
                     break
                 todo = {key: version for key, version in todo.items() if key not in visited}
+                if wait:
+                    round_complete = not todo
+                    with index_transaction(memory) as state:
+                        if _queue_status(state, jobs)["blocked"] or any(
+                                state["jobs"].get(key, {}).get("error") for key in jobs):
+                            break
+                        if round_complete:
+                            # 只观察本批已有的远端操作；失败或结果不明的发送不在等待中重试。
+                            todo = {key: version for key, version in jobs.items()
+                                    if (job := state["jobs"].get(key, {})).get("revision") == version
+                                    and job.get("state") == "submitted"
+                                    and (job.get("inflight") or {}).get("revision") == version
+                                    and (job.get("inflight") or {}).get("operation_id")}
+                    if round_complete and todo:
+                        remaining = deadline - time.monotonic()
+                        if remaining <= 0:
+                            break
+                        time.sleep(min(5, remaining))
+                        if time.monotonic() >= deadline:
+                            break
+                        with index_transaction(memory) as state:
+                            _validate_files(memory, batch_id, plan, state)
     except Exception as exc:
         error = type(exc).__name__
     finally:
@@ -369,4 +391,5 @@ def sync_batch(memory, batch_id, *, client=None, seconds=120):
     return {"batch_id": batch_id, "enabled": memory.config["hindsight_enabled"], "attempted": attempted,
             "completed": completed, "queue": queue, "complete": queue["synced"] == len(jobs),
             "error_type": error, "errors": errors, "resume_argv": ["python", ".agents/harness/memory/research_memory.py",
-                "--repo-root", str(memory.root), "--store", str(memory.store), "sync", "--batch", batch_id]}
+                "--repo-root", str(memory.root), "--store", str(memory.store), "sync", "--batch", batch_id]
+                + (["--wait"] if wait else [])}

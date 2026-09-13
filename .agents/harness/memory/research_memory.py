@@ -1493,12 +1493,14 @@ def main():
     batch.add_argument("--exp-id", action="append", dest="exp_ids", help="仅选择指定实验，可重复")
     batch.add_argument("--confirm", metavar="BATCH_ID", help="确认已审阅的固定预览清单")
     batch.add_argument("--sync", action="store_true", help="确认入队后只同步本批")
+    batch.add_argument("--wait", action="store_true", help="在本批时间预算内等待已提交的远端操作完成")
     batch.add_argument("--seconds", type=int, default=120, help="本批同步的单次时间预算")
     batch.add_argument("--limit", type=int, default=20, help="终端预览行数；完整清单保存在预览目录")
     commands.add_parser("quarantine", help="从 stdin 接收 event_ids 和 reason，隔离已核对的污染来源")
     sync = commands.add_parser("sync")
     sync.add_argument("--limit", type=int, default=4)
     sync.add_argument("--batch", help="只推进已确认批次，不重新发布或扩大选择")
+    sync.add_argument("--wait", action="store_true", help="在本批时间预算内等待已提交的远端操作完成，须配合 --batch")
     sync.add_argument("--seconds", type=int, default=120, help="批量同步的单次时间预算")
     recall = commands.add_parser("recall")
     recall.add_argument("query")
@@ -1554,6 +1556,8 @@ def main():
             result = memory.publish(args.source)
         elif args.command == "publish-batch":
             from harness.memory.analysis_publication import confirm, preview, sync_batch
+            if args.wait and not (args.confirm and args.sync):
+                raise MemoryError("publish-batch --wait 须配合 --confirm BATCH_ID --sync")
             if args.sync and not args.confirm:
                 raise MemoryError("先预览并取得用户确认，再使用 --confirm BATCH_ID --sync")
             if args.confirm and args.exp_ids:
@@ -1563,7 +1567,7 @@ def main():
             if args.confirm:
                 result = confirm(memory, args.confirm)
                 if args.sync:
-                    result["sync"] = sync_batch(memory, args.confirm, seconds=args.seconds)
+                    result["sync"] = sync_batch(memory, args.confirm, seconds=args.seconds, wait=args.wait)
             else:
                 result = preview(memory, exp_ids=args.exp_ids, limit=args.limit)
         elif args.command == "quarantine":
@@ -1572,13 +1576,15 @@ def main():
                 raise MemoryError("quarantine 请求必须包含 event_ids 和 reason")
             result = memory.quarantine(payload["event_ids"], payload["reason"])
         elif args.command == "sync":
+            if args.wait and not args.batch:
+                raise MemoryError("sync --wait 须配合 --batch BATCH_ID，不能扩大到整个队列")
             if not 1 <= args.limit <= 20:
                 raise MemoryError("单次同步 limit 必须在 1 到 20 之间")
             if args.batch:
                 from harness.memory.analysis_publication import sync_batch
                 if args.limit != 4:
                     raise MemoryError("sync --batch 使用完整已确认清单和 --seconds 预算，不使用 --limit")
-                result = sync_batch(memory, args.batch, seconds=args.seconds)
+                result = sync_batch(memory, args.batch, seconds=args.seconds, wait=args.wait)
             else:
                 result = memory.sync(limit=args.limit)
         elif args.command == "recall":

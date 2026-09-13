@@ -109,6 +109,8 @@ cd /path/to/your-project
 cp -Rn /tmp/research-harness-template/.agents /tmp/research-harness-template/.claude /tmp/research-harness-template/.codex .
 cp -Rn /tmp/research-harness-template/issues /tmp/research-harness-template/docs .
 cp -n /tmp/research-harness-template/AGENTS.md /tmp/research-harness-template/CLAUDE.md .
+mkdir -p scripts
+cp -n /tmp/research-harness-template/scripts/memory scripts/memory
 
 mkdir -p research_workspace/experiments remote_artifacts
 cp -n /tmp/research-harness-template/research_workspace/STATE.md /tmp/research-harness-template/research_workspace/CONCLUSIONS.md research_workspace/
@@ -127,6 +129,7 @@ rrctl --json doctor
 AGENTS.md / CLAUDE.md    项目规则和研究背景
 scripts/train.sh        项目训练命令与参数；已有脚本可沿用原路径
 scripts/eval.sh         项目评估命令与参数；也可合并为一个 train_eval.sh
+scripts/memory          科研记忆与 Hindsight 入账的短入口
 .agents/harness/config/ 项目的运行与连接配置
 docs/specs/             讨论形成的实验方案
 issues/                 任务 CSV 和交付说明
@@ -496,22 +499,22 @@ python .agents/harness/memory/research_memory.py status
 
 确认 `hooks_enabled`、`hindsight_enabled` 都为 true，再检查实际收集与连接。
 
-在启用 hooks 的会话中产生一条正常科研消息后，先核对本地来源。普通对话不自动上传；按 research-memory skill 把有价值的内容整理为条目。需要发布完成版实验分析时，先加载凭据变量，再生成本地预览：
+在启用 hooks 的会话中产生一条正常科研消息后，先核对本地来源。普通对话不自动上传；按 research-memory skill 把有价值的内容整理为条目。完成版分析可直接在对话中请求入账，Agent 会准备本轮预览，用户一次确认后负责上传并核验；这不需要开启 `hindsight_auto_sync`。手工检查时，先加载凭据变量，再预览选定实验：
 
 ```bash
 set -a
 source .agents/harness/config/.env
 set +a
-python .agents/harness/memory/research_memory.py publish-batch
+./scripts/memory publish-batch --exp-id <ExpID>
 ```
 
 预览只检查各实验的 `analysis/analysis.md`，不联网、不入队；凭据变量可用于检查分析是否包含其值，不能打印这些变量或 `.env` 内容。查看 `preview_path` 中的完整副本、文件数量和排除原因，用户一次确认后运行：
 
 ```bash
-python .agents/harness/memory/research_memory.py publish-batch --confirm <BATCH_ID> --sync
+./scripts/memory publish-batch --confirm <BATCH_ID> --sync --wait
 ```
 
-只同步该清单中的固定版本，分析变化需重新预览。超出预算或远端仍在处理时，使用 `sync --batch <BATCH_ID>` 继续；`complete: true` 才表示整批完成。选择范围与检查规则见[使用教程](usage.md#科研记录与召回)。
+只同步该清单中的固定版本，分析变化需重新预览。`--wait` 在预算内等待已有远端操作；超出预算时，使用 `./scripts/memory sync --batch <BATCH_ID> --wait` 继续。`complete: true` 且无错误、无 blocked 才表示整批完成；服务失败不阻塞科研交付。选择范围与检查规则见[使用教程](usage.md#科研记录与召回)。
 
 STATE、CONCLUSIONS 整篇投影、record.json、原始对话、日志、草稿和内部提示词不作为远端全量输入。要同步整个已发布精选队列并查询时运行：
 
@@ -520,7 +523,7 @@ python .agents/harness/memory/research_memory.py sync --limit 4
 python .agents/harness/memory/research_memory.py recall "当前研究方案"
 ```
 
-手工命令需要先加载 `.env`；生成的 hooks 会在执行时自行加载这个文件。查看查询返回的 `hindsight` 部分：应当启用，且没有 `error_type`。刚接入或没有相关记忆时，`results` 为空是正常情况。
+手工命令及 Agent 调用都需要先加载 `.env`，`scripts/memory` 只转发命令；生成的 hooks 会在执行时自行加载这个文件。旧的 Python 长命令继续可用。查看查询返回的 `hindsight` 部分：应当启用，且没有 `error_type`。刚接入或没有相关记忆时，`results` 为空是正常情况。
 
 最后用项目里已有的一条已整理记录核对同步和召回。仅“来源已采集”不代表已经上传，也不代表获得新的运行授权。旧版原文同步队列不会自动重发。
 

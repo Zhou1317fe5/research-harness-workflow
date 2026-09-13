@@ -177,25 +177,32 @@ RunSpec 中要求拉取的必需文件和目录也会复核是否齐全、是否
 
 Hindsight 可以辅助寻找较远的历史材料，但检索到相似内容后，仍要核对来源和适用条件。它的[官方安装仓库与接入方法](installation.md#可选-hindsight)在配置教程里，本地记录功能也能独立使用。
 
-Hindsight 默认关闭自动同步。启用后，远端只接收已整理的精简记录和明确发布的完成版分析；普通对话保留本地，后台 Historian 提示词不采集。需要同步时运行 `research_memory.py sync`，需要查历史时再 recall。
+Hindsight 启用后，远端只接收已整理的精简记录和明确发布的完成版分析；普通对话保留本地，后台 Historian 提示词不采集。`hindsight_auto_sync` 默认关闭，文件保存和实验退出不会直接触发上传。
 
-实验较多时，可以一次预览并发布多份主分析。从项目根先运行：
+日常可以在对话中完成入账，无需每次打开终端。Agent 交付本轮定稿分析时，会准备本轮实验的预览；多个实验可以放进同一批。你看过清单后回复“确认这一批入账”，Agent 就会上传、等待并核验结果。需要补录历史时，可以说：
 
-```bash
-python .agents/harness/memory/research_memory.py publish-batch
+```text
+请预览 EXP_A 和 EXP_B 的主分析入账清单。
 ```
 
-默认仅选择各实验的 `analysis/analysis.md`，也可追加多个 `--exp-id <ExpID>` 缩小范围。程序检查敏感信息、草稿与原始对话/日志标记、四段分析结构和文件大小，排除未通过检查的文件，并跳过内容及来源身份未变的已同步版本。附件、原始会话、日志和草稿不进入本批。
+预览只生成本地清单，不联网、不入队。Agent 会展示选中的实验、排除项和完整内容链接；没有新增内容时不重复请求确认。分析内容或来源身份变了，会重新准备预览。服务暂时不可用时，科研结果照常交付，已确认批次留待继续；之后说“继续刚才那批入账”即可。
 
-这一步不联网、不入队。返回的 `preview_path` 包含完整清单和各文件的冻结副本。检查结果只能辅助审阅；agent 应先展示清单与排除项，由用户确认一次，再执行：
+需要手工操作时，使用项目根的短入口：
 
 ```bash
-python .agents/harness/memory/research_memory.py publish-batch --confirm <BATCH_ID> --sync
+./scripts/memory publish-batch --exp-id EXP_A --exp-id EXP_B
+./scripts/memory publish-batch --confirm <BATCH_ID> --sync --wait
 ```
 
-确认后整批入队并只同步这一批；省略 `--sync` 则只入队。分析、来源身份或预览副本改变时，旧清单不能发布新内容。文件保存与 Git 提交无法可靠表示分析已定稿，因此不启用自动发布。
+两条命令之间先审阅返回的 `preview_path`，确认其中的固定清单。程序检查敏感信息、草稿、原始对话/日志、四段分析结构和文件大小，并跳过内容及来源身份未变的已同步版本。附件、原始会话、日志和草稿不进入本批。省略 `--exp-id` 仍可手动预览全部实验主分析；交付时只预览本轮范围。
 
-同步默认有 120 秒预算，超过 20 份自动分轮。查看 `complete` 和 `queue`，`submitted` 表示远端仍在处理。需要继续时运行 `python .agents/harness/memory/research_memory.py sync --batch <BATCH_ID> --seconds 120`，沿用同一确认，无需逐篇重新 publish。预览与确认记录只保存在本地控制目录，不写入研究台账。手工命令的凭据加载见[Hindsight 配置](installation.md#可选-hindsight)。
+`--wait` 在默认 120 秒预算内等待远端处理，超过 20 份会自动分轮；只有 `complete: true` 且没有错误或 blocked 才表示全部完成。`submitted` 仍是处理中，预算耗尽可继续同批：
+
+```bash
+./scripts/memory sync --batch <BATCH_ID> --wait --seconds 120
+```
+
+续传沿用原确认与已有远端操作，不需要逐篇重新发布。报错时先处理原因，不把入队当成上传成功。旧 Python 长命令继续兼容；省略 `--wait` 保留原先单轮检查行为。预览与确认沿用本地控制目录，不新增科研台账状态。短入口不自动加载凭据，Agent 或手工操作均按 [Hindsight 配置](installation.md#可选-hindsight)加载环境。
 
 若状态文件被恢复到旧版本，记忆程序会报告投影冲突。用 `research_memory.py recover --repair-projections` 核对并修复受管理区域，不用 `git restore` 撤销新的用户决定。
 

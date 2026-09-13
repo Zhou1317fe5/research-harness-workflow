@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+memory_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+exec "${PYTHON_BIN:-python3}" "$memory_root/.agents/harness/memory/research_memory.py" --repo-root "$memory_root" "$@"

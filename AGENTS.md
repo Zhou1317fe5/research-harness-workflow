@@ -60,6 +60,8 @@ research_workspace/
 
 研究产物最低关联：SpecID + ExpID + Branch + Commit；多次远程运行补 RunID。
 
+交付本轮更新的定稿主分析且 Hindsight 已启用时，按 [入账指引](.agents/skills/research-memory/references/publication.md) 准备本轮预览；用户确认后由 Agent 同步并核验。待确认或服务失败不阻塞科研交付。
+
 # 安全与进程
 
 - 未获授权不运行破坏性命令，不覆盖或丢弃用户改动，不使用 `git reset --hard`。

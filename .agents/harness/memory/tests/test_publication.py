@@ -177,6 +177,11 @@ class PublicationTests(unittest.TestCase):
         with self.assertRaisesRegex(MemoryError, "尚未确认"):
             sync_batch(self.memory, batch_id, client=client)
         cases = [("publish-batch", "--sync"),
+                 ("publish-batch", "--wait"),
+                 ("publish-batch", "--sync", "--wait"),
+                 ("publish-batch", "--confirm", batch_id, "--wait"),
+                 ("sync", "--wait"),
+                 ("sync", "--batch", batch_id, "--wait"),
                  ("publish-batch", "--confirm", batch_id, "--exp-id", "EXP_A"),
                  ("publish-batch", "--confirm", batch_id, "--sync", "--seconds", "0")]
         for args in cases:
@@ -204,6 +209,41 @@ class PublicationTests(unittest.TestCase):
         connect.assert_called_once()
         self.assertTrue(client.closed)
         self.assertEqual(len(client.calls), 1)
+
+    def test_cli_wait_completes_async_batch_and_accepts_completed_resume(self):
+        self.analysis()
+        atomic(self.memory.config_path, {"hindsight_enabled": True})
+        batch_id = self.batch()
+        client = Client(lambda name, _: {"status": "pending", "operation_id": "fixture-operation"}
+                        if name == "retain" else {"status": "completed"})
+        with patch("harness.memory.hindsight_mcp.HindsightMCP.from_env", return_value=client) as connect, \
+                patch("harness.memory.analysis_publication.time.sleep"):
+            code, result = self.cli("publish-batch", "--confirm", batch_id, "--sync", "--wait")
+            self.assertEqual(code, 0)
+            self.assertTrue(result["sync"]["complete"])
+            code, result = self.cli("sync", "--batch", batch_id, "--wait")
+            self.assertEqual(code, 0)
+            self.assertTrue(result["complete"])
+        connect.assert_called_once()
+        self.assertEqual([name for name, _ in client.calls], ["retain", "get_operation"])
+        self.assertTrue(client.closed)
+
+    def test_short_entry_forwards_paths_arguments_and_exit_code_from_another_cwd(self):
+        self.analysis()
+        entry = Path(__file__).resolve().parents[4] / "scripts/memory"
+        store = self.root / "control state"
+        args = [str(entry), "--repo-root", str(self.root), "--store", str(store), "publish-batch"]
+        result = subprocess.run([*args, "--exp-id", "EXP_A"], cwd=self.root.parent,
+                                text=True, capture_output=True, timeout=15)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        data = json.loads(result.stdout)
+        self.assertEqual(data["selected_count"], 1)
+        self.assertTrue(Path(data["preview_path"]).is_relative_to(store))
+        self.assertFalse(self.memory.state_path.exists())
+        result = subprocess.run([*args, "--wait"], cwd=self.root.parent,
+                                text=True, capture_output=True, timeout=15)
+        self.assertEqual(result.returncode, 2)
+        self.assertEqual(json.loads(result.stdout)["error_type"], "MemoryError")
 
     def test_cli_returns_nonzero_for_a_failed_remote_batch(self):
         self.analysis()
@@ -358,6 +398,123 @@ class PublicationTests(unittest.TestCase):
         second = Client()
         self.assertTrue(sync_batch(self.memory, batch_id, client=second)["complete"])
         self.assertEqual(second.calls, [("get_operation", {"operation_id": "fixture-operation"})])
+
+    def test_wait_polls_large_batch_once_per_round_without_unrelated_jobs(self):
+        for index in range(25):
+            self.analysis(f"EXP_{index:02d}")
+        unrelated = self.memory.workspace / "analysis/unrelated.md"
+        unrelated.parent.mkdir()
+        unrelated.write_text(ANALYSIS)
+        self.memory.publish(unrelated.relative_to(self.root).as_posix())
+        other_key = next(iter(self.index()["jobs"]))
+        batch_id = self.batch()
+        confirm(self.memory, batch_id)
+        client = Client(lambda name, payload: {"status": "pending", "operation_id": payload["document_id"]}
+                        if name == "retain" else {"status": "completed"})
+        with patch("harness.memory.analysis_publication.time.sleep") as sleep:
+            result = sync_batch(self.memory, batch_id, client=client, wait=True)
+        self.assertTrue(result["complete"])
+        self.assertEqual(result["queue"]["synced"], 25)
+        self.assertEqual([name for name, _ in client.calls], ["retain"] * 25 + ["get_operation"] * 25)
+        self.assertEqual({payload["document_id"] for name, payload in client.calls if name == "retain"},
+                         {payload["operation_id"] for name, payload in client.calls if name == "get_operation"})
+        self.assertTrue(all("/experiments/" in payload["metadata"]["source_ref"]
+                            for name, payload in client.calls if name == "retain"))
+        self.assertEqual(self.index()["jobs"][other_key]["state"], "pending")
+        sleep.assert_called_once_with(5)
+
+    def test_wait_budget_expires_without_resending_and_same_operation_resumes(self):
+        self.analysis()
+        batch_id = self.batch()
+        confirm(self.memory, batch_id)
+        clock = [0.0]
+
+        def advance(seconds):
+            clock[0] += seconds
+
+        client = Client(lambda *_: {"status": "processing", "operation_id": "fixture-operation"})
+        with patch("harness.memory.analysis_publication.time.monotonic", side_effect=lambda: clock[0]), \
+                patch("harness.memory.analysis_publication.time.sleep", side_effect=advance):
+            result = sync_batch(self.memory, batch_id, client=client, wait=True, seconds=6)
+        self.assertEqual(clock[0], 6)
+        self.assertFalse(result["complete"])
+        self.assertIsNone(result["error_type"])
+        self.assertEqual(result["queue"]["submitted"], 1)
+        self.assertEqual([name for name, _ in client.calls], ["retain", "get_operation"])
+        self.assertIn("--wait", result["resume_argv"])
+        resumed = Client()
+        self.assertTrue(sync_batch(self.memory, batch_id, client=resumed, wait=True)["complete"])
+        self.assertEqual(resumed.calls, [("get_operation", {"operation_id": "fixture-operation"})])
+
+    def test_wait_stops_after_poll_error_and_resumes_without_retain(self):
+        self.analysis()
+        batch_id = self.batch()
+        confirm(self.memory, batch_id)
+
+        def fail_poll(name, _):
+            if name == "retain":
+                return {"status": "pending", "operation_id": "fixture-operation"}
+            raise TimeoutError("夹具查询超时")
+
+        client = Client(fail_poll)
+        with patch("harness.memory.analysis_publication.time.sleep") as sleep:
+            result = sync_batch(self.memory, batch_id, client=client, wait=True)
+        self.assertFalse(result["complete"])
+        self.assertEqual(result["errors"][0]["error"], "TimeoutError")
+        self.assertEqual([name for name, _ in client.calls], ["retain", "get_operation"])
+        sleep.assert_called_once_with(5)
+        resumed = Client()
+        self.assertTrue(sync_batch(self.memory, batch_id, client=resumed, wait=True)["complete"])
+        self.assertEqual(resumed.calls, [("get_operation", {"operation_id": "fixture-operation"})])
+
+    def test_wait_does_not_retry_failed_or_unverified_submission(self):
+        cases = [("failed", "remote_operation_failed"), ("processing", "completion_unverified")]
+        for status, error in cases:
+            with self.subTest(status=status):
+                self.analysis(status)
+                batch_id = self.batch(status)
+                confirm(self.memory, batch_id)
+                client = Client(lambda *_: {"status": status})
+                with patch("harness.memory.analysis_publication.time.sleep") as sleep:
+                    result = sync_batch(self.memory, batch_id, client=client, wait=True)
+                self.assertFalse(result["complete"])
+                self.assertEqual(result["errors"][0]["error"], error)
+                self.assertEqual([name for name, _ in client.calls], ["retain"])
+                sleep.assert_not_called()
+
+    def test_wait_rechecks_content_and_identity_before_polling(self):
+        for change in ("content", "identity"):
+            with self.subTest(change=change):
+                path = self.analysis(change)
+                batch_id = self.batch(change)
+                confirm(self.memory, batch_id)
+
+                def edit(_):
+                    if change == "content":
+                        path.write_text(ANALYSIS + "\n新版本尚未确认。\n")
+                    else:
+                        atomic(path.parent.parent / "record.json", {"source": {"spec_id": "new-spec"}})
+
+                client = Client(lambda *_: {"status": "pending", "operation_id": "fixture-operation"})
+                with patch("harness.memory.analysis_publication.time.sleep", side_effect=edit):
+                    result = sync_batch(self.memory, batch_id, client=client, wait=True)
+                self.assertFalse(result["complete"])
+                self.assertEqual(result["error_type"], "MemoryError")
+                self.assertEqual([name for name, _ in client.calls], ["retain"])
+
+    def test_wait_with_disabled_hindsight_keeps_batch_pending_without_connecting(self):
+        self.analysis()
+        batch_id = self.batch()
+        confirm(self.memory, batch_id)
+        self.memory.config["hindsight_enabled"] = False
+        with patch("harness.memory.hindsight_mcp.HindsightMCP.from_env") as connect, \
+                patch("harness.memory.analysis_publication.time.sleep") as sleep:
+            result = sync_batch(self.memory, batch_id, wait=True)
+        self.assertFalse(result["enabled"])
+        self.assertFalse(result["complete"])
+        self.assertEqual(result["queue"]["pending"], 1)
+        connect.assert_not_called()
+        sleep.assert_not_called()
 
     def test_remote_failure_is_reported_and_same_batch_can_resume(self):
         self.analysis()

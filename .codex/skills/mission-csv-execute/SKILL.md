@@ -184,6 +184,8 @@ P0 → P1 → P2；优先能解阻塞/提供公共能力的任务；减少无意
 
 回到 Issue 选择规则，推进剩余授权工作；完成、暂停与恢复按下文停止条件处理。
 
+科研交付含本轮更新的定稿主分析且 Hindsight 已启用时，按 [入账指引](../research-memory/references/publication.md) 准备本轮预览。确认与同步独立于科研闭环，不新增 CSV 等待行。
+
 # Pre-run Scientific Implementation Review 闭环
 
 仅在路由要求 `targeted_review/full_review` 时进入 [pre-run-implementation-review](../pre-run-implementation-review/SKILL.md)。该 Skill 是 smoke、lean packet、readiness、reviewer 范围、服务恢复及 blocker repair 的详细依据；这些细节不在主执行文档重复维护。
