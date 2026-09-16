@@ -17,7 +17,7 @@ GPU 任务声明 `resources.device=gpu`。`gpu_ids=[]` 独占全部可见 GPU；
 ```bash
 rrctl --json ready runspec.json
 rrctl --json launch runspec.json
-rrctl --json wait RUN-ID --poll-seconds 600 --max-wait-seconds 900
+rrctl --json wait RUN-ID --poll-seconds 600 --max-wait-seconds 0
 rrctl --json pull RUN-ID
 ```
 
@@ -60,7 +60,7 @@ rrctl --json wait RUN-ID --max-wait-seconds 0 --after-event RUN_IDENTITY:SEQUENC
 
 游标绑定本次运行，不能跨运行复用，也不承诺跨连接精确一次投递。wait 默认输出状态摘要和证据路径，完整观察响应保存在本机运行索引的 last_observation.json；wait --full-output 可直接输出完整结果。正常持续等待只在终态或必要告警时对外返回一次。
 
-默认 900 秒及显式期限保持原义，到期返回 124；0 仍是已有的持续等待选项。外层 remote_run.py 默认显式转发 900 秒，因此只升级 rrctl 不会消除这类每 15 分钟的返回。可以使用已有 --max-wait-seconds 0 参数；宿主工具的硬超时、模型自主调用和压缩不由 rrctl 控制，程序调用次数也不等于模型 token 使用量。
+默认值 0 表示持续等待 terminal/attention 事件，不产生周期性 124；显式正值仍作为诊断观察期限，到期返回 124 且保留远端 workload。公共入口和 rrctl CLI 使用同一默认语义。宿主工具的硬超时、模型自主调用和压缩不由 rrctl 控制，程序调用次数也不等于模型 token 使用量。
 
 monitoring 能力及有效策略写入新运行的 binding，RunSpec 摘要格式保持不变。未声明该能力的旧 process worker 继续走 client_compatibility 路径；不覆盖活跃任务的 zipapp，不改写其 SHA，不自动重启或迁移任务。worker 被杀或服务器重启后不会自动恢复监控，重连报告最后状态及失联信息。doctor 显示本机版本、实现路径、源码摘要和监控协议能力，不代表已经检查服务器健康。
 

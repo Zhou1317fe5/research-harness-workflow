@@ -47,8 +47,26 @@ class ResearchBindingTests(unittest.TestCase):
                         dev_state="进行中", review_initial_state="已完成", review_regression_state="已完成",
                         notes="source_doc:docs/specs/spec.md; command_owner:rrctl")
         self.review = dict(self.row, id="PRERUN-REVIEW-1", run_id="", exp_id="", remote_state="not_applicable",
-                           notes=f"gated_run:RUN-ROW; pre_run_code_commit:{self.commit}; pre_run_result:pass; review_mode:scientific_review; review_result:scientifically_correct")
+                           notes=f"gated_run:RUN-ROW; pre_run_code_commit:{self.commit}; pre_run_result:pass; review_mode:scientific_review; review_result:scientifically_correct; verdict_artifact:issues/T/reviews/PRERUN-REVIEW-1/verdict.json")
         self.write_csv()
+        review_dir = self.root / "issues/T/reviews/PRERUN-REVIEW-1"
+        review_dir.mkdir(parents=True)
+        packet = review_dir / "packet.json"
+        task = review_dir / "review-task.md"
+        raw = review_dir / "response.json"
+        packet.write_text(json.dumps({"schema_version": "prerun.scientific-review.v1", "fixture": True}))
+        task.write_text("fixture review task\n")
+        raw.write_text(json.dumps({"result": "scientifically_correct"}))
+        packet_digest = hashlib.sha256(json.dumps(json.loads(packet.read_text()), ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+        verdict = {
+            "schema_version": "prerun.scientific-verdict.v1", "status": "completed",
+            "candidate_commit": self.commit, "review_mode": "scientific_review",
+            "result": "scientifically_correct", "reviewer_id": "fixture-independent",
+            "packet_path": str(packet), "packet_sha256": packet_digest,
+            "task_path": str(task), "task_sha256": hashlib.sha256(task.read_bytes()).hexdigest(),
+            "raw_response_path": str(raw), "raw_response_sha256": hashlib.sha256(raw.read_bytes()).hexdigest(),
+        }
+        (review_dir / "verdict.json").write_text(json.dumps(verdict))
         request = {
             "schema_version": "mission.rrctl-request.v1", "spec_id": "SPEC-A", "exp_id": "EXP-A", "run_id": "RUN-A",
             "project": "test", "source": {"repo_root": str(self.root), "branch": "main", "commit": self.commit},
@@ -59,8 +77,9 @@ class ResearchBindingTests(unittest.TestCase):
                                  "completion_min_count": 1, "summary_path": "summary.json", "summary_required_fields": ["metric"], "summary_finite_fields": ["metric"]},
             "artifacts": [{"path": "summary.json", "required": True}],
             "metadata": {"mission_csv": "issues/T/T.csv", "mission_row_id": "RUN-ROW"},
-            "gate_provenance": {"schema_version": "prerun.gate-provenance.v2", "pre_run_code_commit": self.commit,
+            "gate_provenance": {"schema_version": "prerun.gate-provenance.v3", "pre_run_code_commit": self.commit,
                                 "review_mode": "scientific_review", "review_result": "scientifically_correct", "reviewer_id": "fixture-independent",
+                                "verdict_artifact": "issues/T/reviews/PRERUN-REVIEW-1/verdict.json",
                                 "blocker_closure_evidence": []},
         }
         self.request = request
@@ -124,6 +143,58 @@ class ResearchBindingTests(unittest.TestCase):
         update(self.root, "T", action="transition", status="paused", reason="fixture pause", source_ref="session:user#pause")
         with self.assertRaisesRegex(ValueError, "mission_not_active"):
             validate_mission_launch(self.spec)
+
+    def test_tampered_reviewer_evidence_cannot_build_or_launch(self):
+        raw = self.root / "issues/T/reviews/PRERUN-REVIEW-1/response.json"
+        raw.write_text('{"result":"tampered"}')
+        with self.assertRaisesRegex(Exception, "evidence_digest_mismatch"):
+            build_runspec(self.request)
+        with self.assertRaisesRegex(ValueError, "evidence_digest_mismatch"):
+            validate_mission_launch(self.spec)
+
+    def test_repaired_blocker_accepts_descendant_commit_with_closure(self):
+        (self.root / "repair.txt").write_text("closed reviewer blocker\n")
+        self.git("add", "repair.txt")
+        self.git("commit", "-m", "fixture reviewer repair")
+        repaired = self.git("rev-parse", "HEAD")
+        closure = self.root / "issues/T/reviews/PRERUN-REVIEW-1/closure.txt"
+        closure.write_text("production sink evidence\n")
+        verdict_path = self.root / "issues/T/reviews/PRERUN-REVIEW-1/verdict.json"
+        verdict = json.loads(verdict_path.read_text())
+        verdict.update(result="scientifically_incorrect", decision="do_not_run")
+        verdict_path.write_text(json.dumps(verdict))
+        request = copy.deepcopy(self.request)
+        request["source"]["commit"] = repaired
+        request["gate_provenance"].update(
+            pre_run_code_commit=repaired,
+            review_result="scientifically_incorrect",
+            blocker_closure_evidence=["issues/T/reviews/PRERUN-REVIEW-1/closure.txt"],
+        )
+        self.row["commit_hash"] = repaired
+        self.review["notes"] = (
+            f"gated_run:RUN-ROW; pre_run_code_commit:{repaired}; pre_run_result:pass; "
+            "review_mode:scientific_review; review_result:scientifically_incorrect; "
+            "verdict_artifact:issues/T/reviews/PRERUN-REVIEW-1/verdict.json; "
+            "blocker_closure_evidence:issues/T/reviews/PRERUN-REVIEW-1/closure.txt"
+        )
+        self.write_csv()
+        validate_mission_launch(build_runspec(request))
+
+    def test_legacy_v2_gate_is_resume_only(self):
+        legacy = copy.deepcopy(self.spec)
+        legacy_gate = legacy["metadata"]["gate_provenance"]
+        legacy_gate["schema_version"] = "prerun.gate-provenance.v2"
+        legacy_gate.pop("verdict_artifact")
+        self.review["notes"] = self.review["notes"].replace(
+            "; verdict_artifact:issues/T/reviews/PRERUN-REVIEW-1/verdict.json", ""
+        )
+        self.row["remote_state"] = "running_remote"
+        self.write_csv()
+        validate_mission_launch(legacy, resume=True, spec_path=self.spec_path)
+        self.row["remote_state"] = ""
+        self.write_csv()
+        with self.assertRaisesRegex(ValueError, "missing_fields|schema_version_invalid"):
+            validate_mission_launch(legacy, resume=False, spec_path=self.spec_path)
 
     def test_low_risk_route_must_cover_the_real_diff(self):
         (self.root / "notes.md").write_text("documentation change")

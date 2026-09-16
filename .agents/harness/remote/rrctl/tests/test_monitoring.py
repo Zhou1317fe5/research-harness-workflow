@@ -533,6 +533,10 @@ class MonitoringTests(unittest.TestCase):
         self.assertTrue(all(at % 600 == 0 for at, _ in checked))
 
     def test_virtual_client_budget_quiet_wait_retries_and_legacy_dispatch(self):
+        self.assertEqual(
+            cli.build_parser().parse_args(["wait", "RUN-A"]).max_wait_seconds,
+            0,
+        )
         spec = self.spec()
         clock = SimpleNamespace(now=0.0)
         calls = []
@@ -574,7 +578,7 @@ class MonitoringTests(unittest.TestCase):
                 side_effect=lambda amount: setattr(clock, "now", clock.now + amount),
             ),
         ):
-            expired = self.control.wait(spec.run_id)
+            expired = self.control.wait(spec.run_id, max_wait_seconds=900)
             self.assertEqual(expired["observation"], "timeout")
             self.assertEqual(clock.now, 900)
             self.assertTrue(all(start + budget <= 900 for start, _, budget in calls))

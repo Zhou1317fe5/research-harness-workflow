@@ -33,3 +33,4 @@ issues/.missions.lock
 issues/.missions.json
 /.pi/settings.json
 /.pi/workflow-output/
+/.pi/rrctl-events/

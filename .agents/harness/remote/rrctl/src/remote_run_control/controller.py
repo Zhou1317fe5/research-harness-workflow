@@ -409,7 +409,7 @@ class Controller:
             transport_bundle_sha256=bundle_sha,
         )
 
-    def launch(self, spec: RunSpec, *, max_wait_seconds: float = 900) -> dict[str, Any]:
+    def launch(self, spec: RunSpec, *, max_wait_seconds: float = 0) -> dict[str, Any]:
         if not math.isfinite(max_wait_seconds) or max_wait_seconds < 0:
             raise RRCError(
                 "launch_budget", "max-wait must be nonnegative finite seconds", "observer"
@@ -806,7 +806,7 @@ class Controller:
         run_id: str,
         *,
         poll_seconds: float | None = None,
-        max_wait_seconds: float = 900,
+        max_wait_seconds: float = 0,
         after_event: str | None = None,
     ) -> dict[str, Any]:
         interval = 600 if poll_seconds is None else poll_seconds
@@ -861,7 +861,7 @@ class Controller:
         run_id: str,
         *,
         poll_seconds: float | None = None,
-        max_wait_seconds: float = 900,
+        max_wait_seconds: float = 0,
     ) -> dict[str, Any]:
         _, spec, _ = self._runtime(run_id)
         interval = 600 if poll_seconds is None else poll_seconds

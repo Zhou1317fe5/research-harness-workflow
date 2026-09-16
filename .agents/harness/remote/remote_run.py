@@ -141,7 +141,13 @@ def validate_mission_launch(spec: dict, *, resume: bool = False, spec_path: Path
     change = metadata.get("change_manifest")
     gate = metadata.get("gate_provenance")
     if gate is not None:
-        gate = _gate_provenance(gate, source_commit=commit)
+        try:
+            gate = _gate_provenance(
+                gate, source_commit=commit, repo_root=repo,
+                allow_legacy_resume=resume,
+            )
+        except RunSpecBuildError as exc:
+            raise ValueError(str(exc)) from exc
     request = {
         "schema_version": "mission.remote-route.v1", "execution_kind": "remote",
         "lifecycle": "failed_retry" if row["remote_state"] == "failed" else "not_started",
@@ -174,15 +180,23 @@ def validate_mission_launch(spec: dict, *, resume: bool = False, spec_path: Path
     needs_review = not restricted and (route is None or route["requires_prerun"])
     if needs_review or (gate is not None and not restricted):
         try:
-            gate = _gate_provenance(gate, source_commit=commit)
+            gate = _gate_provenance(
+                gate, source_commit=commit, repo_root=repo,
+                allow_legacy_resume=resume,
+            )
         except RunSpecBuildError as exc:
             raise ValueError(str(exc)) from exc
         reviews = [parse_note_tags(item["notes"]) for item in rows
                    if item["id"].startswith("PRERUN-REVIEW-") and parse_note_tags(item["notes"]).get("gated_run") == row_id]
-        if len(reviews) != 1 or any(reviews[0].get(key) != expected for key, expected in (
+        expected_review = [
             ("pre_run_code_commit", commit), ("pre_run_result", "pass"),
             ("review_mode", gate["review_mode"]), ("review_result", gate["review_result"]),
-        )):
+        ]
+        if "verdict_artifact" in gate:
+            expected_review.append(("verdict_artifact", gate["verdict_artifact"]))
+        if len(reviews) != 1 or any(
+            reviews[0].get(key) != expected for key, expected in expected_review
+        ):
             raise ValueError("mission scientific gate does not match the RunSpec")
         from validate_claim_ledger import reference_file
         for value in gate["blocker_closure_evidence"]:
@@ -222,6 +236,8 @@ def resolve_rrctl() -> str:
     missing = sorted(required - available)
     if not isinstance(backends, list) or "process" not in backends:
         missing.insert(0, "process backend")
+    if report.get("wait_default_seconds") != 0:
+        missing.append("terminal/attention wait default")
     if capability.returncode or missing:
         raise ValueError(
             f"rrctl at {executable} failed doctor or lacks required capabilities: {', '.join(missing)}; "
@@ -259,7 +275,7 @@ def _emit_stage(stage: str, value: dict, run_id: str, returncode: int, *, full: 
 
 def execute(
     spec_path: Path, *, profiles: Path | None, poll_seconds: float,
-    max_wait_seconds: float = 900, resume: bool = False, full_output: bool = False,
+    max_wait_seconds: float = 0, resume: bool = False, full_output: bool = False,
 ) -> int:
     spec = json.loads(spec_path.read_text(encoding="utf-8"))
     if not isinstance(spec, dict):
@@ -316,7 +332,10 @@ def main() -> int:
     parser.add_argument("runspec", type=Path)
     parser.add_argument("--profiles", type=Path)
     parser.add_argument("--poll-seconds", type=float, default=600)
-    parser.add_argument("--max-wait-seconds", type=float, default=900)
+    parser.add_argument(
+        "--max-wait-seconds", type=float, default=0,
+        help="0 waits until terminal/attention; positive values are explicit diagnostic budgets",
+    )
     parser.add_argument("--resume", action="store_true", help="inspect the bound run and continue wait/pull without launching again")
     parser.add_argument("--full-output", action="store_true", help="print full responses instead of summaries and local detail paths")
     parser.add_argument("--request", type=Path, help="prepare the RunSpec from a request before executing")

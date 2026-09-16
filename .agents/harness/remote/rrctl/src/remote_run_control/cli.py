@@ -94,7 +94,7 @@ def build_parser(*, machine: bool = False) -> argparse.ArgumentParser:
     launch.add_argument(
         "--max-wait-seconds",
         type=float,
-        default=900,
+        default=0,
         help="maximum first-step observation budget; 0 uses the RunSpec gate budget",
     )
 
@@ -126,7 +126,7 @@ def build_parser(*, machine: bool = False) -> argparse.ArgumentParser:
     wait.add_argument(
         "--max-wait-seconds",
         type=float,
-        default=900,
+        default=0,
         help="observer budget; 0 waits indefinitely; timeout preserves the remote run",
     )
 
@@ -176,7 +176,7 @@ def installation_info() -> dict[str, Any]:
         "monitor_protocols": [PROTOCOL],
         "cli_schema_version": CLI_SCHEMA,
         "control_output_limit_bytes": CONTROL_OUTPUT_LIMIT,
-        "wait_default_seconds": 900,
+        "wait_default_seconds": 0,
         "wait_indefinite_value": 0,
         "server_health_checked": False,
         "wait_exit_codes": {

@@ -57,7 +57,7 @@ metadata:
 6. 失败或健康检查需要介入时，使用 `rrctl pull <RunID> --diagnostic` 拉取诊断快照；它不会终止正在运行的进程。按实际状态更新 CSV，不把诊断快照计作完成结果。
 7. 正式结果保存在 `remote_artifacts/<ExpID>/<RunID>/`。先执行 `python3 .agents/harness/records/experiment_records.py build --exp <ExpID>`，再 `derive`，使 record 与索引刷新后才写 ingested。每个正式 Run 都需 RunSpec、manifest 与 summary 身份/摘要一致；缺来源的历史证据保留原件并列入 `_pending`，不贡献正式指标。之后更新 `analysis.md` 与后续行动。
 
-`wait` 默认每 600 秒检查，观察预算为 900 秒。退出码 0 表示 completed，1 表示 failed/aborted，2 表示 attention/错误，124 表示本次观察到期且远端运行保留。工具超时应留出一次控制请求的时间；124 后继续等待同一 RunID，不拉失败诊断、不改失败状态。
+`wait` 默认每 600 秒检查远端状态，`--max-wait-seconds 0` 持续到 terminal/attention，不产生周期性 agent turn。Codex 用 `.agents/harness/remote/agent_event_wait.py start <runspec>` 后结束当前 turn，由 RunID 级 relay 通过原 thread 唤醒；Pi 单独调用 `rrctl_event_wait`，由 extension 在进程内等待并唤醒。两端都不得用短周期 shell/tool polling，也不汇报“仍在运行”之类的无变化状态。退出码 0 表示 completed，1 表示 failed/aborted，2 表示 attention/错误；只有显式设置正值观察预算时才可能返回 124，届时沿用同一 RunID，不拉失败诊断、不改失败状态。
 
 一键入口增加 `--execute --resume` 后核对 CSV、生命周期、RunID 和远端 binding digest，仅做 inspect/wait/pull。暂停或取消的任务只允许观察已有绑定运行，不自动恢复或重新 launch；legacy 归属不能借该入口改成 rrctl。现有本地索引丢失时，先用 `rrctl resume --profile <profile> --control-path <control-root>` 恢复定位。rrctl 不可用或失败时保持 `fallback_allowed:false`。
 

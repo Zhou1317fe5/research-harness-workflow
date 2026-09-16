@@ -135,6 +135,7 @@ Keep commonly used `notes` tags stable:
 | `gated_run:<id>` | Run row gated by a pre-run review. |
 | `review_mode:<scientific_review\|targeted_review>` | Single pre-run reviewer scope for the gated run. |
 | `review_result:<scientifically_correct\|scientifically_incorrect\|not_evaluable\|targeted_correct\|targeted_incorrect>` | Result returned by the one independent pre-run reviewer. |
+| `verdict_artifact:<path>` | Repository-relative `prerun.scientific-verdict.v1` artifact produced by the persistent reviewer job. |
 | `blocker_closure_evidence:<path>` | Production/sink evidence that closes every blocker reported by the reviewer before `pre_run_result:pass`. |
 | `command_owner:<rrctl\|legacy>` | New remote runs use rrctl. Legacy is read/resume-only; stored history is not rewritten. |
 | `legacy_reason:<reason>` | Historical context for existing legacy runs; it cannot authorize a new launch. |

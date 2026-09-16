@@ -18,6 +18,7 @@ import math
 import os
 import re
 import shutil
+import subprocess
 import sys
 import tempfile
 from pathlib import Path, PurePosixPath
@@ -25,7 +26,9 @@ from typing import Any
 
 REQUEST_SCHEMA = "mission.rrctl-request.v1"
 RUN_SCHEMA = "rrctl.run.v1"
-GATE_PROVENANCE_SCHEMA = "prerun.gate-provenance.v2"
+GATE_PROVENANCE_SCHEMA = "prerun.gate-provenance.v3"
+LEGACY_GATE_PROVENANCE_SCHEMA = "prerun.gate-provenance.v2"
+SCIENTIFIC_VERDICT_SCHEMA = "prerun.scientific-verdict.v1"
 COMMIT_RE = re.compile(r"^[0-9a-f]{40}$")
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
@@ -89,6 +92,7 @@ GATE_PROVENANCE_FIELDS = {
     "review_mode",
     "review_result",
     "reviewer_id",
+    "verdict_artifact",
     "blocker_closure_evidence",
 }
 GATE_PROVENANCE_METADATA_KEYS = GATE_PROVENANCE_FIELDS - {"schema_version"}
@@ -262,19 +266,91 @@ def _validate_generic_contract(contract: dict[str, Any]) -> None:
 
 
 
-def _gate_provenance(raw: Any, *, source_commit: str) -> dict[str, Any]:
+def _verified_verdict(
+    value: Any,
+    *,
+    repo_root: Path,
+    source_commit: str,
+    review_mode: str,
+    review_result: str,
+    reviewer_id: str,
+) -> str:
+    artifact = _text(value, "gate_provenance.verdict_artifact")
+    relative = Path(artifact)
+    if relative.is_absolute():
+        raise RunSpecBuildError("gate_provenance.verdict_artifact_must_be_relative")
+    path = (repo_root / relative).resolve()
+    if not path.is_relative_to(repo_root) or not path.is_file():
+        raise RunSpecBuildError("gate_provenance.verdict_artifact_unresolvable")
+    try:
+        verdict = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise RunSpecBuildError("gate_provenance.verdict_artifact_invalid") from exc
+    if not isinstance(verdict, dict) or verdict.get("schema_version") != SCIENTIFIC_VERDICT_SCHEMA:
+        raise RunSpecBuildError("gate_provenance.verdict_artifact_schema_invalid")
+    expected = {
+        "status": "completed",
+        "review_mode": review_mode,
+        "result": review_result,
+        "reviewer_id": reviewer_id,
+    }
+    if any(verdict.get(key) != expected_value for key, expected_value in expected.items()):
+        raise RunSpecBuildError("gate_provenance.verdict_artifact_identity_mismatch")
+    reviewed_commit = verdict.get("candidate_commit")
+    if not isinstance(reviewed_commit, str) or not COMMIT_RE.fullmatch(reviewed_commit):
+        raise RunSpecBuildError("gate_provenance.verdict_artifact_reviewed_commit_invalid")
+    direct_result = review_result in {"scientifically_correct", "targeted_correct"}
+    if direct_result and reviewed_commit != source_commit:
+        raise RunSpecBuildError("gate_provenance.verdict_artifact_identity_mismatch")
+    if not direct_result and subprocess.run(
+        ["git", "-C", str(repo_root), "merge-base", "--is-ancestor", reviewed_commit, source_commit],
+        check=False, capture_output=True,
+    ).returncode != 0:
+        raise RunSpecBuildError("gate_provenance.verdict_artifact_reviewed_commit_not_ancestor")
+    for path_key, digest_key, canonical in (
+        ("packet_path", "packet_sha256", True),
+        ("task_path", "task_sha256", False),
+        ("raw_response_path", "raw_response_sha256", False),
+    ):
+        referenced = verdict.get(path_key)
+        digest = verdict.get(digest_key)
+        if not isinstance(referenced, str) or not isinstance(digest, str):
+            raise RunSpecBuildError("gate_provenance.verdict_artifact_evidence_invalid")
+        evidence = Path(referenced).expanduser().resolve()
+        if not evidence.is_relative_to(repo_root) or not evidence.is_file():
+            raise RunSpecBuildError("gate_provenance.verdict_artifact_evidence_unresolvable")
+        try:
+            payload = _canonical_bytes(json.loads(evidence.read_text(encoding="utf-8"))) if canonical else evidence.read_bytes()
+        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+            raise RunSpecBuildError("gate_provenance.verdict_artifact_evidence_invalid") from exc
+        if hashlib.sha256(payload).hexdigest() != digest:
+            raise RunSpecBuildError("gate_provenance.verdict_artifact_evidence_digest_mismatch")
+    return relative.as_posix()
+
+
+def _gate_provenance(
+    raw: Any, *, source_commit: str, repo_root: Path,
+    allow_legacy_resume: bool = False,
+) -> dict[str, Any]:
     provenance = _mapping(raw, "gate_provenance")
+    legacy_resume = (
+        allow_legacy_resume
+        and provenance.get("schema_version") == LEGACY_GATE_PROVENANCE_SCHEMA
+    )
+    fields = GATE_PROVENANCE_FIELDS - ({"verdict_artifact"} if legacy_resume else set())
     _reject_unknown(
         provenance,
         "gate_provenance",
-        GATE_PROVENANCE_FIELDS,
+        fields,
     )
-    missing = sorted(GATE_PROVENANCE_FIELDS - set(provenance))
+    missing = sorted(fields - set(provenance))
     if missing:
         raise RunSpecBuildError(
             f"gate_provenance.missing_fields: {','.join(missing)}"
         )
-    if provenance["schema_version"] != GATE_PROVENANCE_SCHEMA:
+    if provenance["schema_version"] != (
+        LEGACY_GATE_PROVENANCE_SCHEMA if legacy_resume else GATE_PROVENANCE_SCHEMA
+    ):
         raise RunSpecBuildError("gate_provenance.schema_version_invalid")
     commit = _text(
         provenance["pre_run_code_commit"],
@@ -313,6 +389,11 @@ def _gate_provenance(raw: Any, *, source_commit: str) -> dict[str, Any]:
         provenance["reviewer_id"],
         "gate_provenance.reviewer_id",
     )
+    verdict_artifact = None if legacy_resume else _verified_verdict(
+        provenance["verdict_artifact"], repo_root=repo_root,
+        source_commit=commit, review_mode=review_mode,
+        review_result=review_result, reviewer_id=reviewer_id,
+    )
     closure = _string_list(
         provenance["blocker_closure_evidence"],
         "gate_provenance.blocker_closure_evidence",
@@ -328,11 +409,14 @@ def _gate_provenance(raw: Any, *, source_commit: str) -> dict[str, Any]:
     if not (direct_pass or repaired_pass):
         raise RunSpecBuildError("gate_provenance.correctness_not_closed")
     return {
-        "schema_version": GATE_PROVENANCE_SCHEMA,
+        "schema_version": (
+            LEGACY_GATE_PROVENANCE_SCHEMA if legacy_resume else GATE_PROVENANCE_SCHEMA
+        ),
         "pre_run_code_commit": commit,
         "review_mode": review_mode,
         "review_result": review_result,
         "reviewer_id": reviewer_id,
+        **({"verdict_artifact": verdict_artifact} if verdict_artifact is not None else {}),
         "blocker_closure_evidence": closure,
     }
 
@@ -862,11 +946,13 @@ def build_runspec(request: dict[str, Any]) -> dict[str, Any]:
         gate_provenance = _gate_provenance(
             request.get("gate_provenance"),
             source_commit=commit,
+            repo_root=repo_root,
         )
     elif request.get("gate_provenance") is not None:
         gate_provenance = _gate_provenance(
             request["gate_provenance"],
             source_commit=commit,
+            repo_root=repo_root,
         )
     result = {
         "schema_version": RUN_SCHEMA,

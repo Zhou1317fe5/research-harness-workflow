@@ -192,26 +192,18 @@ The packet has no attempt, lineage, generation, resolution mode, frozen coverage
 Call one independent reviewer with only the lean packet, approved source, committed diff, and referenced evidence.
 
 <!-- reviewer-launcher:start -->
-Use `pi-sub-agent` in single-agent mode with the project-owned read-only profile.
-Pass the unchanged Reviewer instructions from this skill, the lean packet,
-approved source, committed diff, and referenced evidence as the complete task.
-The profile only supplies a neutral execution context; it does not define review rules.
+Write the complete review task to a file, then run the project-owned persistent reviewer job. It uses a fixed read-only Pi session, resumes that same session across transport failures, and writes the only accepted verdict artifact:
 
-```json
-{
-  "agent": "scientific-reviewer",
-  "agentScope": "project",
-  "confirmProjectAgents": false,
-  "cwd": "<repo_root>",
-  "task": "<unchanged Reviewer instructions plus the approved review inputs>"
-}
+```bash
+python .agents/harness/reviewer_job.py \
+  --backend pi \
+  --packet <packet.json> \
+  --task <review-task.md> \
+  --job-dir <mission-dir>/reviews/<prerun-row> \
+  --model openai-codex/gpt-5.6-sol:high
 ```
 
-Use this invocation after the project and supplied task are trusted under the
-existing workflow. The child must have a fresh session and only read-only tools;
-its active tools must exclude `advisor`, shell execution, writing and delegation.
-Do not use parallel or chain mode. The project Memory extension skips child
-sessions. Verify these launcher capabilities before relying on the result.
+Do not use `pi-sub-agent --no-session`, parallel/chain mode, or another one-shot child for this gate.
 <!-- reviewer-launcher:end -->
 
 Do not send the main conversation or the main agent's conclusions.
@@ -222,9 +214,11 @@ The reviewer must inspect the committed code and return all currently evaluable 
 - `scientifically_incorrect`: one or more reproducible scientific correctness blockers exist; do not run until fixed.
 - `not_evaluable`: name the exact missing scientific evidence; do not infer correctness from smoke or scaffolding.
 
-Treat quota errors, launcher failures, and silence before any scientific verdict as review-service failures. A `running` status alone is not evidence of progress. After a bounded wait appropriate to the review size, stop the unresponsive execution, record the concrete failure, and, when another independent execution context is available, redispatch the same packet with a bounded service-retry policy (default maximum: one replacement). Confirm the original execution has stopped and no verdict is available before replacing it. Keep the candidate commit, evidence, review scope, and single PRERUN row unchanged. Continue within existing task authorization.
+Treat quota errors, launcher failures, and silence before any scientific verdict as review-service failures. A `running` status alone is not evidence of progress. Let `reviewer_job.py` resume the recorded session first; transport resumes of that same session are not replacements and do not create another scientific opinion. Only after bounded same-session recovery is exhausted may the runner create a fresh independent execution, with the default maximum of one replacement. Keep the candidate commit, evidence, review scope, and single PRERUN row unchanged. Continue within existing task authorization.
 
 This replaces a failed execution of the same review; it does not request another scientific opinion. A returned scientific verdict, including `not_evaluable`, ends service recovery and must be handled on its merits. Formatting problems in an available verdict can be normalized without repeating the review. If the replacement also fails, record the capability gap once and continue independent work; do not loop, infer a pass, or weaken the scientific gate. Any user-authorized exception belongs in the project's run record, with the unfulfilled review requirement stated explicitly.
+
+The review gate accepts only `verdict.json` with schema `prerun.scientific-verdict.v1`. Its packet, task, raw-response digests, candidate commit, review mode, result, and reviewer id must validate. Record its repository-relative path as `verdict_artifact:<path>` and in `gate_provenance.verdict_artifact`; reviewer prose or a process exit code alone cannot open the gate.
 
 ## Blocker Repair
 

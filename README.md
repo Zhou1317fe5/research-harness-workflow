@@ -10,7 +10,7 @@
 模板中的 baseline 与 module_variant 只是示例名称，支持继续添加其他组合。
 
 远程执行使用 rrctl 0.4 的独立进程后端，运行前检查 Conda 依赖和 GPU 占用。
-`rrctl --json doctor` 显示实际安装路径与能力；`wait` 默认观察 900 秒，超时后沿用同一 RunID 继续。
+`rrctl --json doctor` 显示实际安装路径与能力；公共入口默认持续等待 terminal/attention 事件，不按 900 秒周期唤醒 agent。正值 `--max-wait-seconds` 只用于显式诊断预算。
 接口和退出码见 [rrctl 使用说明](.agents/harness/remote/rrctl/README.md)。
 
 ## 文档

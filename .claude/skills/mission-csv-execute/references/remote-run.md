@@ -57,7 +57,7 @@
 
    它必须覆盖 `first_step/periodic/completion`，并确认 completion 输出 `complete:true`。这样在远程 mutation 前捕获 JSONL 解析、literal dotted key、缺字段和 adapter 输出协议错误。fixture 不替代真实 smoke；它只阻止控制契约错误进入 GPU。
 
-5. 需要 formal review 的 official RunSpec `source.commit` 等于 gate 的 `pre_run_code_commit`；`prerun.gate-provenance.v2` 保留现有字段，不增加状态。低风险分流使用 route candidate commit。smoke 使用绑定 RunID 的独立输出、`anchors=[]`、无 gate provenance、最小 progress/health 和 `smoke_summary.json`；入口仍检查 CSV/任务、候选 commit、隔离输出、GPU 与 cleanup，不要求先构造 reviewer packet 或 official ingest 材料。
+5. 需要 formal review 的 official RunSpec `source.commit` 等于 gate 的 `pre_run_code_commit`；`prerun.gate-provenance.v3` 还必须引用并校验 `prerun.scientific-verdict.v1` artifact。低风险分流使用 route candidate commit。smoke 使用绑定 RunID 的独立输出、`anchors=[]`、无 gate provenance、最小 progress/health 和 `smoke_summary.json`；入口仍检查 CSV/任务、候选 commit、隔离输出、GPU 与 cleanup，不要求先构造 reviewer packet 或 official ingest 材料。
 6. 公共入口在 launch 前执行 ready。需要单独诊断时才运行以下命令，不在公共入口前例行重复：
 
    ```bash
@@ -71,19 +71,19 @@
    python3 .agents/harness/remote/remote_run.py issues/<stem>/runs/<RunID>/runspec.json --execute
    ```
 
-   `launch` 通过 first-step gate 后才能推进下游步骤。启动后记录 `command_owner:rrctl`、RunID、profile、PID/PGID、control/output root、`pre_run_code_commit` 和恢复命令。若返回 first_step_observer_timeout 且远端进程已启动，记录 `remote_state=running_remote` 与 `first_step_gate:pending`，继续观察同一 RunID，不重新 launch。首步默认预算 600 秒，CLI 的单次观察预算默认 900 秒；整个训练时长交给 wait。
+   `launch` 通过 first-step gate 后才能推进下游步骤。启动后记录 `command_owner:rrctl`、RunID、profile、PID/PGID、control/output root、`pre_run_code_commit` 和恢复命令。若返回 first_step_observer_timeout 且远端进程已启动，记录 `remote_state=running_remote` 与 `first_step_gate:pending`，继续观察同一 RunID，不重新 launch。首步默认预算 600 秒；公共入口的观察预算默认 0，即持续到 terminal/attention，整个训练时长交给 wait。
 
    控制操作返回 `status:unknown` 或 `error.outcome:unknown` 时，只能确认操作结果暂不确定，不能记为训练失败或停止成功。保留原 RunID 与路径，按返回的 `next_actions` 用 inspect/wait/resume 核对；不要自动重发 launch/abort，也不要换 RunID 重启同一实验。
 8. periodic unhealthy 或 Stop Trigger 不自动转换为 abort：**健康检查负责报告事实，不自动取得停止权**。**硬故障仅包括**：目标进程确认消失、显存 OOM、最新 progress 出现 NaN/Inf、明确未恢复的 fatal traceback，以及 Spec 明确声明的 Stop Condition；确认命中并记录证据后才显式执行 `rrctl abort <RunID> --yes`。单次低 GPU、单次日志延迟、checkpoint 写盘、旧日志历史错误、身份暂时不可读或一次检查失败只记 `degraded`，不得停止训练；至少连续两次复核仍异常才升级诊断。`rrctl wait` 返回一次结构化 attention，远端 workload 保持运行。停止操作必须核对本次独立进程组的 RunID、control root、PID 启动身份和 boot ID，禁止直接按进程名批量终止。
 9. 公共入口在 launch 通过首步 gate 后以前台调用等待终态。若观察超时或需要分步恢复，使用同一 RunID 继续等待；公共入口仍在运行时不要另开重复等待：
 
    ```bash
-   rrctl --json wait <RunID> --poll-seconds 600 --max-wait-seconds 900
+   rrctl --json wait <RunID> --poll-seconds 600 --max-wait-seconds 0
    ```
 
    新运行的首步、周期检查与完成验收由远端 worker 自主执行；`rrctl wait` 只观察已发布的结果，不输出中间日志，多个观察者不会重复执行检查器。结束本地等待或关闭 agent 后，远端检查仍会继续。既有运行保留启动时的 worker，本地升级不会原地迁移或重启它。
 
-   退出码 0 表示 completed，1 表示 failed/aborted，2 表示 attention/控制错误，124 表示观察期限到达且运行保留。外层工具预算需大于观察预算及一次控制请求时间；124 后直接继续同一 RunID 的 wait，不标 failed、不拉诊断、不重复 launch。也可用一键入口的 `--execute --resume` 恢复。若工具只是 yield，继续等待同一工具 session；按宿主要求提供必要进度，不重读 skill 或重复输出未变化状态。completed 后立即 pull/ingest；出现 attention 时按硬/软条件处理，保持 `fallback_allowed=false`。
+   退出码 0 表示 completed，1 表示 failed/aborted，2 表示 attention/控制错误。默认预算 0 不返回周期性 timeout；只有显式设置正值诊断预算时，124 才表示期限到达且运行保留，随后继续同一 RunID，不标 failed、不拉诊断、不重复 launch。completed 后立即 pull/ingest；出现 attention 时按硬/软条件处理，保持 `fallback_allowed=false`。
 
 ### 运行类型
 
@@ -96,8 +96,9 @@ Pilot RunSpec 使用 `execution_purpose:pilot`；不得用 `official` 表示 `pi
 10. 公共入口在 official run 返回 terminal completed 后自动 pull；只有分步恢复时才单独执行 `rrctl pull`。只拉 RunSpec `artifacts` 中的最小结果集，`artifact_pull_policy.on_demand` 不会被默认拉取。pull 的 manifest、size 与原子目标验证通过后才设置 `remote_state=artifacts_pulled`。pre-review smoke 不进入 official artifact ingest：成功、失败或 abort 后都必须由 RunSpec `output_cleanup` 删除绑定 output root 内的 checkpoint/optimizer/scheduler/大型文件，保留 control root 的 `console.log/status.json` 与 output root 的 `smoke_summary.json`，并验证 `checkpoint_cleanup_completed:true`、`checkpoint_paths_remaining:[]` 后才写 smoke evidence。
 失败、abort 或 periodic attention 时可执行 `rrctl pull <RunID> --diagnostic`。快照位于该 RunID 的 `diagnostics/<snapshot-id>/`，只包含受大小限制的日志、状态和已有进度；不标记正式结果已拉取，也不进入指标入账。
 
-11. **禁止为"等跑完"建立本地常驻进程**：不得创建 systemd user unit、nohup 守护、后台 `rrctl wait` 包装或任何本地 watcher 去跨会话等待远端终态。rrctl 是 daemonless 设计，`rrctl wait` 是当前会话内的前台阻塞调用；远端 worker 拥有独立进程会话，stdio 与 SSH 分离；结束本地观察不会改变远端归属。
-12. **会话中断后的恢复流程**（不需要任何常驻进程，也不做自动拉取）：
+11. **等待期间不得轮询模型**：不要反复调用 shell session、`write_stdin` 或按固定时间生成“仍在运行”回复。Pi 单独调用项目工具 `rrctl_event_wait` 后结束当前 turn；extension 在当前 Pi 进程中等待并仅在 terminal/attention 时发送一条唤醒消息。Codex 调用 `python3 .agents/harness/remote/agent_event_wait.py start <runspec> [--resume]` 后结束当前 turn；该 RunID 级 relay 去重、记录事件，并通过 `codex queue` 唤醒原 thread。relay 不是 GPU scheduler，不选择卡、不改变 RunSpec，也不替代远端 worker。
+12. **禁止建立通用本地服务**：不得创建 systemd user unit、通用 nohup 守护或自制 watcher。rrctl 保持 daemonless；唯一允许的 Codex relay 是上述项目实现、只绑定一个 RunID 和 thread，并在 terminal/attention 后退出。Pi watcher 只存在于当前 Pi 进程。远端 worker 拥有独立进程会话，结束本地观察不会改变远端归属。
+13. **会话中断后的恢复流程**（不重新 launch，也不做无条件自动拉取）：
 
     ```bash
     rrctl --json resume --profile <profile> --control-path <control-root>   # 从远端 control state 重建本地索引

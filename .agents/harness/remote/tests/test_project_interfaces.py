@@ -164,10 +164,25 @@ protocol_field = "evaluation.mode"
             return subprocess.CompletedProcess(argv, 0, json.dumps({"ready": True} if stage == "ready" else {"ok": True, "result": {}}), "")
         output = io.StringIO()
         with patch.object(remote_run, "validate_mission_launch"), patch.object(remote_run, "resolve_rrctl", return_value="rrctl"), patch.object(remote_run, "rrctl_call", side_effect=call), patch.object(remote_run, "_emit_stage"), contextlib.redirect_stdout(output):
-            code = remote_run.execute(path, profiles=None, poll_seconds=600)
+            code = remote_run.execute(path, profiles=None, poll_seconds=600, max_wait_seconds=900)
         self.assertEqual(code, 124)
         self.assertEqual(calls, ["ready", "launch", "wait"])
         self.assertIn("--resume", json.loads(output.getvalue())["resume_argv"])
+
+    def test_default_wait_has_no_periodic_observer_deadline(self):
+        spec = build_runspec(self.request())
+        path = self.root / "runspec.json"
+        path.write_text(json.dumps(spec))
+        waits = []
+        def call(argv, _root):
+            stage = argv[2]
+            if stage in {"launch", "wait"}:
+                waits.append(argv[argv.index("--max-wait-seconds") + 1])
+            result = {"status": {"state": "completed"}} if stage == "wait" else {}
+            return subprocess.CompletedProcess(argv, 0, json.dumps({"ok": True, "result": result}), "")
+        with patch.object(remote_run, "validate_mission_launch"), patch.object(remote_run, "resolve_rrctl", return_value="rrctl"), patch.object(remote_run, "rrctl_call", side_effect=call), patch.object(remote_run, "_emit_stage"):
+            self.assertEqual(remote_run.execute(path, profiles=None, poll_seconds=600), 0)
+        self.assertEqual(waits, ["0", "0"])
 
     def test_resume_checks_identity_and_skips_launch(self):
         spec = build_runspec(self.request())
@@ -193,10 +208,12 @@ protocol_field = "evaluation.mode"
     def test_capability_check_requires_every_process_contract_capability(self):
         report = {"backends": ["process"], "capabilities": [
             "observer-deadline", "worker-monitoring", "unknown-operation-outcome",
-        ]}
+        ], "wait_default_seconds": 0}
         for missing in (None, "process", *report["capabilities"]):
             with self.subTest(missing=missing):
-                value = {key: [item for item in values if item != missing] for key, values in report.items()}
+                value = {**report}
+                value["backends"] = [item for item in report["backends"] if item != missing]
+                value["capabilities"] = [item for item in report["capabilities"] if item != missing]
                 result = subprocess.CompletedProcess([], 0, json.dumps(value), "")
                 with patch.object(remote_run.shutil, "which", return_value="/fixture/rrctl"), patch.object(remote_run.subprocess, "run", return_value=result):
                     if missing is None:
@@ -204,6 +221,15 @@ protocol_field = "evaluation.mode"
                     else:
                         with self.assertRaisesRegex(ValueError, missing):
                             remote_run.resolve_rrctl()
+
+    def test_capability_check_rejects_periodic_wait_default(self):
+        report = {"backends": ["process"], "capabilities": [
+            "observer-deadline", "worker-monitoring", "unknown-operation-outcome",
+        ], "wait_default_seconds": 900}
+        result = subprocess.CompletedProcess([], 0, json.dumps(report), "")
+        with patch.object(remote_run.shutil, "which", return_value="/old/rrctl"), patch.object(remote_run.subprocess, "run", return_value=result):
+            with self.assertRaisesRegex(ValueError, "terminal/attention wait default"):
+                remote_run.resolve_rrctl()
 
     def named_config(self, default=True):
         path = self.root / "named.toml"

@@ -44,7 +44,7 @@ SINGLETON_NOTE_KEYS = frozenset({
     "review_agent_mode", "review_independence", "review_requested_model",
     "review_observed_model", "review_model_evidence", "scientific_outcome",
     "handoff", "handoff_contract", "handoff_humanized", "gated_run",
-    "pre_run_result", "pre_run_code_commit", "blocker_closure_evidence",
+    "pre_run_result", "pre_run_code_commit", "verdict_artifact", "blocker_closure_evidence",
     "readiness_result", "command_owner", "legacy_reason",
     "legacy_migration_deadline", "legacy_migration_issue", "legacy_responsible_component",
     "artifact_evidence", "artifact_policy", "formal_attempt", "root_budget_enforced",

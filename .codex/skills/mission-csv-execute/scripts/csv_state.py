@@ -171,6 +171,11 @@ def _validate_single_prerun(
             raise StateUpdateError(
                 f"prerun_review_mode_result_mismatch: {row['id']}"
             )
+        verdict_artifact = _note_value(notes, "verdict_artifact")
+        if result and not verdict_artifact:
+            raise StateUpdateError(
+                f"prerun_verdict_artifact_missing: {row['id']}"
+            )
         if _note_value(notes, "pre_run_result") == "pass":
             direct_pass = result in {
                 "scientifically_correct",
