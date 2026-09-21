@@ -67,6 +67,14 @@ lite-arch 是可选项。按[仓库说明](https://github.com/flowing-water1/lit
 
 Hindsight 需要先启动服务，再填写项目的连接信息，步骤见[可选 Hindsight](#可选-hindsight)。这些外部工具的凭据都留在各自的本地配置中。
 
+Pi 权限系统（`pi-permission-system`）的推荐策略是“关闭 yolo、默认自动同意、只拦极危险命令”，本项目已在 `.pi/extensions/pi-permission-system/config.json` 里给出项目级部分；全局配置（`~/.pi/agent/extensions/pi-permission-system/config.json`）按同一思路设置：
+
+- `yoloMode: false`；`permission["*"]: "allow"`，其余 `ask` 规则改成 `allow`（提权类 `sudo *` / `doas *` / `su *` 可保留 `ask`）；
+- 极危险命令用 `deny`，**列在 bash 规则末尾**（last-match-wins，否则会被后面的宽泛规则遮蔽）：`rm -rf /`、`rm -rf ~` / `$HOME` / `/home/<user>`、`rm -rf .git*`、`mkfs*`、`dd *of=/dev/*`、`diskutil erase*`、`shutdown*` / `reboot*`、`git reset --hard` / `clean -fd` / `branch -D` / `filter-*`；
+- `external_directory` 的方向性 `ask`（`/usr/bin/*`、`/etc/*` 等）改为 `allow`，否则会打断无人值守；
+- 项目级配置放行 `.agents/harness/config/*.env`（`path` 面，读写两侧），并在 `authorizerChain` 里列出 `harness-timeout`，让 `timeout <时长> rrctl|remote_run.py|reviewer_job.py|issues/…/validation/*.py` 自动放行；
+- indirection wrapper（`timeout`、`env`、`xargs`、`bash -c`）的 `allow` 会被强制升级为人工授权，因此命令不要套 `timeout`，超时用工具自带参数（见 AGENTS.md「安全与进程」）。
+
 ## 项目适配清单
 
 准备工具之后，真正需要你按项目修改的是这些地方：
