@@ -62,7 +62,9 @@ def scan(repo_root: Path) -> dict[str, Any]:
             if task and task["status"] in INACTIVE:
                 inactive.append({"path": relative, "task_id": task["task_id"], "status": task["status"]})
                 continue
-            reasons = completion.csv_completion_errors(path, workdir=root)
+            reasons = completion.csv_completion_errors(
+                path, workdir=root, allow_compat=(kind == "legacy_flat")
+            )
             if reasons:
                 candidates.append(
                     {

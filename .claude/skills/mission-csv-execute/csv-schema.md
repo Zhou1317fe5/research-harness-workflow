@@ -22,7 +22,7 @@ id,priority,phase,area,title,description,acceptance_criteria,test_mcp,required_s
 |------|------|
 | `id` | Stable issue id, e.g. `<SpecID>-01`; pre-run code review rows use `PRERUN-REVIEW-N`; final vision review row is usually `REVIEW-01`. |
 | `priority` | `P0`, `P1`, or `P2`. |
-| `phase` | Project phase token such as `implement`, `test`, `pre_run_review`, `remote`, `artifact`, `review`; preserve existing local vocabulary. |
+| `phase` | Project phase token such as `implement`, `test`, `pre_run_review`, `remote`, `artifact`, `analysis`, `review`; preserve existing local vocabulary. Canonical result analysis uses `RESULT-ANALYSIS-01` with `phase=analysis`. |
 | `area` | Task area token; keep concise and project-specific. |
 | `title` | Short human-readable task title. |
 | `description` | Task boundary. May contain commas, arrows, parentheses, or newlines; must be CSV-escaped by a writer. |
@@ -127,6 +127,13 @@ Keep commonly used `notes` tags stable:
 | `review_model_evidence:<session-metadata\|event-stream\|parent-runtime\|unknown\|not_applicable\|pending>` | Source supporting the observed model value; `pending` is generation-only. |
 | `review_result:<vision_met\|gaps_found\|limited_review>` | Closing review outcome. |
 | `scientific_outcome:<hypothesis_supported\|hypothesis_not_supported\|gate_failed\|inconclusive\|not_applicable>` | Scientific result, separate from Mission execution success. |
+| `result_analysis:<path>` | Canonical `reviews/result-analysis.json` consumed by `RESULT-ANALYSIS-01` and the final `REVIEW-*`; both rows must reference the same index. |
+| `analysis_agent_mode:scientific-reviewer-subagent` | Formal post-run analysis must come from the isolated `scientific-reviewer` sub-agent. |
+| `analysis_independence:<true\|pending>` | Post-run analysis independence; `true` is required for completion. |
+| `analysis_requested_model:<model>` | Requested post-run reviewer model; canonical value is `openai-codex/gpt-5.6-sol`. |
+| `analysis_observed_model:<model>` | Model observed from host/session metadata or event stream, not self-reported reviewer text. |
+| `analysis_model_evidence:<session-metadata\|event-stream\|parent-runtime\|pending>` | Evidence source for the observed post-run reviewer model; the current Pi completion gate requires `session-metadata`. |
+| `analysis_model_evidence_ref:<ref>` | Parent session/tool reference `session:<uuid>#tool:<subagent-tool-call-id>`; the validator resolves the real `scientific-reviewer` result and its output hash. |
 | `review_json:<path>` | Raw structured review output under artifact-root `reviews/`. |
 | `handoff:<path>` | Human-facing handoff path. Use `handoff:generation_failed <reason>` only while rendering a fallback. |
 | `handoff_humanized:<true\|false>` | Optional historical information; no longer a completion gate. Structured tables remain unchanged by prose editing. |

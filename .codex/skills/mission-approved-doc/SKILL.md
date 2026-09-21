@@ -132,7 +132,8 @@ python <mission-csv-execute>/scripts/validate_outcome_contract.py issues/<stem>/
 - 每个普通 issue 和 `REVIEW-01` 的 `notes` 必须引用 `outcome_contract:<stem>.outcomes.json`
 - 同目录初始化 `<stem>.deferred.json`：`{"schema_version":1,"csv":"<stem>.csv","findings":[]}`；每个普通 issue 和 `REVIEW-01` 的 notes 都引用 `deferred_ledger:<stem>.deferred.json`
 - `REVIEW-01` 必须要求逐条回答 reader questions，并区分实现状态、验证状态和能力结论
-- 在普通执行 issue 之后，必须追加一条 `REVIEW-01` 作为首轮文档愿景验收；该行必须包含从源文档抽取的任务专属 claim/evidence 检查项，不能只写通用套话
+- 在普通执行 issue 之后，若任务包含正式远程结果或科研 ExpID，必须先追加唯一一条 `RESULT-ANALYSIS-01`（`phase=analysis`、`required_skills=post-run-result-analysis`、`remote_state=not_applicable`），再追加 `REVIEW-01`；分析行的 `notes` 引用 `result_analysis:reviews/result-analysis.json`，review 行也引用同一路径
+- 之后必须追加一条 `REVIEW-01` 作为首轮文档愿景验收；该行必须包含从源文档抽取的任务专属 claim/evidence 检查项，不能只写通用套话
 - 初始化状态：`未开始` / `未提交`
 
 ### Claim 覆盖率扫描（HARD — 在追加 REVIEW-01 之前执行）
@@ -155,6 +156,16 @@ python <mission-csv-execute>/scripts/validate_outcome_contract.py issues/<stem>/
 ```text
 claim_ledger:<stem>.claims.json; claims:CLAIM-001,CLAIM-002; claim_coverage:X/Y; claim_coverage_status:pending; evidence_level:integration; production_path:covered
 ```
+
+### `RESULT-ANALYSIS-01` 行规则
+
+`RESULT-ANALYSIS-01` 是正式结果入账后的科学分析门禁，不是 closing review，也不由主 Executor 自审：
+
+- 只为 canonical 28 列科研 CSV 生成；显式 19 列 compatibility CSV 不迁移
+- 所有 `remote_state=ingested` 的非空 `(exp_id, run_id)` 必须由全新的 `scientific-reviewer` sub-agent 分析，并在索引中逐一覆盖
+- `notes` 至少包含 `analysis_kind:post_run; result_analysis:reviews/result-analysis.json; analysis_agent_mode:pending; analysis_independence:pending; analysis_requested_model:openai-codex/gpt-5.6-sol; analysis_observed_model:pending; analysis_model_evidence:pending; analysis_model_evidence_ref:pending`
+- 分析输出必须原样落入 `research_workspace/experiments/<ExpID>/analysis/analysis.md`，严格包含 `Change / Result / Finding / Next` 四段；`reviews/result-analysis.json` 必须记录 hash、证据引用、固定 scientific outcome、逐条 `review_evidence_ref` 和 `review_output_sha256`，并绑定可核验模型证据
+- `final_ready.py` 与 `csv_completion_errors()` 都会在进入 `REVIEW-*` 前 fail-closed 检查；advisor、closing review 或 self-review 不能替代该行
 
 ### `REVIEW-01` 行规则
 
@@ -186,7 +197,7 @@ claim_ledger:<stem>.claims.json; claims:CLAIM-001,CLAIM-002; claim_coverage:X/Y;
 | `review_initial_requirements` | `Verify all prior non-review rows are closed before running this review.` |
 | `review_regression_requirements` | `Run risk-routed closing review against approved goals, claim/evidence ledger, acceptance criteria, delivered diff and validation evidence; do not repeat independent review when the same scientific commit already passed PRERUN and no scientific sink changed; separate Mission execution result from scientific outcome.` |
 | `refs` | `<doc-path>:1` |
-| `notes` | `review_kind:vision; review_agent_mode:pending; review_independence:pending; review_requested_model:pending; review_observed_model:pending; review_model_evidence:pending; source_doc:<doc-path>; claim_ledger:<stem>.claims.json; outcome_contract:<stem>.outcomes.json; deferred_ledger:<stem>.deferred.json; review_json:reviews/review-01.json; claim_coverage:<X/Y>; claim_coverage_status:pending; scientific_outcome:pending` |
+| `notes` | `review_kind:vision; review_agent_mode:pending; review_independence:pending; review_requested_model:pending; review_observed_model:pending; review_model_evidence:pending; source_doc:<doc-path>; claim_ledger:<stem>.claims.json; outcome_contract:<stem>.outcomes.json; deferred_ledger:<stem>.deferred.json; result_analysis:reviews/result-analysis.json; review_json:reviews/review-01.json; claim_coverage:<X/Y>; claim_coverage_status:pending; scientific_outcome:pending` |
 
 
 ## Project scientific adaptation (HARD)

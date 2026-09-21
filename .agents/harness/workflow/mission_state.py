@@ -10,6 +10,7 @@ if __name__ == "__main__":
     raise SystemExit(main())
 
 import argparse
+import csv as csv_module
 from datetime import datetime, timezone
 import json
 import importlib.util
@@ -166,7 +167,18 @@ def update(root, task_id, *, action, source_ref, reason="", spec=None, csv=None,
                 module_spec = importlib.util.spec_from_file_location("lifecycle_completion", scripts / "mission_completion.py")
                 completion = importlib.util.module_from_spec(module_spec)
                 module_spec.loader.exec_module(completion)
-                if completion.csv_completion_errors(root / task["csv"], workdir=root):
+                csv_path = root / task["csv"]
+                try:
+                    fields, _, _ = completion.read_mission_csv(csv_path, allow_compat=True)
+                    allow_compat = (
+                        fields == completion.EXPECTED_FIELDS[:19]
+                        and Path(task["csv"]).parent == Path("issues")
+                    )
+                except (OSError, csv_module.Error, UnicodeError, ValueError):
+                    allow_compat = False
+                if completion.csv_completion_errors(
+                    csv_path, workdir=root, allow_compat=allow_compat
+                ):
                     raise ValueError("任务 CSV 尚未闭环，不能将生命周期标为 completed")
             if status == "superseded":
                 if (replacement == task_id or replacement not in data["tasks"]

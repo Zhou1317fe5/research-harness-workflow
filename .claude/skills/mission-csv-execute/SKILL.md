@@ -57,7 +57,7 @@ CSV 的 artifact root 按以下顺序确定：
 30. **保护用户 index**：开始时记录 `git diff --cached` 的路径与 patch。提交只命名本任务路径；已暂存的无关改动保持原样且不得进入提交。同一路径存在用户已暂存 patch、或无法精确隔离 index delta 时，记录 human-required blocker。禁止用 `git stash`、reset、移动或隐藏用户工作来简化提交。
 31. **最小工件直接落盘**：新 Mission 从一开始只写终态所需工件，不创建一次性 request/state/inspect/ready/launch/pull JSON，不在 closing 阶段运行压缩或生成 `artifact-index.json`。CSV + events 是状态记录；每个实际启动的 RunID 最多保留一个 canonical RunSpec；PRERUN 与 closing 各最多保留一个最终结构化结论。`compact_artifacts.py` 仅用于 legacy Mission 的人工归档/GC，不是 closing 步骤。
 
-下文 `<skill-dir>` 指本 Skill 所在目录，命令显式使用该路径，不假设 cwd 是 Skill 目录。接收 CSV 后运行 `python3 <skill-dir>/scripts/ensure_review_row.py <csv-path>`。提交使用 `scripts/git_isolation.py` 的 `commit_paths`；它会拒绝同路径 staged 冲突并核对提交前后的 index patch。
+下文 `<skill-dir>` 指本 Skill 所在目录，命令显式使用该路径，不假设 cwd 是 Skill 目录。接收 CSV 后，若 canonical CSV 缺少结果分析行，先运行 `python3 <skill-dir>/scripts/ensure_result_analysis_row.py <csv-path>`；再运行 `python3 <skill-dir>/scripts/ensure_review_row.py <csv-path>`。提交使用 `scripts/git_isolation.py` 的 `commit_paths`；它会拒绝同路径 staged 冲突并核对提交前后的 index patch。
 
 仓库内任务首次进入执行时，用 `.agents/harness/workflow/mission_state.py register --task-id <SpecID-or-task-id> --csv <project-relative-csv> --source-ref <user-or-approved-spec-ref>` 登记身份；已登记则沿用，不重复创建任务。暂停、取消、切换由当前用户指令驱动，分别记录 lifecycle transition；不要把旧快照或 pending 来源当作重新请求授权的理由。completed 生命周期只有 CSV 真正闭环后才可设置。
 
@@ -65,7 +65,9 @@ CSV 更新统一使用 `scripts/csv_state.py`，它锁住整段读改写和 even
 
 # 闭环完成判定
 
-`csv_completion_errors()` 是唯一最终闭环判断，核验实际 Git、ingest、claim 和 handoff；恢复与生命周期 completed 共用它。`final_ready.py` 只检查 closing 前置条件，通过不代表 Mission 已完成。用户要求不提交时，保留真实未提交状态和剩余项。
+`csv_completion_errors()` 是唯一最终闭环判断，核验实际 Git、ingest、claim、post-run result analysis 和 handoff；恢复与生命周期 completed 共用它。`final_ready.py` 只检查 closing 前置条件，通过不代表 Mission 已完成。用户要求不提交时，保留真实未提交状态和剩余项。
+
+Canonical CSV 中，所有正式结果进入 `remote_state=ingested` 后，必须先完成唯一的 `RESULT-ANALYSIS-01` 行：由全新的 `scientific-reviewer` sub-agent 独立读取原始证据，写入 `research_workspace/experiments/<ExpID>/analysis/analysis.md` 和 `reviews/result-analysis.json`。主 Executor、advisor、closing `evidence-close` 或 self-review 都不能替代该分析；`final_ready.py` 与 `csv_completion_errors()` 都会 fail-closed 校验覆盖范围、四段标题、SHA-256、证据引用及可核验模型身份。分析完成后才进入 `REVIEW-*`。
 
 以下四项是必要状态；完成检查还核验实际 Git、适用的远程产物和合同，不能仅凭四个字符串宣布闭环：
 
@@ -81,7 +83,7 @@ CSV 更新统一使用 `scripts/csv_state.py`，它锁住整段读改写和 even
 - `remote_state=running_remote`：合法可恢复暂停点，但不算闭环完成。
 - `remote_state=completed`：仅远程 worker 结束，仍需 pull/ingest，不能作为科研交付终态。
 - `remote_state=artifacts_pulled`：已拉回原始产物，仍需 ingest 与 review handoff。
-- `remote_state=ingested`：结果已进入实验记录，且 `issues/<stem>/<stem>.review.md` 已写入客观摘要后，才可继续按四状态判断闭环。
+- `remote_state=ingested`：结果已进入实验记录，且 `issues/<stem>/<stem>.review.md` 已写入客观摘要后，先完成 `RESULT-ANALYSIS-01`，再可继续按四状态判断闭环。
 - 未实际完成 train/eval 或未拉回 artifacts 时，不得声称实验完成、指标有效或当前最优。
 
 `REVIEW-*` 行还必须满足：

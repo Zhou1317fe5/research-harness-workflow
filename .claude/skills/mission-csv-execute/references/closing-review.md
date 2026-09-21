@@ -7,10 +7,11 @@
 
 ## Review 前置条件
 
-- 先用 `final_ready.py` v2 对 28 列状态、remote terminal state、实验身份、metrics token、provenance、claim 终态和 scoped git status 做机械检查，并传入 `closing_context`：`risk_level`、`independent_prerun_covered`、`scientific_contract_changed_since_prerun`、`evidence_conflict`、`current_scope_gap_suspected`。失败时修当前 REVIEW 行，不创建等待型 REVIEW。
+- 先用 `final_ready.py` v2 对 28 列状态、remote terminal state、实验身份、metrics token、provenance、claim 终态、post-run result-analysis 和 scoped git status 做机械检查，并传入 `closing_context`：`risk_level`、`independent_prerun_covered`、`scientific_contract_changed_since_prerun`、`evidence_conflict`、`current_scope_gap_suspected`。失败时修当前 REVIEW 行，不创建等待型 REVIEW。
+- 对 canonical CSV，所有 `remote_state=ingested` 行必须先由 `RESULT-ANALYSIS-01` 完成；若缺少该行，先运行 `scripts/ensure_result_analysis_row.py`。它必须引用 `reviews/result-analysis.json`，并由独立 `scientific-reviewer` sub-agent 生成四段 `analysis.md`。closing review 只能消费该索引，不能用 advisor、evidence-close 或 self-review 替代。
 - 科研 `review.md` 继续承载 remote session、artifact pull/ingest、指标、SpecID/ExpID/RunID 与结果归属；closing reviewer 只消费这些证据，不改写 scientific PRERUN 结论。
 
-- 当前 review 行之前的所有非 review 行必须闭环完成
+- 当前 review 行之前的所有非 review 行必须闭环完成；其中 `RESULT-ANALYSIS-01` 必须位于首个 `REVIEW-*` 之前
 - 若前面仍有未完成的普通 issue，先跳过当前 review 行，继续普通 issue
 - review 不实现功能；review 只审计、记录、追加可执行工作
 - review 行必须包含任务专属 claim/evidence 检查项；如果 `review_regression_requirements` 仍是纯通用套话，先回读 `source_doc`、当前 CSV 和交付证据，补齐该行后再执行 review
@@ -28,6 +29,7 @@ closing review 必须基于以下材料：
 - 测试与 MCP 证据
 - 交付物中的声明：文件名、函数名、测试名、metadata、报告、CSV notes、状态更新和 commit message
 - 已存在的 review log
+- `reviews/result-analysis.json` 及其绑定的 `research_workspace/experiments/<ExpID>/analysis/analysis.md`；closing 只核对其索引、证据和状态，不重新生成科学 verdict
 
 不要把当前会话里的主观总结当作唯一依据。
 

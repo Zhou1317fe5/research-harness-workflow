@@ -18,6 +18,7 @@ from mission_completion import (
     ingest_completion_errors,
     read_mission_csv,
 )
+from result_analysis import result_analysis_completion_errors
 
 
 SCHEMA_VERSION = "mission.final-ready.v2"
@@ -92,8 +93,11 @@ def _read_csv(path: Path, review_row_id: str, errors: list[str]) -> list[dict[st
         if row_id == review_row_id:
             continue
         errors.extend(row_terminal_errors(row, allow_compat=True))
+    review_ids = [row.get("id", "") for row in rows if row.get("id", "").startswith("REVIEW-")]
     if review_row_id not in ids:
         _error(errors, "review_row_missing", "review_row_id", review_row_id)
+    elif not review_ids or review_row_id != review_ids[-1]:
+        _error(errors, "review_row_not_final", "review_row_id", review_row_id)
     return rows
 
 
@@ -186,6 +190,7 @@ def check_final_ready(payload: Any, *, workdir: Path | None = None) -> dict[str,
         errors.extend(git_completion_errors(csv_path, [row for row in rows if row["id"] != review_row_id], workdir=root))
         errors.extend(ingest_completion_errors(csv_path, rows, workdir=root))
         errors.extend(claim_completion_errors(csv_path, rows, workdir=root))
+        errors.extend(result_analysis_completion_errors(csv_path, rows, workdir=root))
         actual_run_ids = sorted(
             {row.get("run_id", "").strip() for row in rows if row.get("run_id", "").strip()}
         )

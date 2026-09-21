@@ -43,6 +43,9 @@ SINGLETON_NOTE_KEYS = frozenset({
     "review_kind", "review_mode", "review_result", "review_json",
     "review_agent_mode", "review_independence", "review_requested_model",
     "review_observed_model", "review_model_evidence", "scientific_outcome",
+    "result_analysis", "analysis_kind", "analysis_agent_mode", "analysis_independence",
+    "analysis_requested_model", "analysis_observed_model", "analysis_model_evidence",
+    "analysis_model_evidence_ref",
     "handoff", "handoff_contract", "handoff_humanized", "gated_run",
     "pre_run_result", "pre_run_code_commit", "verdict_artifact", "blocker_closure_evidence",
     "readiness_result", "command_owner", "legacy_reason",
@@ -163,16 +166,26 @@ def resolve_reference_path(value: str, base_dir: Path, workdir: Path) -> Path:
     """只解析显式 workdir 内的引用；相对基准不额外授权目录。"""
     if not value.strip().strip("\"'"):
         raise ValueError("reference_empty")
-    root = workdir.resolve()
-    path = Path(value.strip().strip("\"'")).expanduser()
+    try:
+        root = workdir.resolve()
+        path = Path(value.strip().strip("\"'")).expanduser()
+    except (OSError, RuntimeError) as exc:
+        raise ValueError(f"reference_unresolvable:{value}:{exc}") from exc
     candidates = [path] if path.is_absolute() else [base_dir / path, workdir / path]
-    existing = {p.resolve() for p in candidates if p.exists()}
+    try:
+        existing = {p.resolve() for p in candidates if p.exists()}
+    except (OSError, RuntimeError) as exc:
+        raise ValueError(f"reference_unresolvable:{value}:{exc}") from exc
     if any(not p.is_relative_to(root) for p in existing):
         raise ValueError(f"reference_outside_workspace:{value}")
     if len(existing) > 1:
         raise ValueError(f"reference_ambiguous:{value}")
-    resolved = next(iter(existing)) if existing else candidates[0].resolve()
-    if not resolved.is_relative_to(root):
+    try:
+        resolved = next(iter(existing)) if existing else candidates[0].resolve()
+        inside_root = resolved.is_relative_to(root)
+    except (OSError, RuntimeError) as exc:
+        raise ValueError(f"reference_unresolvable:{value}:{exc}") from exc
+    if not inside_root:
         raise ValueError(f"reference_outside_workspace:{value}")
     return resolved
 
@@ -304,6 +317,8 @@ def csv_completion_errors(
     errors.extend(git_completion_errors(csv_path, rows, workdir=workdir))
     errors.extend(ingest_completion_errors(csv_path, rows, workdir=workdir))
     errors.extend(claim_completion_errors(csv_path, rows, workdir=workdir))
+    from result_analysis import result_analysis_completion_errors
+    errors.extend(result_analysis_completion_errors(csv_path, rows, workdir=workdir))
 
     reviews = [row for row in rows if row.get("id", "").startswith("REVIEW-")]
     if not reviews:

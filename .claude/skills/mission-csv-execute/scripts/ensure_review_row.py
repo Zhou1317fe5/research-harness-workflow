@@ -52,6 +52,15 @@ def _ensure_review_row_locked(path: Path) -> bool:
 
     phases = [int(row["phase"]) for row in rows if row.get("phase", "").isdigit()]
     review = dict.fromkeys(fieldnames, "")
+    review_notes = (
+        f"review_kind:vision; source_csv:{path}; "
+        "review_agent_mode:pending; review_independence:pending; "
+        "review_requested_model:pending; review_observed_model:pending; "
+        "review_model_evidence:pending; claim_coverage:unknown; "
+        "claim_coverage_status:pending; scientific_outcome:pending"
+    )
+    if "remote_state" in fieldnames:
+        review_notes += "; result_analysis:reviews/result-analysis.json"
     review.update(
         {
             "id": "REVIEW-01",
@@ -69,13 +78,7 @@ def _ensure_review_row_locked(path: Path) -> bool:
             "review_regression_state": "未开始",
             "git_state": "未提交",
             "refs": str(path),
-            "notes": (
-                f"review_kind:vision; source_csv:{path}; "
-                "review_agent_mode:pending; review_independence:pending; "
-                "review_requested_model:pending; review_observed_model:pending; "
-                "review_model_evidence:pending; claim_coverage:unknown; "
-                "claim_coverage_status:pending; scientific_outcome:pending"
-            ),
+            "notes": review_notes,
         }
     )
     if "remote_state" in fieldnames:
