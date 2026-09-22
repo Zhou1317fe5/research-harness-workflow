@@ -42,6 +42,10 @@ _SESSION_REF_RE = re.compile(
 _RUNTIME_MODEL_RE = re.compile(r"^openai-codex/gpt-5\.6-sol(?::max)?$")
 _EVENT_REF_RE = re.compile(r"^event:\S+$")
 _RUNTIME_REF_RE = re.compile(r"^runtime:\S+$")
+_REVIEW_OUTPUT_KEYS = {
+    "exp_id", "run_ids", "analysis_markdown", "scientific_outcome",
+    "limitations", "validation_gaps",
+}
 
 
 def _error(errors: list[str], code: str, detail: str) -> None:
@@ -156,8 +160,31 @@ def _assistant_text(message: dict[str, Any]) -> str:
     return "\n".join(parts)
 
 
+def _normalized_newlines(value: str) -> str:
+    return value.replace("\r\n", "\n").replace("\r", "\n")
+
+
 def _normalized_text(value: str) -> str:
-    return value.replace("\r\n", "\n").replace("\r", "\n").strip()
+    return _normalized_newlines(value).strip()
+
+
+def _strict_json_loads(value: str) -> Any:
+    def reject_duplicates(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        for key, item in pairs:
+            if key in result:
+                raise ValueError(f"duplicate_json_key:{key}")
+            result[key] = item
+        return result
+
+    def reject_constant(constant: str) -> None:
+        raise ValueError(f"invalid_json_constant:{constant}")
+
+    return json.loads(
+        value,
+        object_pairs_hook=reject_duplicates,
+        parse_constant=reject_constant,
+    )
 
 
 def _tool_call_arguments(item: dict[str, Any]) -> dict[str, Any] | None:
@@ -166,15 +193,19 @@ def _tool_call_arguments(item: dict[str, Any]) -> dict[str, Any] | None:
         return arguments
     if isinstance(arguments, str):
         try:
-            parsed = json.loads(arguments)
-        except json.JSONDecodeError:
+            parsed = _strict_json_loads(arguments)
+        except (json.JSONDecodeError, ValueError):
             return None
         return parsed if isinstance(parsed, dict) else None
     return None
 
 
 def _session_tool_result(
-    ref: str, *, workdir: Path
+    ref: str,
+    *,
+    workdir: Path,
+    expected_exp_id: str,
+    expected_run_ids: set[str],
 ) -> tuple[dict[str, Any] | None, str | None]:
     match = _SESSION_REF_RE.fullmatch(ref.strip())
     if not match:
@@ -227,6 +258,27 @@ def _session_tool_result(
     task = arguments.get("task")
     if not isinstance(task, str) or not task.strip():
         return None, "subagent_task_missing"
+    target_marker = "result_analysis_targets:"
+    if task.count(target_marker) != 1:
+        return None, "subagent_targets_invalid"
+    target_start = task.find(target_marker)
+    target_text = task[target_start + len(target_marker):].lstrip().splitlines()[0]
+    try:
+        targets = _strict_json_loads(target_text)
+    except (json.JSONDecodeError, ValueError):
+        return None, "subagent_targets_invalid"
+    if not isinstance(targets, dict):
+        return None, "subagent_targets_invalid"
+    target_exp = targets.get("exp_id")
+    target_runs = targets.get("run_ids")
+    if (
+        target_exp != expected_exp_id
+        or not isinstance(target_runs, list)
+        or any(not isinstance(item, str) or not item.strip() for item in target_runs)
+        or set(target_runs) != expected_run_ids
+        or len(target_runs) != len(set(target_runs))
+    ):
+        return None, "subagent_targets_mismatch"
     cwd = arguments.get("cwd")
     if not isinstance(cwd, str) or not cwd.strip():
         return None, "subagent_cwd_missing"
@@ -257,6 +309,12 @@ def _validate_reviewer_evidence(
     errors: list[str],
     *,
     workdir: Path,
+    exp_id: str,
+    run_id: str,
+    expected_run_ids: set[str],
+    expected_outcome: Any,
+    expected_limitations: Any,
+    expected_gaps: Any,
 ) -> None:
     if not isinstance(ref, str) or not _SESSION_REF_RE.fullmatch(ref.strip()):
         _error(errors, "review_evidence_ref_invalid", str(ref))
@@ -264,7 +322,12 @@ def _validate_reviewer_evidence(
     if not isinstance(output_hash, str) or not re.fullmatch(r"[0-9a-f]{64}", output_hash):
         _error(errors, "review_output_hash_invalid", str(output_hash))
         return
-    result, failure = _session_tool_result(ref, workdir=workdir)
+    result, failure = _session_tool_result(
+        ref,
+        workdir=workdir,
+        expected_exp_id=exp_id,
+        expected_run_ids=expected_run_ids,
+    )
     if failure:
         _error(errors, "review_evidence_unverifiable", f"{ref}:{failure}")
         return
@@ -285,16 +348,52 @@ def _validate_reviewer_evidence(
     if not final_text:
         _error(errors, "review_output_missing", ref)
         return
-    actual_hash = hashlib.sha256(_normalized_text(final_text).encode("utf-8")).hexdigest()
+    normalized_final = _normalized_text(final_text)
+    actual_hash = hashlib.sha256(normalized_final.encode("utf-8")).hexdigest()
     if actual_hash != output_hash:
         _error(errors, "review_output_hash_mismatch", ref)
+    try:
+        payload = _strict_json_loads(normalized_final)
+    except (json.JSONDecodeError, ValueError) as exc:
+        _error(errors, "review_output_json_invalid", f"{ref}:{exc}")
+        return
+    if not isinstance(payload, dict) or set(payload) != _REVIEW_OUTPUT_KEYS:
+        _error(errors, "review_output_schema_invalid", ref)
+        return
+    if payload.get("exp_id") != exp_id:
+        _error(errors, "review_exp_id_mismatch", ref)
+    payload_run_ids = payload.get("run_ids")
+    if (
+        not isinstance(payload_run_ids, list)
+        or any(not isinstance(item, str) or not item.strip() for item in payload_run_ids)
+        or len(payload_run_ids) != len(set(payload_run_ids))
+        or set(payload_run_ids) != expected_run_ids
+    ):
+        _error(errors, "review_run_ids_mismatch", ref)
+    if not isinstance(payload.get("analysis_markdown"), str) or not payload["analysis_markdown"].strip():
+        _error(errors, "review_analysis_markdown_invalid", ref)
+    if payload.get("scientific_outcome") not in SCIENTIFIC_OUTCOMES:
+        _error(errors, "review_scientific_outcome_invalid", ref)
+    elif payload.get("scientific_outcome") != expected_outcome:
+        _error(errors, "review_scientific_outcome_mismatch", ref)
+    for field, expected in (
+        ("limitations", expected_limitations),
+        ("validation_gaps", expected_gaps),
+    ):
+        value = payload.get(field)
+        if not isinstance(value, list) or any(
+            not isinstance(item, str) or not item.strip() for item in value
+        ):
+            _error(errors, "review_output_schema_invalid", f"{ref}:{field}")
+        elif value != expected:
+            _error(errors, f"review_{field}_mismatch", ref)
     if analysis_path is not None:
         try:
-            analysis_text = _normalized_text(analysis_path.read_text(encoding="utf-8"))
+            analysis_text = _normalized_newlines(analysis_path.read_text(encoding="utf-8"))
         except (OSError, UnicodeError) as exc:
             _error(errors, "analysis_file_unreadable", f"{analysis_path}:{exc}")
         else:
-            if analysis_text not in _normalized_text(final_text):
+            if _normalized_newlines(payload.get("analysis_markdown", "")) != _normalized_newlines(analysis_text):
                 _error(errors, "analysis_not_bound_to_reviewer_output", ref)
 
 
@@ -310,8 +409,8 @@ def validate_index(index_path: Path, csv_path: Path, *, workdir: Path) -> list[s
     if not index_path.is_file():
         return [f"analysis_index_missing:{index_path}"]
     try:
-        data = json.loads(index_path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        data = _strict_json_loads(index_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as exc:
         return [f"analysis_index_invalid:{exc}"]
     if not isinstance(data, dict):
         return ["analysis_index_invalid:expected_object"]
@@ -353,8 +452,13 @@ def validate_index(index_path: Path, csv_path: Path, *, workdir: Path) -> list[s
         return sorted(set(errors))
 
     _validate_model_metadata(data, errors)
+    expected_run_ids_by_exp: dict[str, set[str]] = {}
+    for exp_id, run_id in expected:
+        expected_run_ids_by_exp.setdefault(exp_id, set()).add(run_id)
     actual: set[tuple[str, str]] = set()
     analysis_paths: dict[Path, str] = {}
+    review_refs_by_exp: dict[str, str] = {}
+    review_exp_by_ref: dict[str, str] = {}
     for index, entry in enumerate(entries):
         label = f"entries[{index}]"
         if not isinstance(entry, dict):
@@ -396,10 +500,10 @@ def validate_index(index_path: Path, csv_path: Path, *, workdir: Path) -> list[s
                 if relative_path != expected_relative:
                     _error(errors, "analysis_path_exp_scope_invalid", f"{label}:{relative}")
                 previous = analysis_paths.get(analysis_path)
-                if previous is not None:
-                    _error(errors, "analysis_path_reused", f"{label}:{previous}")
+                if previous is not None and previous != exp_id:
+                    _error(errors, "analysis_path_reused_across_exp", f"{label}:{previous}")
                 else:
-                    analysis_paths[analysis_path] = label
+                    analysis_paths[analysis_path] = exp_id
                 _valid_analysis_document(analysis_path, errors, label)
                 expected_hash = entry.get("analysis_sha256")
                 if isinstance(expected_hash, str) and expected_hash.strip():
@@ -410,12 +514,30 @@ def validate_index(index_path: Path, csv_path: Path, *, workdir: Path) -> list[s
                     else:
                         if actual_hash != expected_hash:
                             _error(errors, "analysis_hash_mismatch", label)
+        review_ref = entry.get("review_evidence_ref")
+        if isinstance(review_ref, str):
+            previous_ref = review_refs_by_exp.get(exp_id)
+            if previous_ref is not None and previous_ref != review_ref:
+                _error(errors, "review_evidence_changed_within_exp", f"{label}:{previous_ref}")
+            else:
+                review_refs_by_exp[exp_id] = review_ref
+            previous_exp = review_exp_by_ref.get(review_ref)
+            if previous_exp is not None and previous_exp != exp_id:
+                _error(errors, "review_evidence_reused_across_exp", f"{label}:{previous_exp}")
+            else:
+                review_exp_by_ref[review_ref] = exp_id
         _validate_reviewer_evidence(
-            entry.get("review_evidence_ref"),
+            review_ref,
             entry.get("review_output_sha256"),
             analysis_path,
             errors,
             workdir=workdir,
+            exp_id=exp_id,
+            run_id=run_id,
+            expected_run_ids=expected_run_ids_by_exp.get(exp_id, set()),
+            expected_outcome=entry.get("scientific_outcome"),
+            expected_limitations=entry.get("limitations"),
+            expected_gaps=entry.get("validation_gaps"),
         )
         evidence_refs = entry.get("evidence_refs")
         if not isinstance(evidence_refs, list) or not evidence_refs or any(not isinstance(ref, str) or not ref.strip() for ref in evidence_refs):

@@ -29,29 +29,31 @@ description: Use after remote experiment artifacts are ingested to require an in
 
 ## 强模型调用
 
-为每个 ExpID 启动一次全新的 `scientific-reviewer` sub-agent；调用必须显式携带当前仓库 `cwd`，例如 `subagent(agent="scientific-reviewer", agentScope="project", cwd="<repo>", task="...")`，以便 parent session 证据可配对核验：
+为每个 ExpID 启动一次全新的 `scientific-reviewer` sub-agent；调用必须显式携带当前仓库 `cwd`，并在 task 中加入机器可解析的目标行，例如：
+
+```text
+subagent(agent="scientific-reviewer", agentScope="project", cwd="<repo>", task="...")
+result_analysis_targets: {"exp_id":"<ExpID>","run_ids":["<RunID-1>","<RunID-2>"]}
+```
 
 - 只读、不得调用 advisor、不得再次委派；
 - 请求模型 `openai-codex/gpt-5.6-sol`、thinking `high`；
 - prompt 明确要求独立读取证据，不信任主代理总结；
-- 要求严格输出以下四段，标题和顺序不能改变：
+- 每个 ExpID 只启动一次 reviewer，并将该 ExpID 的全部目标 RunID 放入 `run_ids`；
+- 最终 assistant message 必须是**不带代码围栏或额外 prose 的严格 JSON 对象**，且只能包含以下字段：
 
-```markdown
-## Change
-...
-
-## Result
-...
-
-## Finding
-...
-
-## Next
-...
+```json
+{
+  "exp_id": "<ExpID>",
+  "run_ids": ["<RunID-1>", "<RunID-2>"],
+  "analysis_markdown": "## Change\n...\n\n## Result\n...\n\n## Finding\n...\n\n## Next\n...\n",
+  "scientific_outcome": "inconclusive",
+  "limitations": [],
+  "validation_gaps": []
+}
 ```
 
-同时输出机器可记录的 `scientific_outcome`：
-`hypothesis_supported`、`hypothesis_not_supported`、`gate_failed`、`inconclusive` 或 `not_applicable`。
+`scientific_outcome` 必须是 `hypothesis_supported`、`hypothesis_not_supported`、`gate_failed`、`inconclusive` 或 `not_applicable`；主 Executor 不得改写 JSON 中的任一科学字段。
 
 ## 持久化
 
@@ -61,7 +63,7 @@ description: Use after remote experiment artifacts are ingested to require an in
    research_workspace/experiments/<ExpID>/analysis/analysis.md
    ```
 
-   只允许补充文件头、证据路径或 Markdown 空白，不得改变科学语义。
+   `analysis.md` 必须逐字保存 JSON 的 `analysis_markdown`（仅允许换行规范化），不得补写或改写科学语义。
 
 2. 将索引保存为：
 
@@ -89,7 +91,7 @@ description: Use after remote experiment artifacts are ingested to require an in
          "analysis_sha256": "<sha256>",
          "scientific_outcome": "inconclusive",
          "review_evidence_ref": "session:<actual-session-uuid>#tool:<subagent-tool-call-id>",
-         "review_output_sha256": "<sha256-of-normalized-final-reviewer-output>",
+         "review_output_sha256": "<sha256-of-normalized-final-reviewer-json>",
          "evidence_refs": ["remote_artifacts/<ExpID>/<RunID>/..."],
          "limitations": [],
          "validation_gaps": []

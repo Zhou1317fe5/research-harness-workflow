@@ -291,11 +291,18 @@ class MissionContractTests(unittest.TestCase):
                 self.assertTrue(self.validate_claim([{**claim, key: value}], rows))
         self.assertTrue(any("duplicate" in x for x in self.validate_claim([claim, claim], rows)))
 
-    def result_analysis_fixture(self, *, include_analysis=True):
+    def result_analysis_fixture(self, *, include_analysis=True, run_ids=None):
         analysis_path = self.root / "research_workspace/experiments/EXP-1/analysis/analysis.md"
         analysis_path.parent.mkdir(parents=True, exist_ok=True)
         analysis_text = "## Change\ncode\n\n## Result\nmetric\n\n## Finding\nuncertain\n\n## Next\nrepeat\n"
         analysis_path.write_text(analysis_text, encoding="utf-8")
+        run_ids = list(run_ids or ["RUN-1"])
+        review_payload = {
+            "exp_id": "EXP-1", "run_ids": run_ids,
+            "analysis_markdown": analysis_text,
+            "scientific_outcome": "inconclusive", "limitations": [], "validation_gaps": [],
+        }
+        review_output = json.dumps(review_payload, ensure_ascii=False, sort_keys=True)
         session_id = "00000000-0000-0000-0000-000000000001"
         tool_id = "call-test"
         session_path = self.root / ".pi/agent/sessions" / f"fixture_{session_id}.jsonl"
@@ -308,7 +315,9 @@ class MissionContractTests(unittest.TestCase):
                     "type": "toolCall", "name": "subagent", "id": tool_id,
                     "arguments": json.dumps({
                         "agent": "scientific-reviewer", "agentScope": "project",
-                        "cwd": str(self.root), "task": "Analyze EXP-1 RUN-1 from raw evidence.",
+                        "cwd": str(self.root),
+                        "task": "Analyze EXP-1 RUN-1 from raw evidence. result_analysis_targets: "
+                                + json.dumps({"exp_id": "EXP-1", "run_ids": run_ids}),
                     }),
                 }],
             },
@@ -320,7 +329,7 @@ class MissionContractTests(unittest.TestCase):
                 "details": {"results": [{
                     "agent": "scientific-reviewer", "model": "openai-codex/gpt-5.6-sol:max",
                     "exitCode": 0, "messages": [{
-                        "role": "assistant", "content": [{"type": "text", "text": analysis_text}],
+                        "role": "assistant", "content": [{"type": "text", "text": review_output}],
                     }],
                 }]},
             },
@@ -329,16 +338,19 @@ class MissionContractTests(unittest.TestCase):
             json.dumps(call_record) + "\n" + json.dumps(result_record) + "\n", encoding="utf-8"
         )
         evidence_ref = f"session:{session_id}#tool:{tool_id}"
-        output_digest = hashlib.sha256(analysis_text.strip().encode("utf-8")).hexdigest()
-        ordinary = self.row(
-            id="RUN-1", phase="remote", exp_id="EXP-1", run_id="RUN-1",
-            remote_state="ingested", artifact_path="remote_artifacts/EXP-1/RUN-1",
-        )
+        output_digest = hashlib.sha256(review_output.strip().encode("utf-8")).hexdigest()
+        ordinary_rows = [
+            self.row(
+                id=run_id, phase="remote", exp_id="EXP-1", run_id=run_id,
+                remote_state="ingested", artifact_path=f"remote_artifacts/EXP-1/{run_id}",
+            )
+            for run_id in run_ids
+        ]
         review = self.row(
             id="REVIEW-01", phase="review",
             notes="result_analysis:reviews/result-analysis.json",
         )
-        rows = [ordinary]
+        rows = list(ordinary_rows)
         if include_analysis:
             analysis = self.row(
                 id="RESULT-ANALYSIS-01", phase="analysis",
@@ -368,17 +380,147 @@ class MissionContractTests(unittest.TestCase):
             "model_evidence": "session-metadata",
             "model_evidence_ref": evidence_ref,
             "entries": [{
-                "exp_id": "EXP-1", "run_id": "RUN-1",
+                "exp_id": "EXP-1", "run_id": run_id,
                 "analysis_path": "research_workspace/experiments/EXP-1/analysis/analysis.md",
                 "analysis_sha256": digest, "scientific_outcome": "inconclusive",
                 "review_evidence_ref": evidence_ref, "review_output_sha256": output_digest,
-                "evidence_refs": ["command:fixture"], "limitations": [], "validation_gaps": [],
-            }],
+                "evidence_refs": [f"command:fixture-{run_id}"], "limitations": [], "validation_gaps": [],
+            } for run_id in run_ids],
         }
         index_path = self.root / "reviews/result-analysis.json"
         index_path.parent.mkdir(parents=True, exist_ok=True)
         index_path.write_text(json.dumps(index), encoding="utf-8")
         return rows, index_path
+
+    def test_result_analysis_allows_multiple_runs_per_exp(self):
+        rows, index_path = self.result_analysis_fixture(run_ids=["RUN-1", "RUN-2"])
+        errors = result_analysis_completion_errors(self.path, rows, workdir=self.root)
+        self.assertEqual(errors, [])
+        data = json.loads(index_path.read_text(encoding="utf-8"))
+        self.assertEqual(
+            [(entry["exp_id"], entry["run_id"]) for entry in data["entries"]],
+            [("EXP-1", "RUN-1"), ("EXP-1", "RUN-2")],
+        )
+
+    def test_cross_exp_reviewer_reference_reuse_is_rejected(self):
+        rows, index_path = self.result_analysis_fixture()
+        foreign_analysis = self.root / "research_workspace/experiments/EXP-2/analysis/analysis.md"
+        foreign_analysis.parent.mkdir(parents=True, exist_ok=True)
+        foreign_analysis.write_text(
+            "## Change\ncode\n\n## Result\nmetric\n\n## Finding\nuncertain\n\n## Next\nrepeat\n",
+            encoding="utf-8",
+        )
+        data = json.loads(index_path.read_text(encoding="utf-8"))
+        foreign_entry = {
+            **data["entries"][0],
+            "exp_id": "EXP-2",
+            "run_id": "RUN-2",
+            "analysis_path": "research_workspace/experiments/EXP-2/analysis/analysis.md",
+            "analysis_sha256": hashlib.sha256(foreign_analysis.read_bytes()).hexdigest(),
+        }
+        data["entries"].append(foreign_entry)
+        rows = [
+            rows[0],
+            self.row(
+                id="RUN-2", phase="remote", exp_id="EXP-2", run_id="RUN-2",
+                remote_state="ingested", artifact_path="remote_artifacts/EXP-2/RUN-2",
+            ),
+            *rows[1:],
+        ]
+        self.write_csv(rows)
+        index_path.write_text(json.dumps(data), encoding="utf-8")
+        errors = result_analysis_completion_errors(self.path, rows, workdir=self.root)
+        self.assertTrue(any("review_evidence_reused_across_exp" in error for error in errors))
+
+    def test_reviewer_scientific_fields_are_bound_to_output(self):
+        rows, index_path = self.result_analysis_fixture()
+        for field, value, error_code in (
+            ("scientific_outcome", "hypothesis_supported", "review_scientific_outcome_mismatch"),
+            ("limitations", ["tampered"], "review_limitations_mismatch"),
+            ("validation_gaps", ["tampered"], "review_validation_gaps_mismatch"),
+        ):
+            with self.subTest(field=field):
+                data = json.loads(index_path.read_text(encoding="utf-8"))
+                data["entries"][0][field] = value
+                index_path.write_text(json.dumps(data), encoding="utf-8")
+                errors = result_analysis_completion_errors(self.path, rows, workdir=self.root)
+                self.assertTrue(any(error_code in error for error in errors))
+                rows, index_path = self.result_analysis_fixture()
+
+    def test_reviewer_output_verdict_cannot_be_replaced(self):
+        rows, index_path = self.result_analysis_fixture()
+        session_path = next((self.root / ".pi/agent/sessions").glob("*.jsonl"))
+        records = [json.loads(line) for line in session_path.read_text(encoding="utf-8").splitlines()]
+        result = records[1]["message"]["details"]["results"][0]
+        payload = json.loads(result["messages"][0]["content"][0]["text"])
+        payload["scientific_outcome"] = "hypothesis_supported"
+        replacement = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+        result["messages"][0]["content"][0]["text"] = replacement
+        session_path.write_text(
+            "\n".join(json.dumps(record) for record in records) + "\n", encoding="utf-8"
+        )
+        data = json.loads(index_path.read_text(encoding="utf-8"))
+        data["entries"][0]["review_output_sha256"] = hashlib.sha256(
+            replacement.encode("utf-8")
+        ).hexdigest()
+        index_path.write_text(json.dumps(data), encoding="utf-8")
+        errors = result_analysis_completion_errors(self.path, rows, workdir=self.root)
+        self.assertTrue(any("review_scientific_outcome_mismatch" in error for error in errors))
+
+    def test_reviewer_output_all_fields_are_bound(self):
+        cases = {
+            "exp_id": ("EXP-2", "review_exp_id_mismatch"),
+            "run_ids": (["RUN-2"], "review_run_ids_mismatch"),
+            "analysis_markdown": (
+                "## Change\ncode\n\n## Result\ntampered\n\n## Finding\nuncertain\n\n## Next\nrepeat\n",
+                "analysis_not_bound_to_reviewer_output",
+            ),
+            "limitations": (["tampered"], "review_limitations_mismatch"),
+            "validation_gaps": (["tampered"], "review_validation_gaps_mismatch"),
+        }
+        for field, (value, error_code) in cases.items():
+            with self.subTest(field=field):
+                rows, index_path = self.result_analysis_fixture()
+                session_path = next((self.root / ".pi/agent/sessions").glob("*.jsonl"))
+                records = [
+                    json.loads(line)
+                    for line in session_path.read_text(encoding="utf-8").splitlines()
+                ]
+                result = records[1]["message"]["details"]["results"][0]
+                payload = json.loads(result["messages"][0]["content"][0]["text"])
+                payload[field] = value
+                replacement = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+                result["messages"][0]["content"][0]["text"] = replacement
+                session_path.write_text(
+                    "\n".join(json.dumps(record) for record in records) + "\n",
+                    encoding="utf-8",
+                )
+                data = json.loads(index_path.read_text(encoding="utf-8"))
+                data["entries"][0]["review_output_sha256"] = hashlib.sha256(
+                    replacement.encode("utf-8")
+                ).hexdigest()
+                index_path.write_text(json.dumps(data), encoding="utf-8")
+                errors = result_analysis_completion_errors(self.path, rows, workdir=self.root)
+                self.assertTrue(any(error_code in error for error in errors))
+
+    def test_reviewer_output_rejects_duplicate_json_keys(self):
+        rows, index_path = self.result_analysis_fixture()
+        session_path = next((self.root / ".pi/agent/sessions").glob("*.jsonl"))
+        records = [json.loads(line) for line in session_path.read_text(encoding="utf-8").splitlines()]
+        result = records[1]["message"]["details"]["results"][0]
+        original = result["messages"][0]["content"][0]["text"]
+        duplicate = original.replace('"exp_id": "EXP-1",', '"exp_id": "EXP-1", "exp_id": "EXP-1",', 1)
+        result["messages"][0]["content"][0]["text"] = duplicate
+        session_path.write_text(
+            "\n".join(json.dumps(record) for record in records) + "\n", encoding="utf-8"
+        )
+        data = json.loads(index_path.read_text(encoding="utf-8"))
+        data["entries"][0]["review_output_sha256"] = hashlib.sha256(
+            duplicate.encode("utf-8")
+        ).hexdigest()
+        index_path.write_text(json.dumps(data), encoding="utf-8")
+        errors = result_analysis_completion_errors(self.path, rows, workdir=self.root)
+        self.assertTrue(any("review_output_json_invalid" in error for error in errors))
 
     def test_post_run_result_analysis_is_validated_and_fail_closed(self):
         rows, index_path = self.result_analysis_fixture()
