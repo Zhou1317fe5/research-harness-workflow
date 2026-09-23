@@ -140,6 +140,7 @@ def validate_mission_launch(spec: dict, *, resume: bool = False, spec_path: Path
 
     change = metadata.get("change_manifest")
     gate = metadata.get("gate_provenance")
+    pre_run_exception = metadata.get("pre_run_exception")
     if gate is not None:
         try:
             gate = _gate_provenance(
@@ -166,6 +167,8 @@ def validate_mission_launch(spec: dict, *, resume: bool = False, spec_path: Path
             "review_mode": gate["review_mode"], "review_result": gate["review_result"],
             "reviewer_id": gate["reviewer_id"], "closure_evidence_paths": gate["blocker_closure_evidence"],
         }
+    if pre_run_exception is not None:
+        request["pre_run_exception"] = pre_run_exception
     decision = decide_remote_route(request)
     if decision["decision"] != "proceed" or decision["route"] != "rrctl" or decision["fallback_allowed"]:
         raise ValueError("mission remote route blocked: " + "; ".join(decision["errors"] or decision["reason_codes"]))
@@ -177,7 +180,44 @@ def validate_mission_launch(spec: dict, *, resume: bool = False, spec_path: Path
         actual = subprocess.run(["git", "diff", "--name-only", "--no-renames", "-z", base, commit], cwd=repo, capture_output=True, check=True).stdout
         if {x.decode() for x in actual.split(b"\0") if x} != {item["path"] for item in change["changes"]}:
             raise ValueError("mission change manifest does not cover the actual Git diff")
-    needs_review = not restricted and (route is None or route["requires_prerun"])
+    needs_review = (
+        not restricted
+        and route is not None
+        and route["requires_prerun"]
+        and pre_run_exception is None
+    )
+    if pre_run_exception is not None:
+        if pre_run_exception.get("candidate_commit") != commit:
+            raise ValueError("pre-run launch exception candidate commit mismatch")
+        if pre_run_exception.get("review_result") != "not_evaluable":
+            raise ValueError("pre-run launch exception cannot claim a scientific verdict")
+        evidence_paths = pre_run_exception.get("evidence_paths", [])
+        for value in evidence_paths:
+            evidence = (repo / value).resolve()
+            if not evidence.is_relative_to(repo) or not evidence.is_file():
+                raise ValueError("pre-run launch exception evidence path is missing or outside repository")
+        reviews = [
+            parse_note_tags(item["notes"])
+            for item in rows
+            if item["id"].startswith("PRERUN-REVIEW-")
+        ]
+        if len(reviews) != 1:
+            raise ValueError("pre-run launch exception requires exactly one Mission review row")
+        review_tags = reviews[0]
+        gated_run = review_tags.get("gated_run")
+        if not gated_run or not any(item["id"] == gated_run for item in rows):
+            raise ValueError("pre-run launch exception review row has no valid gated run")
+        if any(
+            review_tags.get(key) != expected
+            for key, expected in (
+                ("pre_run_code_commit", commit),
+                ("review_mode", "scientific_review"),
+                ("review_result", "not_evaluable"),
+                ("user_authorized_pre_run_exception", "true"),
+                ("review_requirement_unfulfilled", "service_failure_two_attempts"),
+            )
+        ):
+            raise ValueError("pre-run launch exception does not match the Mission review record")
     if needs_review or (gate is not None and not restricted):
         try:
             gate = _gate_provenance(
@@ -186,8 +226,22 @@ def validate_mission_launch(spec: dict, *, resume: bool = False, spec_path: Path
             )
         except RunSpecBuildError as exc:
             raise ValueError(str(exc)) from exc
-        reviews = [parse_note_tags(item["notes"]) for item in rows
-                   if item["id"].startswith("PRERUN-REVIEW-") and parse_note_tags(item["notes"]).get("gated_run") == row_id]
+        # 一个正式矩阵的科学审查由唯一的 PRERUN 行承担：运行行用 prereview:<row-id>
+        # （或 depends_on:PRERUN-REVIEW-*）声明其 gate；仍保留 gated_run 精确匹配语义。
+        declared_gate = str(tags.get("prereview", "")).strip()
+        if not declared_gate:
+            depends_on = str(tags.get("depends_on", "")).strip()
+            if depends_on.startswith("PRERUN-REVIEW-"):
+                declared_gate = depends_on
+        reviews = []
+        for item in rows:
+            if not item["id"].startswith("PRERUN-REVIEW-"):
+                continue
+            item_tags = parse_note_tags(item["notes"])
+            if item_tags.get("gated_run") == row_id or (
+                declared_gate and item["id"] == declared_gate
+            ):
+                reviews.append(item_tags)
         expected_review = [
             ("pre_run_code_commit", commit), ("pre_run_result", "pass"),
             ("review_mode", gate["review_mode"]), ("review_result", gate["review_result"]),

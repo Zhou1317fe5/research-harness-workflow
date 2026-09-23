@@ -7,7 +7,7 @@ import argparse
 import importlib.util
 import json
 import sys
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[4] / ".agents"))
@@ -15,6 +15,7 @@ from harness.workflow.mission_state import assert_launchable
 
 
 SCHEMA_VERSION = "mission.remote-route.v1"
+PRE_RUN_EXCEPTION_SCHEMA = "mission.pre-run-exception.v1"
 OWNERS = {None, "rrctl", "legacy"}
 LIFECYCLES = {"closed", "running_remote", "not_started", "failed_retry"}
 CHECK_STATES = {"not_checked", "passed", "failed"}
@@ -100,6 +101,126 @@ def _validate_legacy_exception(value: Any, errors: list[str]) -> bool:
         )
         complete = False
     return complete
+
+
+def _validate_pre_run_exception(
+    value: Any, errors: list[str]
+) -> dict[str, Any] | None:
+    """Validate a user-authorized launch without converting it into a review pass."""
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        _error(errors, "type_invalid", "pre_run_exception", "expected object")
+        return None
+
+    allowed = {
+        "schema_version",
+        "kind",
+        "candidate_commit",
+        "review_mode",
+        "review_result",
+        "user_authorized",
+        "authorization_ref",
+        "reason_code",
+        "evidence_paths",
+    }
+    for field in sorted(set(value) - allowed):
+        _error(errors, "unknown_field", f"pre_run_exception.{field}", "not allowed")
+    for field in sorted(allowed - set(value)):
+        _error(errors, "missing_field", f"pre_run_exception.{field}", "required")
+
+    if value.get("schema_version") != PRE_RUN_EXCEPTION_SCHEMA:
+        _error(
+            errors,
+            "schema_invalid",
+            "pre_run_exception.schema_version",
+            f"expected {PRE_RUN_EXCEPTION_SCHEMA}",
+        )
+    if value.get("kind") != "review_service_unavailable":
+        _error(
+            errors,
+            "value_invalid",
+            "pre_run_exception.kind",
+            "expected review_service_unavailable",
+        )
+
+    candidate = value.get("candidate_commit")
+    if not isinstance(candidate, str) or not ROUTE.COMMIT_RE.fullmatch(candidate):
+        _error(
+            errors,
+            "commit_invalid",
+            "pre_run_exception.candidate_commit",
+            "expected 40 lowercase hex",
+        )
+        candidate = ""
+    if value.get("review_mode") != "scientific_review":
+        _error(
+            errors,
+            "value_invalid",
+            "pre_run_exception.review_mode",
+            "expected scientific_review",
+        )
+    if value.get("review_result") != "not_evaluable":
+        _error(
+            errors,
+            "value_invalid",
+            "pre_run_exception.review_result",
+            "expected not_evaluable",
+        )
+    if value.get("user_authorized") is not True:
+        _error(
+            errors,
+            "authorization_required",
+            "pre_run_exception.user_authorized",
+            "must be true",
+        )
+    if not _non_empty_text(value.get("authorization_ref")):
+        _error(
+            errors,
+            "type_invalid",
+            "pre_run_exception.authorization_ref",
+            "required",
+        )
+    if value.get("reason_code") != "review_service_failure_two_attempts":
+        _error(
+            errors,
+            "value_invalid",
+            "pre_run_exception.reason_code",
+            "expected review_service_failure_two_attempts",
+        )
+
+    evidence_paths = value.get("evidence_paths")
+    valid_paths = (
+        isinstance(evidence_paths, list)
+        and bool(evidence_paths)
+        and all(_non_empty_text(item) for item in evidence_paths)
+        and all(
+            not PurePosixPath(item).is_absolute()
+            and ".." not in PurePosixPath(item).parts
+            for item in evidence_paths
+            if isinstance(item, str)
+        )
+    )
+    if not valid_paths:
+        _error(
+            errors,
+            "type_invalid",
+            "pre_run_exception.evidence_paths",
+            "expected a non-empty repository-relative string array",
+        )
+        evidence_paths = []
+
+    return {
+        "schema_version": PRE_RUN_EXCEPTION_SCHEMA,
+        "kind": "review_service_unavailable",
+        "candidate_commit": candidate,
+        "review_mode": "scientific_review",
+        "review_result": "not_evaluable",
+        "user_authorized": value.get("user_authorized") is True,
+        "authorization_ref": value.get("authorization_ref", ""),
+        "reason_code": "review_service_failure_two_attempts",
+        "evidence_paths": evidence_paths,
+    }
 
 
 def _validate_rrctl(value: Any, errors: list[str]) -> dict[str, Any]:
@@ -336,6 +457,7 @@ def decide_remote_route(payload: Any) -> dict[str, Any]:
         "has_running_evidence",
         "command_owner",
         "legacy_exception",
+        "pre_run_exception",
         "rrctl",
         "code_changed",
         "change_manifest",
@@ -456,6 +578,24 @@ def decide_remote_route(payload: Any) -> dict[str, Any]:
     if not isinstance(code_changed, bool):
         _error(errors, "type_invalid", "code_changed", "expected boolean")
         code_changed = True
+    pre_run_exception = _validate_pre_run_exception(
+        payload.get("pre_run_exception"), errors
+    )
+    if pre_run_exception is not None:
+        if execution_purpose != "official":
+            _error(
+                errors,
+                "pre_run_exception_purpose_invalid",
+                "pre_run_exception",
+                "only allowed for official execution",
+            )
+        if not code_changed:
+            _error(
+                errors,
+                "pre_run_exception_scope_invalid",
+                "pre_run_exception",
+                "requires code_changed=true",
+            )
     formal_review = payload.get("formal_review")
     normalized_review: dict[str, Any] | None = None
     if formal_review is not None:
@@ -574,6 +714,13 @@ def decide_remote_route(payload: Any) -> dict[str, Any]:
                 "reviewer_id": reviewer_id,
                 "closure_evidence_paths": closure_paths,
             }
+    if pre_run_exception is not None and normalized_review is not None:
+        _error(
+            errors,
+            "review_exception_conflict",
+            "pre_run_exception",
+            "cannot be combined with formal_review",
+        )
     custom_control_scripts = payload.get("custom_control_scripts", [])
     if not isinstance(custom_control_scripts, list) or any(
         not isinstance(item, dict) for item in custom_control_scripts
@@ -625,6 +772,7 @@ def decide_remote_route(payload: Any) -> dict[str, Any]:
         "fallback_allowed": False,
         "change_route": change_result,
         "formal_review": normalized_review,
+        "pre_run_exception": pre_run_exception,
         "execution_purpose": execution_purpose,
         "pre_review_smoke": pre_review_smoke,
         "preregistered_read_only_probe": read_only_probe,
@@ -836,6 +984,9 @@ def decide_remote_route(payload: Any) -> dict[str, Any]:
                 normalized_review
                 and normalized_review["passed"] is True
                 and normalized_review["candidate_commit"] == candidate
+            ) and not (
+                pre_run_exception
+                and pre_run_exception["candidate_commit"] == candidate
             ):
                 return {
                     **base,
@@ -887,6 +1038,8 @@ def decide_remote_route(payload: Any) -> dict[str, Any]:
                 ]
             )
         )
+    if pre_run_exception is not None:
+        reason_codes.append("user_authorized_pre_run_exception")
 
     forbidden_controls = sorted(
         item["path"]

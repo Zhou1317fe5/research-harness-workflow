@@ -117,9 +117,11 @@ class ResearchBindingTests(unittest.TestCase):
         self.assertIn("[remote-run]", result.stderr)
         self.assertNotIn("Traceback", result.stderr)
 
-    def test_source_drift_wrong_run_or_missing_gate_blocks_launch(self):
+    def test_source_drift_wrong_run_blocks_and_no_change_needs_no_gate(self):
+        no_gate = copy.deepcopy(self.spec)
+        no_gate["metadata"].pop("gate_provenance")
+        validate_mission_launch(no_gate)
         for mutate in (
-            lambda s: s["metadata"].pop("gate_provenance"),
             lambda s: s.update(run_id="RUN-other"),
             lambda s: s["metadata"].update(exp_id="EXP-other"),
         ):
@@ -130,6 +132,56 @@ class ResearchBindingTests(unittest.TestCase):
         (self.root / "docs/specs/spec.md").write_text("changed acceptance after review")
         with self.assertRaisesRegex(ValueError, "approved version"):
             validate_mission_launch(self.spec)
+
+    def test_user_authorized_exception_releases_only_unresolved_review(self):
+        candidate = "a" * 40
+        manifest = {
+            "schema_version": "prerun.change-route.v1",
+            "reviewed_commit": self.commit,
+            "candidate_commit": candidate,
+            "changes": [{
+                "path": "train.sh",
+                "change_class": "model",
+                "production_reachable": True,
+                "dependency_closure_changed": False,
+                "blocker_ids": [],
+                "probes": [],
+            }],
+        }
+        exception = {
+            "schema_version": "mission.pre-run-exception.v1",
+            "kind": "review_service_unavailable",
+            "candidate_commit": candidate,
+            "review_mode": "scientific_review",
+            "review_result": "not_evaluable",
+            "user_authorized": True,
+            "authorization_ref": "user_authorization_turn:允许启动",
+            "reason_code": "review_service_failure_two_attempts",
+            "evidence_paths": ["docs/specs/spec.md"],
+        }
+        payload = {
+            "schema_version": "mission.remote-route.v1",
+            "execution_kind": "remote",
+            "lifecycle": "not_started",
+            "has_running_evidence": False,
+            "command_owner": "rrctl",
+            "rrctl": {"available": True, "readiness": "not_checked", "launch": "not_checked"},
+            "code_changed": True,
+            "change_manifest": manifest,
+            "execution_purpose": "official",
+            "pre_run_exception": exception,
+        }
+        decision = decide_remote_route(payload)
+        self.assertEqual(decision["decision"], "proceed")
+        self.assertEqual(decision["route"], "rrctl")
+        self.assertFalse(decision["fallback_allowed"])
+        self.assertIn("user_authorized_pre_run_exception", decision["reason_codes"])
+
+        blocked = dict(payload)
+        blocked.pop("pre_run_exception")
+        decision = decide_remote_route(blocked)
+        self.assertEqual(decision["decision"], "blocked")
+        self.assertIn("formal_review_required", decision["reason_codes"])
 
     def test_not_evaluable_is_not_a_pass_and_paused_mission_cannot_launch(self):
         original = self.review["notes"]
@@ -179,6 +231,29 @@ class ResearchBindingTests(unittest.TestCase):
         )
         self.write_csv()
         validate_mission_launch(build_runspec(request))
+
+    def test_shared_gate_row_covers_matrix_runs_declared_with_prereview(self):
+        """矩阵任务：运行行用 prereview 声明唯一 PRERUN 行，允许同一审查覆盖多个运行行。"""
+        matrix_row = dict(self.row, id="RUN-MATRIX-2", run_id="RUN-B",
+                          notes=self.row["notes"] + "; prereview:PRERUN-REVIEW-1")
+        self.spec["run_id"] = "RUN-B"
+        self.spec["metadata"]["mission_row_id"] = "RUN-MATRIX-2"
+        self.write_csv([matrix_row, self.review])
+        validate_mission_launch(self.spec)
+
+        # gate 身份不匹配时仍然拒绝
+        broken_review = dict(self.review, notes=self.review["notes"].replace(
+            "review_result:scientifically_correct", "review_result:scientifically_incorrect"))
+        self.write_csv([matrix_row, broken_review])
+        with self.assertRaisesRegex(ValueError, "scientific gate"):
+            validate_mission_launch(self.spec)
+
+        # prereview 指向不存在的行时拒绝
+        missing = dict(matrix_row, notes=matrix_row["notes"].replace(
+            "prereview:PRERUN-REVIEW-1", "prereview:PRERUN-REVIEW-9"))
+        self.write_csv([missing, self.review])
+        with self.assertRaisesRegex(ValueError, "scientific gate"):
+            validate_mission_launch(self.spec)
 
     def test_legacy_v2_gate_is_resume_only(self):
         legacy = copy.deepcopy(self.spec)

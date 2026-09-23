@@ -39,7 +39,9 @@ _EXPLICIT_REF_PREFIXES = ("command:", "manual:", "session:")
 _SESSION_REF_RE = re.compile(
     r"^session:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}#tool:\S+$"
 )
-_RUNTIME_MODEL_RE = re.compile(r"^openai-codex/gpt-5\.6-sol(?::max)?$")
+# 运行时模型身份：项目 reviewer agent 配置 thinking high（skill 亦要求 high），
+# 测试夹具使用 :max；两者都保持 gpt-5.6-sol 的精确匹配，不接受其它模型。
+_RUNTIME_MODEL_RE = re.compile(r"^openai-codex/gpt-5\.6-sol(?::(?:high|max))?$")
 _EVENT_REF_RE = re.compile(r"^event:\S+$")
 _RUNTIME_REF_RE = re.compile(r"^runtime:\S+$")
 _REVIEW_OUTPUT_KEYS = {
