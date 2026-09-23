@@ -102,9 +102,10 @@ def output_schema(mode: str) -> dict[str, Any]:
         "required": ["reviewer_id", "review_mode", "result", "decision", "report_markdown"],
         "properties": {
             "reviewer_id": {"type": "string", "minLength": 1},
-            "review_mode": {"const": mode},
-            "result": {"enum": sorted(RESULTS[mode])},
-            "decision": {"enum": ["allow_run", "do_not_run"]},
+            # 严格 provider 要求每个属性带显式 type；enum/const 与 type 并存不改变取值范围。
+            "review_mode": {"type": "string", "const": mode},
+            "result": {"type": "string", "enum": sorted(RESULTS[mode])},
+            "decision": {"type": "string", "enum": ["allow_run", "do_not_run"]},
             "report_markdown": {"type": "string", "minLength": 1},
         },
     }
