@@ -570,3 +570,32 @@ git rm -r --cached -- research_workspace
 ```
 
 这条命令保留磁盘上的文件。提交前检查范围；仍跟踪旧科研目录的代码分支也需要合入这次调整。
+
+### 同步共用工作流文件
+
+模板仓与各项目共用同一份文件：`.agents/harness/`、`.codex/skills/`、
+`.claude/skills/`、`.pi/`，以及 `AGENTS.md`、`CLAUDE.md` 的公共段
+（`# 本项目补充` 之前）。`project.toml`、`.env*`、`profiles.json`、
+`research-memory.json` 与本地运行态属于项目自己，不参与同步。
+
+同步用模板仓里的本地工具（未纳入 Git 追踪）：
+
+```bash
+python3 ~/research-harness-workflow/.agents/harness/workflow/workflow_sync.py status --target <项目> --ref <分支>
+python3 ~/research-harness-workflow/.agents/harness/workflow/workflow_sync.py pull --target <项目> --run-tests
+python3 ~/research-harness-workflow/.agents/harness/workflow/workflow_sync.py push --target <项目>
+```
+
+`status` 按两边 Git 历史给每个文件定方向：`template_ahead` 可以 `pull`，
+`target_ahead` 可以 `push`，`diverged` 必须人工判断，工具不做整目录覆盖。
+
+两条纪律：
+
+- 在模板里改：先把模板提交并推送，再到项目 `pull --run-tests`，通过后提交项目。
+- 在项目分支里改：先在项目里 `push` 回模板，模板提交推送后，其余分支再 `pull`，
+  不要让分支之间各自漂移。
+
+整目录覆盖式同步会静默删除项目侧修复：曾有一次同步用模板文件盖掉
+`remote_route.py`，项目里的用户授权审查例外实现整段消失。所以 `pull`
+之后至少跑一次回归测试，用 `remote/tests`、`workflow/tests` 和 `.pi/tests`
+的结果作为提交前提。

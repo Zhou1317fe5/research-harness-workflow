@@ -34,3 +34,6 @@ issues/.missions.json
 /.pi/settings.json
 /.pi/workflow-output/
 /.pi/rrctl-events/
+
+# 本地工作流同步工具，不纳入追踪。
+/.agents/harness/workflow/workflow_sync.py
