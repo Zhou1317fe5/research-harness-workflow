@@ -93,6 +93,46 @@
 - `preregistered_read_only_probe`：不改模型状态的预注册只读探针。
 
 Pilot RunSpec 使用 `execution_purpose:pilot`；不得用 `official` 表示 `pilot_only` 运行。
+### 用户授权审查例外（pre_run_exception）
+
+正式运行要求一个通过的 scientific verdict。如果审查**两次有界尝试都拿不到 verdict**
+（服务不可用、模型刷新无响应、API 4xx 等），可以在**不把审查变成通过**的前提下放行一次
+official 运行——这是 `formal_review_required` 唯一的第二种让路路径，且必须由用户明确授权。
+
+RunSpec `metadata.pre_run_exception` 的固定形态：
+
+```json
+{
+  "schema_version": "mission.pre-run-exception.v1",
+  "kind": "review_service_unavailable",
+  "candidate_commit": "<本次运行的 40 位小写 commit>",
+  "review_mode": "scientific_review",
+  "review_result": "not_evaluable",
+  "user_authorized": true,
+  "authorization_ref": "user_authorization_turn:<用户授权原话>",
+  "reason_code": "review_service_failure_two_attempts",
+  "evidence_paths": ["issues/<stem>/prerun/prerun.scientific-review.json"]
+}
+```
+
+两层校验都通过才放行：
+
+- 路由层：字段白名单且全部必填；`schema_version/kind/review_mode/review_result/reason_code`
+  都是固定值，`review_result` 只接受 `not_evaluable`，所以例外无法用来改写审查结论；
+  `candidate_commit` 必须等于本次运行 commit；`evidence_paths` 非空、仓库相对、不含 `..`，
+  且文件真实存在；只对 `execution_purpose:official` 且 `code_changed:true` 生效；与已有
+  `formal_review` 互斥。
+- 台账层：CSV 必须恰好一行 `PRERUN-REVIEW-*`，notes 带同一 commit 的 `pre_run_code_commit`、
+  `review_mode:scientific_review`、`review_result:not_evaluable`、
+  `user_authorized_pre_run_exception:true`、
+  `review_requirement_unfulfilled:service_failure_two_attempts`，且该行 `gated_run` 指向
+  存在的运行行。
+
+例外只解锁启动，不解锁结论：放行后 route 仍是 rrctl process、`fallback_allowed` 保持 false，
+结果分析必须写明本轮没有 scientific verdict，并在 limitations 里保留该限制。声明例外之前先
+排除"审查工具自身报错"：例如 reviewer 输出 schema 的每个属性都要带显式 `type`，严格 provider
+不接受只有 `const`/`enum` 的写法。
+
 10. 公共入口在 official run 返回 terminal completed 后自动 pull；只有分步恢复时才单独执行 `rrctl pull`。只拉 RunSpec `artifacts` 中的最小结果集，`artifact_pull_policy.on_demand` 不会被默认拉取。pull 的 manifest、size 与原子目标验证通过后才设置 `remote_state=artifacts_pulled`。pre-review smoke 不进入 official artifact ingest：成功、失败或 abort 后都必须由 RunSpec `output_cleanup` 删除绑定 output root 内的 checkpoint/optimizer/scheduler/大型文件，保留 control root 的 `console.log/status.json` 与 output root 的 `smoke_summary.json`，并验证 `checkpoint_cleanup_completed:true`、`checkpoint_paths_remaining:[]` 后才写 smoke evidence。
 失败、abort 或 periodic attention 时可执行 `rrctl pull <RunID> --diagnostic`。快照位于该 RunID 的 `diagnostics/<snapshot-id>/`，只包含受大小限制的日志、状态和已有进度；不标记正式结果已拉取，也不进入指标入账。
 
