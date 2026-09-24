@@ -69,7 +69,7 @@ research_workspace/
 - **禁止整体打印含凭据的文件**（`cat`/`head`/`tail`/`sed -n`/`nl`）。会话记录把 stdout 永久落盘，一次打印即等于永久泄露；自制脱敏不算防护。确认存在性用 `echo "KEY=${KEY:+set}"`，看结构用 `grep -oE '^[A-Za-z_]+='`。
 - 非交互 SSH 下不假设 `python` / `conda` 在 `PATH`，远程 Python 命令必须显式激活环境。
 - 不终止非当前任务启动的进程。长生命周期进程尽量少开，启动前检查可复用实例，结束即回收。
-- **命令超时优先用工具自带参数，不套 `timeout`**：permission 插件把 `timeout` 等 indirection wrapper 的 allow 强制升级为人工授权，只有 authorizer link 白名单形状与透明只读命令例外。优先 `ssh -o ConnectTimeout=`、`rrctl --max-wait-seconds`、工具内部预算；`timeout` 只用于已覆盖形状（`rrctl` 的 doctor/ready/inspect/health/wait/pull/resume、`remote_run.py --execute`、`reviewer_job.py`、`issues/…/validation/*.py`）。其余命令直接运行，否则无人值守会被授权弹窗打断。
+- **命令超时优先用工具自带参数**：`ssh -o ConnectTimeout=`、`rrctl --max-wait-seconds`、工具内部预算；shell 层 `timeout` 只是额外一层，不改变权限判定。破坏性命令由全局 cc-safety-net 按语义拦截（危险 `rm -rf`、`git reset --hard` / `clean -f` / `checkout --` / `push --force`、`find -delete`、`dd of=/dev/*`、`mkfs` 与分区/卷工具）：项目内与临时目录的删除放行，打到项目外、家目录、根目录的会被拦；解释器内联代码里的删除 API（如 `python3 -c "shutil.rmtree(...)"`）另由本地 `pi-interpreter-guard` 扩展拦截。
 
 # 搜索分工
 

@@ -67,13 +67,13 @@ lite-arch 是可选项。按[仓库说明](https://github.com/flowing-water1/lit
 
 Hindsight 需要先启动服务，再填写项目的连接信息，步骤见[可选 Hindsight](#可选-hindsight)。这些外部工具的凭据都留在各自的本地配置中。
 
-Pi 权限系统（`pi-permission-system`）的推荐策略是“关闭 yolo、默认自动同意、只拦极危险命令”，本项目已在 `.pi/extensions/pi-permission-system/config.json` 里给出项目级部分；全局配置（`~/.pi/agent/extensions/pi-permission-system/config.json`）按同一思路设置：
+权限拦截用 [cc-safety-net](https://ccsafetynet.com)：全局安装、按命令**语义**判定，命中即阻止，从不弹窗。
 
-- `yoloMode: false`；`permission["*"]: "allow"`，其余 `ask` 规则改成 `allow`（提权类 `sudo *` / `doas *` / `su *` 可保留 `ask`）；
-- 极危险命令用 `deny`，**列在 bash 规则末尾**（last-match-wins，否则会被后面的宽泛规则遮蔽）：`rm -rf /`、`rm -rf ~` / `$HOME` / `/home/<user>`、`rm -rf .git*`、`mkfs*`、`dd *of=/dev/*`、`diskutil erase*`、`shutdown*` / `reboot*`、`git reset --hard` / `clean -fd` / `branch -D` / `filter-*`；
-- `external_directory` 的方向性 `ask`（`/usr/bin/*`、`/etc/*` 等）改为 `allow`，否则会打断无人值守；
-- 项目级配置放行 `.agents/harness/config/*.env`（`path` 面，读写两侧），并在 `authorizerChain` 里列出 `harness-timeout`，让 `timeout <时长> rrctl|remote_run.py|reviewer_job.py|issues/…/validation/*.py` 自动放行；
-- indirection wrapper（`timeout`、`env`、`xargs`、`bash -c`）的 `allow` 会被强制升级为人工授权，因此命令不要套 `timeout`，超时用工具自带参数（见 AGENTS.md「安全与进程」）。
+- 安装：`pi install npm:cc-safety-net`；
+- 策略文件 `~/.cc-safety-net/policy.json`（用户级，agent 不可写）：`safety.level: "standard"`、`safety.overrides.fail_closed: false`（坏配置/分析异常放行）、`secret_protection.overrides["secret.basename.env"]: "off"`（本项目要读写 `.agents/harness/config/.env`）；
+- 内置未覆盖的破坏性命令（分区/卷/文件系统工具、`git filter-repo`、`truncate` 等）用自定义规则补：写 `~/.cc-safety-net/rules/<规则名>/rulebook.json`，并在 `~/.cc-safety-net/rules/rule.json` 的 `rules` 数组里登记；
+- 项目内与 `/tmp` 下的删除放行；打到项目外、家目录、根目录、设备的删除会被拦；
+- 查看与排查：`cc-safety-net status`、`cc-safety-net explain "<命令>"`。
 
 ## 项目适配清单
 
