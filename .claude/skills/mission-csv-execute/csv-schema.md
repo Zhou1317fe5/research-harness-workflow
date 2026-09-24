@@ -128,12 +128,12 @@ Keep commonly used `notes` tags stable:
 | `review_result:<vision_met\|gaps_found\|limited_review>` | Closing review outcome. |
 | `scientific_outcome:<hypothesis_supported\|hypothesis_not_supported\|gate_failed\|inconclusive\|not_applicable>` | Scientific result, separate from Mission execution success. |
 | `result_analysis:<path>` | Canonical `reviews/result-analysis.json` consumed by `RESULT-ANALYSIS-01` and the final `REVIEW-*`; both rows must reference the same index. |
-| `analysis_agent_mode:scientific-reviewer-subagent` | Formal post-run analysis must come from the isolated `scientific-reviewer` sub-agent. |
+| `analysis_agent_mode:<scientific-reviewer-subagent\|codex-exec-independent>` | Formal post-run analysis comes from an isolated strong reviewer: the Pi `scientific-reviewer` sub-agent, or an ephemeral read-only `codex exec` session via `run_result_analysis.py`. |
 | `analysis_independence:<true\|pending>` | Post-run analysis independence; `true` is required for completion. |
 | `analysis_requested_model:<model>` | Requested post-run reviewer model; canonical value is `openai-codex/gpt-5.6-sol`. |
 | `analysis_observed_model:<model>` | Model observed from host/session metadata or event stream, not self-reported reviewer text. |
-| `analysis_model_evidence:<session-metadata\|event-stream\|parent-runtime\|pending>` | Evidence source for the observed post-run reviewer model; the current Pi completion gate requires `session-metadata`. |
-| `analysis_model_evidence_ref:<ref>` | Parent session/tool reference `session:<uuid>#tool:<subagent-tool-call-id>`; the validator resolves the real `scientific-reviewer` result and its output hash. |
+| `analysis_model_evidence:<session-metadata\|event-stream\|parent-runtime\|pending>` | Evidence source for the observed post-run reviewer model; `scientific-reviewer-subagent` requires `session-metadata`, `codex-exec-independent` requires `event-stream`. |
+| `analysis_model_evidence_ref:<ref>` | Verifiable reviewer evidence: `session:<uuid>#tool:<subagent-tool-call-id>` for the Pi sub-agent channel, or `exec:<csv-relative-verdict-path>#verdict` for the codex-exec channel; the validator resolves the real reviewer result and its output hash. |
 | `review_json:<path>` | Raw structured review output under artifact-root `reviews/`. |
 | `handoff:<path>` | Human-facing handoff path. Use `handoff:generation_failed <reason>` only while rendering a fallback. |
 | `handoff_humanized:<true\|false>` | Optional historical information; no longer a completion gate. Structured tables remain unchanged by prose editing. |

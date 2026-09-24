@@ -15,8 +15,15 @@ from typing import Any
 
 SCHEMA_VERSION = "post-run.result-analysis.v1"
 ANALYSIS_AGENT_MODE = "scientific-reviewer-subagent"
+ANALYSIS_AGENT_MODES = {
+    "scientific-reviewer-subagent",
+    "codex-exec-independent",
+}
 EXPECTED_REQUESTED_MODEL = "openai-codex/gpt-5.6-sol"
 MODEL_EVIDENCE = {"session-metadata", "event-stream", "parent-runtime"}
+# The codex-exec channel persists the reviewer job verdict under the mission's
+# own reviews directory; the validator recomputes its digest from disk.
+VERDICT_SCHEMA = "post-run.result-analysis-verdict.v1"
 SCIENTIFIC_OUTCOMES = {
     "hypothesis_supported",
     "hypothesis_not_supported",
@@ -35,7 +42,7 @@ CANONICAL_FIELDS = [
     "branch", "commit_hash", "next_action", "updated_at",
 ]
 COMPAT_FIELDS = CANONICAL_FIELDS[:19]
-_EXPLICIT_REF_PREFIXES = ("command:", "manual:", "session:")
+_EXPLICIT_REF_PREFIXES = ("command:", "manual:", "session:", "exec:")
 _SESSION_REF_RE = re.compile(
     r"^session:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}#tool:\S+$"
 )
@@ -43,6 +50,7 @@ _SESSION_REF_RE = re.compile(
 # 测试夹具使用 :max；两者都保持 gpt-5.6-sol 的精确匹配，不接受其它模型。
 _RUNTIME_MODEL_RE = re.compile(r"^openai-codex/gpt-5\.6-sol(?::(?:high|max))?$")
 _EVENT_REF_RE = re.compile(r"^event:\S+$")
+_EXEC_REF_RE = re.compile(r"^exec:[^#\s]+#verdict$")
 _RUNTIME_REF_RE = re.compile(r"^runtime:\S+$")
 _REVIEW_OUTPUT_KEYS = {
     "exp_id", "run_ids", "analysis_markdown", "scientific_outcome",
@@ -117,7 +125,7 @@ def _valid_analysis_document(path: Path, errors: list[str], label: str) -> None:
 
 
 def _validate_model_metadata(data: dict[str, Any], errors: list[str]) -> None:
-    if data.get("analysis_agent_mode") != ANALYSIS_AGENT_MODE:
+    if data.get("analysis_agent_mode") not in ANALYSIS_AGENT_MODES:
         _error(errors, "analysis_agent_mode_invalid", str(data.get("analysis_agent_mode")))
     if data.get("analysis_independence") is not True:
         _error(errors, "analysis_independence_invalid", str(data.get("analysis_independence")))
@@ -136,12 +144,21 @@ def _validate_model_metadata(data: dict[str, Any], errors: list[str]) -> None:
         _error(errors, "analysis_model_evidence_ref_invalid", str(ref))
     elif evidence == "session-metadata" and not _SESSION_REF_RE.fullmatch(ref.strip()):
         _error(errors, "analysis_model_evidence_ref_invalid", str(ref))
-    elif evidence == "event-stream" and not _EVENT_REF_RE.fullmatch(ref.strip()):
+    elif evidence == "event-stream" and not (
+        _EVENT_REF_RE.fullmatch(ref.strip()) or _EXEC_REF_RE.fullmatch(ref.strip())
+    ):
         _error(errors, "analysis_model_evidence_ref_invalid", str(ref))
     elif evidence == "parent-runtime" and not _RUNTIME_REF_RE.fullmatch(ref.strip()):
         _error(errors, "analysis_model_evidence_ref_invalid", str(ref))
-    if evidence != "session-metadata":
-        _error(errors, "analysis_model_evidence_unverifiable", str(evidence))
+    mode = data.get("analysis_agent_mode")
+    if mode == "scientific-reviewer-subagent":
+        if evidence != "session-metadata":
+            _error(errors, "analysis_model_evidence_unverifiable", str(evidence))
+    elif mode == "codex-exec-independent":
+        if evidence != "event-stream":
+            _error(errors, "analysis_model_evidence_unverifiable", str(evidence))
+        if not isinstance(ref, str) or not _EXEC_REF_RE.fullmatch(ref.strip()):
+            _error(errors, "analysis_model_evidence_ref_invalid", str(ref))
 
 
 def _assistant_text(message: dict[str, Any]) -> str:
@@ -304,6 +321,32 @@ def _session_tool_result(
     return matching[0], None
 
 
+def _resolve_exec_verdict(
+    ref: str,
+    *,
+    csv_path: Path,
+    workdir: Path,
+) -> tuple[dict[str, Any] | None, str | None]:
+    verdict_value = ref[len("exec:"):][: -len("#verdict")].strip()
+    if not verdict_value:
+        return None, "exec_ref_empty"
+    try:
+        verdict_path = _resolve(verdict_value, base=csv_path.parent, workdir=workdir)
+    except ValueError as exc:
+        return None, str(exc)
+    if not verdict_path.is_file():
+        return None, f"exec_verdict_missing:{verdict_value}"
+    try:
+        verdict = _strict_json_loads(verdict_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as exc:
+        return None, f"exec_verdict_invalid:{exc}"
+    if not isinstance(verdict, dict):
+        return None, "exec_verdict_invalid:expected_object"
+    if verdict.get("schema_version") != VERDICT_SCHEMA:
+        return None, f"exec_verdict_schema_invalid:{verdict.get('schema_version')}"
+    return verdict, None
+
+
 def _validate_reviewer_evidence(
     ref: str,
     output_hash: str,
@@ -311,6 +354,7 @@ def _validate_reviewer_evidence(
     errors: list[str],
     *,
     workdir: Path,
+    csv_path: Path,
     exp_id: str,
     run_id: str,
     expected_run_ids: set[str],
@@ -318,35 +362,49 @@ def _validate_reviewer_evidence(
     expected_limitations: Any,
     expected_gaps: Any,
 ) -> None:
-    if not isinstance(ref, str) or not _SESSION_REF_RE.fullmatch(ref.strip()):
+    ref_is_session = isinstance(ref, str) and _SESSION_REF_RE.fullmatch(ref.strip())
+    ref_is_exec = isinstance(ref, str) and _EXEC_REF_RE.fullmatch(ref.strip())
+    if not ref_is_session and not ref_is_exec:
         _error(errors, "review_evidence_ref_invalid", str(ref))
         return
     if not isinstance(output_hash, str) or not re.fullmatch(r"[0-9a-f]{64}", output_hash):
         _error(errors, "review_output_hash_invalid", str(output_hash))
         return
-    result, failure = _session_tool_result(
-        ref,
-        workdir=workdir,
-        expected_exp_id=exp_id,
-        expected_run_ids=expected_run_ids,
-    )
-    if failure:
-        _error(errors, "review_evidence_unverifiable", f"{ref}:{failure}")
-        return
-    assert result is not None
-    if result.get("exitCode") != 0:
-        _error(errors, "review_subagent_failed", f"{ref}:{result.get('exitCode')}")
-    runtime_model = result.get("model")
-    if not isinstance(runtime_model, str) or not _RUNTIME_MODEL_RE.fullmatch(runtime_model):
-        _error(errors, "review_runtime_model_invalid", f"{ref}:{runtime_model}")
-    messages = result.get("messages")
-    final_text = ""
-    if isinstance(messages, list):
-        for message in messages:
-            if isinstance(message, dict) and message.get("role") == "assistant":
-                candidate = _assistant_text(message)
-                if candidate:
-                    final_text = candidate
+    if ref_is_session:
+        result, failure = _session_tool_result(
+            ref,
+            workdir=workdir,
+            expected_exp_id=exp_id,
+            expected_run_ids=expected_run_ids,
+        )
+        if failure:
+            _error(errors, "review_evidence_unverifiable", f"{ref}:{failure}")
+            return
+        assert result is not None
+        if result.get("exitCode") != 0:
+            _error(errors, "review_subagent_failed", f"{ref}:{result.get('exitCode')}")
+        runtime_model = result.get("model")
+        if not isinstance(runtime_model, str) or not _RUNTIME_MODEL_RE.fullmatch(runtime_model):
+            _error(errors, "review_runtime_model_invalid", f"{ref}:{runtime_model}")
+        messages = result.get("messages")
+        final_text = ""
+        if isinstance(messages, list):
+            for message in messages:
+                if isinstance(message, dict) and message.get("role") == "assistant":
+                    candidate = _assistant_text(message)
+                    if candidate:
+                        final_text = candidate
+    else:
+        verdict, failure = _resolve_exec_verdict(ref, csv_path=csv_path, workdir=workdir)
+        if failure:
+            _error(errors, "review_evidence_unverifiable", f"{ref}:{failure}")
+            return
+        assert verdict is not None
+        runtime_model = verdict.get("observed_model")
+        if not isinstance(runtime_model, str) or not _RUNTIME_MODEL_RE.fullmatch(runtime_model):
+            _error(errors, "review_runtime_model_invalid", f"{ref}:{runtime_model}")
+        output_text = verdict.get("review_output")
+        final_text = output_text if isinstance(output_text, str) else ""
     if not final_text:
         _error(errors, "review_output_missing", ref)
         return
@@ -534,6 +592,7 @@ def validate_index(index_path: Path, csv_path: Path, *, workdir: Path) -> list[s
             analysis_path,
             errors,
             workdir=workdir,
+            csv_path=csv_path,
             exp_id=exp_id,
             run_id=run_id,
             expected_run_ids=expected_run_ids_by_exp.get(exp_id, set()),
@@ -552,6 +611,8 @@ def validate_index(index_path: Path, csv_path: Path, *, workdir: Path) -> list[s
                     if not payload or any(char in payload for char in "\0\n\r"):
                         _error(errors, "analysis_evidence_ref_invalid", f"{label}[{ref_index}]:{ref}")
                     elif explicit_prefix == "session:" and not _SESSION_REF_RE.fullmatch(ref):
+                        _error(errors, "analysis_evidence_ref_invalid", f"{label}[{ref_index}]:{ref}")
+                    elif explicit_prefix == "exec:" and not _EXEC_REF_RE.fullmatch(ref):
                         _error(errors, "analysis_evidence_ref_invalid", f"{label}[{ref_index}]:{ref}")
                     continue
                 try:

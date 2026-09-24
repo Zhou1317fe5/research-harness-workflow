@@ -611,6 +611,124 @@ class MissionContractTests(unittest.TestCase):
         errors = result_analysis_completion_errors(self.path, rows, workdir=self.root)
         self.assertTrue(any("tool_call_result_pair" in error for error in errors))
 
+
+    def result_analysis_exec_fixture(self, run_ids=("RUN-1",)):
+        rows, _ = self.result_analysis_fixture(run_ids=list(run_ids))
+        job_dir = self.root / "reviews/result-analysis-EXP-1"
+        job_dir.mkdir(parents=True, exist_ok=True)
+        analysis_path = self.root / "research_workspace/experiments/EXP-1/analysis/analysis.md"
+        analysis_text = analysis_path.read_text(encoding="utf-8")
+        payload = {
+            "exp_id": "EXP-1", "run_ids": list(run_ids),
+            "analysis_markdown": analysis_text,
+            "scientific_outcome": "inconclusive", "limitations": [], "validation_gaps": [],
+        }
+        review_output = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+        verdict = {
+            "schema_version": "post-run.result-analysis-verdict.v1",
+            "status": "completed",
+            "backend": "codex-exec",
+            "exp_id": "EXP-1",
+            "run_ids": list(run_ids),
+            "requested_model": "openai-codex/gpt-5.6-sol",
+            "observed_model": "openai-codex/gpt-5.6-sol:high",
+            "task_sha256": hashlib.sha256(b"task").hexdigest(),
+            "events_sha256": hashlib.sha256(b"events").hexdigest(),
+            "review_output": review_output,
+            "review_output_sha256": hashlib.sha256(review_output.encode("utf-8")).hexdigest(),
+        }
+        verdict_path = job_dir / "verdict.json"
+        verdict_path.write_text(json.dumps(verdict), encoding="utf-8")
+        evidence_ref = "exec:reviews/result-analysis-EXP-1/verdict.json#verdict"
+        index = {
+            "schema_version": "post-run.result-analysis.v1",
+            "status": "complete",
+            "analysis_agent_mode": "codex-exec-independent",
+            "analysis_independence": True,
+            "requested_model": "openai-codex/gpt-5.6-sol",
+            "observed_model": "openai-codex/gpt-5.6-sol",
+            "model_evidence": "event-stream",
+            "model_evidence_ref": evidence_ref,
+            "entries": [{
+                "exp_id": "EXP-1", "run_id": run_id,
+                "analysis_path": "research_workspace/experiments/EXP-1/analysis/analysis.md",
+                "analysis_sha256": hashlib.sha256(analysis_path.read_bytes()).hexdigest(),
+                "scientific_outcome": "inconclusive",
+                "review_evidence_ref": evidence_ref,
+                "review_output_sha256": hashlib.sha256(review_output.strip().encode("utf-8")).hexdigest(),
+                "evidence_refs": [f"command:fixture-{run_id}"], "limitations": [], "validation_gaps": [],
+            } for run_id in run_ids],
+        }
+        index_path = self.root / "reviews/result-analysis.json"
+        index_path.write_text(json.dumps(index), encoding="utf-8")
+        rows[1]["notes"] = (
+            "analysis_kind:post_run; result_analysis:reviews/result-analysis.json; "
+            "analysis_agent_mode:codex-exec-independent; analysis_independence:true; "
+            "analysis_requested_model:openai-codex/gpt-5.6-sol; "
+            "analysis_observed_model:openai-codex/gpt-5.6-sol; "
+            "analysis_model_evidence:event-stream; "
+            f"analysis_model_evidence_ref:{evidence_ref}"
+        )
+        self.write_csv(rows)
+        return rows, index_path, verdict_path
+
+    def test_result_analysis_codex_exec_channel_is_validated(self):
+        rows, index_path, verdict_path = self.result_analysis_exec_fixture()
+        self.assertEqual(result_analysis_completion_errors(self.path, rows, workdir=self.root), [])
+
+        tamper_cases = (
+            ("observed_model", "weak-model", "review_runtime_model_invalid"),
+            ("review_output", json.dumps({
+                "exp_id": "EXP-1", "run_ids": ["RUN-1"],
+                "analysis_markdown": "## Change\ncode\n\n## Result\ntampered\n\n## Finding\nuncertain\n\n## Next\nrepeat\n",
+                "scientific_outcome": "inconclusive", "limitations": [], "validation_gaps": [],
+            }, ensure_ascii=False, sort_keys=True), "review_output_hash_mismatch"),
+            ("schema_version", "other.v1", "review_evidence_unverifiable"),
+        )
+        for field, value, error_code in tamper_cases:
+            with self.subTest(field=field):
+                self.result_analysis_exec_fixture()
+                verdict = json.loads(verdict_path.read_text(encoding="utf-8"))
+                verdict[field] = value
+                verdict_path.write_text(json.dumps(verdict), encoding="utf-8")
+                errors = result_analysis_completion_errors(self.path, rows, workdir=self.root)
+                self.assertTrue(any(error_code in error for error in errors), errors)
+
+        self.result_analysis_exec_fixture()
+        verdict_path.rename(verdict_path.with_suffix(".json.moved"))
+        try:
+            errors = result_analysis_completion_errors(self.path, rows, workdir=self.root)
+            self.assertTrue(any("review_evidence_unverifiable" in error for error in errors))
+        finally:
+            verdict_path.with_suffix(".json.moved").rename(verdict_path)
+
+    def test_result_analysis_rejects_cross_channel_evidence_mismatch(self):
+        rows, index_path, _ = self.result_analysis_exec_fixture()
+        data = json.loads(index_path.read_text(encoding="utf-8"))
+        data["model_evidence"] = "session-metadata"
+        index_path.write_text(json.dumps(data), encoding="utf-8")
+        errors = result_analysis_completion_errors(self.path, rows, workdir=self.root)
+        self.assertTrue(any("analysis_model_evidence_unverifiable" in error for error in errors))
+
+        rows, index_path = self.result_analysis_fixture()
+        data = json.loads(index_path.read_text(encoding="utf-8"))
+        data["model_evidence"] = "event-stream"
+        data["model_evidence_ref"] = "event:whatever"
+        index_path.write_text(json.dumps(data), encoding="utf-8")
+        errors = result_analysis_completion_errors(self.path, rows, workdir=self.root)
+        self.assertTrue(any("analysis_model_evidence_unverifiable" in error for error in errors))
+
+    def test_result_analysis_exec_ref_resolves_outside_csv_dir(self):
+        rows, index_path, verdict_path = self.result_analysis_exec_fixture()
+        data = json.loads(index_path.read_text(encoding="utf-8"))
+        escape_ref = "exec:../result-analysis.json#verdict"
+        for entry in data["entries"]:
+            entry["review_evidence_ref"] = escape_ref
+        data["model_evidence_ref"] = escape_ref
+        index_path.write_text(json.dumps(data), encoding="utf-8")
+        errors = result_analysis_completion_errors(self.path, rows, workdir=self.root)
+        self.assertTrue(any("review_evidence_unverifiable" in error for error in errors))
+
     def test_result_analysis_binds_paths_to_exp_and_run(self):
         rows, index_path = self.result_analysis_fixture()
         data = json.loads(index_path.read_text(encoding="utf-8"))
@@ -639,6 +757,7 @@ class MissionContractTests(unittest.TestCase):
     def test_codex_claude_skill_mirrors_match(self):
         mirrored = [
             "skills/post-run-result-analysis/SKILL.md",
+            "skills/post-run-result-analysis/scripts/run_result_analysis.py",
             "skills/post-run-result-analysis/scripts/validate_result_analysis.py",
             "skills/mission-csv-execute/SKILL.md",
             "skills/mission-csv-execute/csv-schema.md",

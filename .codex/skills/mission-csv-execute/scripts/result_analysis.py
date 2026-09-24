@@ -10,6 +10,10 @@ from typing import Any
 
 ANALYSIS_ROW_ID = "RESULT-ANALYSIS-01"
 ANALYSIS_AGENT_MODE = "scientific-reviewer-subagent"
+ANALYSIS_AGENT_MODES = {
+    "scientific-reviewer-subagent",
+    "codex-exec-independent",
+}
 REQUESTED_MODEL = "openai-codex/gpt-5.6-sol"
 ANALYSIS_SKILL = "post-run-result-analysis"
 
@@ -36,7 +40,7 @@ def _metadata_errors(
     index: dict[str, Any], tags: dict[str, str], errors: list[str]
 ) -> None:
     expected = {
-        "analysis_agent_mode": ("analysis_agent_mode", ANALYSIS_AGENT_MODE),
+        "analysis_agent_mode": ("analysis_agent_mode", None),
         "analysis_independence": ("analysis_independence", "true"),
         "analysis_requested_model": ("requested_model", REQUESTED_MODEL),
         "analysis_observed_model": ("observed_model", None),
@@ -50,6 +54,8 @@ def _metadata_errors(
         elif index_value is not None:
             index_value = str(index_value)
         if expected_value is not None and index_value != expected_value:
+            errors.append(f"result_analysis_index_metadata_invalid:{index_key}")
+        if index_key == "analysis_agent_mode" and index_value not in ANALYSIS_AGENT_MODES:
             errors.append(f"result_analysis_index_metadata_invalid:{index_key}")
         if not isinstance(index_value, str) or not index_value.strip():
             errors.append(f"result_analysis_index_metadata_missing:{index_key}")
