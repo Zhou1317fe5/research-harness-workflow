@@ -182,6 +182,16 @@ def build_exec_command(executable: str, workdir: str, model: str) -> list[str]:
     ]
 
 
+def _extract_model_from_containers(containers) -> str | None:
+    for container in containers:
+        if not isinstance(container, dict):
+            continue
+        for key in ("model", "model_id"):
+            value = container.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+    return None
+
 def trusted_event_model(event: dict[str, Any]) -> str | None:
     event_type = event.get("type")
     payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
@@ -203,12 +213,7 @@ def trusted_event_model(event: dict[str, Any]) -> str | None:
     settings = payload.get("thread_settings")
     if isinstance(settings, dict):
         containers.append(settings)
-    for container in containers:
-        for key in ("model", "model_id"):
-            value = container.get(key)
-            if isinstance(value, str) and value.strip():
-                return value.strip()
-    return None
+    return _extract_model_from_containers(containers)
 
 
 def parse_json_events(stdout: str) -> tuple[str | None, str | None]:

@@ -233,10 +233,12 @@ def observed_model_from_events(event_path: Path) -> str | None:
         if event_type not in trusted_types and payload.get("type") not in trusted_types:
             continue
         containers = [event, payload]
-        settings = payload.get("thread_settings")
+        settings = payload.get("thread_settings") if isinstance(payload, dict) else None
         if isinstance(settings, dict):
             containers.append(settings)
         for container in containers:
+            if not isinstance(container, dict):
+                continue
             for key in ("model", "model_id"):
                 value = container.get(key)
                 if isinstance(value, str) and value.strip():
@@ -322,7 +324,11 @@ def reviewer_prompt(task: str, mode: str) -> str:
 def _reviewer_job_children_alive() -> bool:
     """Return True if a live descendant looks like a reviewer transport child."""
     me = str(os.getpid())
-    pattern = re.compile(r"codex\s+exec|\bpi\b.*--mode\s+json")
+    # Match the real transport argv: `codex exec ...` or `pi --mode text|json ...`.
+    # (command_for launches pi with `--mode text --print --session`; an earlier
+    # `--mode json` pattern never matched live pi children and would misjudge a
+    # live review as dead.)
+    pattern = re.compile(r"codex\s+exec|\bpi\b.*--mode\s+(?:text|json)\b")
     try:
         with subprocess.Popen(
             ["ps", "-eo", "ppid=,args="],
