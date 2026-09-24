@@ -224,7 +224,7 @@ Reviewer job lifecycle operations:
 
 This replaces a failed execution of the same review; it does not request another scientific opinion. A returned scientific verdict, including `not_evaluable`, ends service recovery and must be handled on its merits. Formatting problems in an available verdict can be normalized without repeating the review. If the replacement also fails, record the capability gap once and continue independent work; do not loop, infer a pass, or weaken the scientific gate. Any user-authorized exception belongs in the project's run record, with the unfulfilled review requirement stated explicitly.
 
-The review gate accepts only `verdict.json` with schema `prerun.scientific-verdict.v1`. Its packet, task, raw-response digests, candidate commit, review mode, result, and reviewer id must validate. Record its repository-relative path as `verdict_artifact:<path>` and in `gate_provenance.verdict_artifact`; reviewer prose or a process exit code alone cannot open the gate.
+The review gate accepts only `verdict.json` with schema `prerun.scientific-verdict.v1`. Its packet, task, raw-response digests, candidate commit, review mode, result, and reviewer id must validate. Verdicts recorded by the runner also carry `requested_model` and an event-stream `observed_model`; the gate rejects a recorded model other than the contracted `openai-codex/gpt-5.6-sol` (`unknown` is rejected as unverifiable), while legacy verdicts without model fields stay accepted during the transition. Record its repository-relative path as `verdict_artifact:<path>` and in `gate_provenance.verdict_artifact`; reviewer prose or a process exit code alone cannot open the gate.
 
 ## Blocker Repair
 

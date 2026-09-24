@@ -203,6 +203,39 @@ def command_for(
     return base, ""
 
 
+def observed_model_from_events(event_path: Path) -> str | None:
+    """Extract the model identity from trusted transport events only."""
+    trusted_types = {
+        "thread.started",
+        "session_meta",
+        "session_metadata",
+        "turn.started",
+        "response.started",
+    }
+    observed: str | None = None
+    try:
+        lines = event_path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return None
+    for line in lines:
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(event, dict):
+            continue
+        event_type = event.get("type")
+        payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
+        if event_type not in trusted_types and payload.get("type") not in trusted_types:
+            continue
+        for container in (event, payload):
+            for key in ("model", "model_id"):
+                value = container.get(key)
+                if isinstance(value, str) and value.strip():
+                    observed = value.strip()
+    return observed
+
+
 def run_process(
     argv: list[str],
     prompt: str,
@@ -436,6 +469,9 @@ def execute(args: argparse.Namespace) -> int:
                     "backend": args.backend,
                     "reviewer_session_id": state.get("session_id"),
                     "reviewer_id": response["reviewer_id"].strip(),
+                    "requested_model": args.model,
+                    "observed_model": observed_model_from_events(event_path) or "unknown",
+                    "model_evidence": "event-stream" if observed_model_from_events(event_path) else "unknown",
                     "review_mode": mode,
                     "result": response["result"],
                     "decision": response["decision"],

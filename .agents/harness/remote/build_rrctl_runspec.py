@@ -29,6 +29,10 @@ RUN_SCHEMA = "rrctl.run.v1"
 GATE_PROVENANCE_SCHEMA = "prerun.gate-provenance.v3"
 LEGACY_GATE_PROVENANCE_SCHEMA = "prerun.gate-provenance.v2"
 SCIENTIFIC_VERDICT_SCHEMA = "prerun.scientific-verdict.v1"
+# The scientific review model is part of the research contract; a verdict from
+# another model cannot open the gate.
+EXPECTED_REVIEW_MODEL = "openai-codex/gpt-5.6-sol"
+_REVIEW_MODEL_SUFFIXES = (":high", ":max")
 COMMIT_RE = re.compile(r"^[0-9a-f]{40}$")
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
@@ -296,6 +300,25 @@ def _verified_verdict(
     }
     if any(verdict.get(key) != expected_value for key, expected_value in expected.items()):
         raise RunSpecBuildError("gate_provenance.verdict_artifact_identity_mismatch")
+    # Model attestation: verdicts written before this check have no model
+    # fields and stay grandfathered; a verdict that records a model must match
+    # the contracted reviewer model exactly.
+    requested_model = verdict.get("requested_model")
+    observed_model = verdict.get("observed_model")
+    for label, value in (("requested_model", requested_model), ("observed_model", observed_model)):
+        if value is None:
+            continue
+        if not isinstance(value, str):
+            raise RunSpecBuildError("gate_provenance.verdict_artifact_model_invalid")
+        base = value.strip()
+        for suffix in _REVIEW_MODEL_SUFFIXES:
+            if base.endswith(suffix):
+                base = base[: -len(suffix)]
+                break
+        if label == "observed_model" and value == "unknown":
+            raise RunSpecBuildError("gate_provenance.verdict_artifact_model_unverifiable")
+        if base != EXPECTED_REVIEW_MODEL:
+            raise RunSpecBuildError("gate_provenance.verdict_artifact_model_mismatch")
     reviewed_commit = verdict.get("candidate_commit")
     if not isinstance(reviewed_commit, str) or not COMMIT_RE.fullmatch(reviewed_commit):
         raise RunSpecBuildError("gate_provenance.verdict_artifact_reviewed_commit_invalid")

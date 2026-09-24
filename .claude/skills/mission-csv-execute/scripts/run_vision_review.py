@@ -706,8 +706,8 @@ def main() -> int:
     parser.add_argument("--workdir", default=os.getcwd())
     parser.add_argument(
         "--model",
-        default=os.environ.get("CODEX_REVIEW_MODEL", DEFAULT_REVIEW_MODEL),
-        help=f"Reviewer model. Defaults to {DEFAULT_REVIEW_MODEL}.",
+        default=DEFAULT_REVIEW_MODEL,
+        help=f"Reviewer model. Fixed to {DEFAULT_REVIEW_MODEL}; the result validator rejects other values, so an override only breaks the review.",
     )
     parser.add_argument("--output", help="Write final JSON to this file.")
     parser.add_argument("--handoff", help="Write handoff_markdown to this .md file.")
