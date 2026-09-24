@@ -631,7 +631,7 @@ class MissionContractTests(unittest.TestCase):
             "exp_id": "EXP-1",
             "run_ids": list(run_ids),
             "requested_model": "openai-codex/gpt-5.6-sol",
-            "observed_model": "openai-codex/gpt-5.6-sol:high",
+            "observed_model": "gpt-5.6-sol:high",
             "task_sha256": hashlib.sha256(b"task").hexdigest(),
             "events_sha256": hashlib.sha256(b"events").hexdigest(),
             "review_output": review_output,
@@ -645,8 +645,8 @@ class MissionContractTests(unittest.TestCase):
             "status": "complete",
             "analysis_agent_mode": "codex-exec-independent",
             "analysis_independence": True,
-            "requested_model": "openai-codex/gpt-5.6-sol",
-            "observed_model": "openai-codex/gpt-5.6-sol",
+            "requested_model": "gpt-5.6-sol",
+            "observed_model": "gpt-5.6-sol",
             "model_evidence": "event-stream",
             "model_evidence_ref": evidence_ref,
             "entries": [{
@@ -664,8 +664,8 @@ class MissionContractTests(unittest.TestCase):
         rows[1]["notes"] = (
             "analysis_kind:post_run; result_analysis:reviews/result-analysis.json; "
             "analysis_agent_mode:codex-exec-independent; analysis_independence:true; "
-            "analysis_requested_model:openai-codex/gpt-5.6-sol; "
-            "analysis_observed_model:openai-codex/gpt-5.6-sol; "
+            "analysis_requested_model:gpt-5.6-sol; "
+            "analysis_observed_model:gpt-5.6-sol; "
             "analysis_model_evidence:event-stream; "
             f"analysis_model_evidence_ref:{evidence_ref}"
         )

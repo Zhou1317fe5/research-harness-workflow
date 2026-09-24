@@ -31,7 +31,7 @@ def _review_model() -> str:
                 raise RuntimeError("cannot load review_model constants")
             module = _ilu.module_from_spec(spec)
             spec.loader.exec_module(module)
-            return module.REVIEW_MODEL
+            return module.accepted_model_for_host("pi")
     raise RuntimeError("cannot locate .agents/harness/review_model.py")
 CLOSED = {"已完成"}
 

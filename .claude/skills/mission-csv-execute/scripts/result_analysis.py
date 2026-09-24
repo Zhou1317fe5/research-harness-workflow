@@ -32,7 +32,8 @@ def _load_review_model():
             spec.loader.exec_module(module)
             return module
     raise RuntimeError("cannot locate .agents/harness/review_model.py")
-REQUESTED_MODEL = _load_review_model().REVIEW_MODEL
+review_model = _load_review_model()
+REQUESTED_MODEL = review_model.RECORDED_MODEL
 
 
 def _load_validator():
@@ -59,7 +60,7 @@ def _metadata_errors(
     expected = {
         "analysis_agent_mode": ("analysis_agent_mode", None),
         "analysis_independence": ("analysis_independence", "true"),
-        "analysis_requested_model": ("requested_model", REQUESTED_MODEL),
+        "analysis_requested_model": ("requested_model", None),
         "analysis_observed_model": ("observed_model", None),
         "analysis_model_evidence": ("model_evidence", None),
         "analysis_model_evidence_ref": ("model_evidence_ref", None),
@@ -74,6 +75,16 @@ def _metadata_errors(
             errors.append(f"result_analysis_index_metadata_invalid:{index_key}")
         if index_key == "analysis_agent_mode" and index_value not in ANALYSIS_AGENT_MODES:
             errors.append(f"result_analysis_index_metadata_invalid:{index_key}")
+        if index_key == "requested_model":
+            mode_value = index.get("analysis_agent_mode")
+            try:
+                expected_model = review_model.accepted_model_for_host(
+                    review_model.host_for_channel(str(mode_value))
+                )
+            except (ValueError, KeyError):
+                expected_model = review_model.RECORDED_MODEL
+            if index_value != expected_model:
+                errors.append(f"result_analysis_index_metadata_invalid:{index_key}")
         if not isinstance(index_value, str) or not index_value.strip():
             errors.append(f"result_analysis_index_metadata_missing:{index_key}")
         if tags.get(row_tag) != index_value:

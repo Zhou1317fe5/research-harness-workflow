@@ -72,8 +72,10 @@ def _load_review_model():
 
 review_model = _load_review_model()
 
-REQUESTED_MODEL = review_model.REVIEW_MODEL
-EXEC_MODEL = review_model.EXEC_MODEL
+# codex-exec channel: both the exec invocation name and the recorded
+# requested model are the codex host identity.
+EXEC_MODEL = review_model.model_for_host("codex")
+REQUESTED_MODEL = review_model.accepted_model_for_host("codex")
 # Bounded wait matches reviewer_job's attempt timeout so a stuck exec session
 # fails closed instead of blocking the analysis row indefinitely.
 EXEC_TIMEOUT_SECONDS = 1800

@@ -31,8 +31,8 @@ def _load_review_model():
 
 review_model = _load_review_model()
 
-EXPECTED_REQUESTED_MODEL = review_model.REVIEW_MODEL
-_RUNTIME_MODEL_RE = review_model.RUNTIME_MODEL_RE
+# requested/observed models are validated per-channel via
+# _expected_model_for_mode/_accepted_for_mode against review_model.
 
 
 SCHEMA_VERSION = "post-run.result-analysis.v1"
@@ -145,17 +145,34 @@ def _valid_analysis_document(path: Path, errors: list[str], label: str) -> None:
             _error(errors, "analysis_section_empty", f"{label}:{match.group(1)}")
 
 
+def _expected_model_for_mode(mode: Any) -> str:
+    """Recorded requested/observed model approved for a channel's host."""
+    if isinstance(mode, str) and mode in ANALYSIS_AGENT_MODES:
+        return review_model.accepted_model_for_host(review_model.host_for_channel(mode))
+    return review_model.RECORDED_MODEL
+
+
+def _accepted_for_mode(value: str, mode: Any) -> bool:
+    if isinstance(mode, str) and mode in ANALYSIS_AGENT_MODES:
+        return review_model.is_accepted_model_identity(
+            value, review_model.host_for_channel(mode)
+        )
+    return review_model.is_accepted_model_identity(value)
+
+
 def _validate_model_metadata(data: dict[str, Any], errors: list[str]) -> None:
     if data.get("analysis_agent_mode") not in ANALYSIS_AGENT_MODES:
         _error(errors, "analysis_agent_mode_invalid", str(data.get("analysis_agent_mode")))
     if data.get("analysis_independence") is not True:
         _error(errors, "analysis_independence_invalid", str(data.get("analysis_independence")))
-    if data.get("requested_model") != EXPECTED_REQUESTED_MODEL:
+    mode = data.get("analysis_agent_mode")
+    expected_model = _expected_model_for_mode(mode)
+    if data.get("requested_model") != expected_model:
         _error(errors, "analysis_requested_model_invalid", str(data.get("requested_model")))
     observed = data.get("observed_model")
     if not isinstance(observed, str) or not observed.strip() or observed in {"unknown", "pending", "not_applicable"}:
         _error(errors, "analysis_observed_model_invalid", str(observed))
-    elif observed != EXPECTED_REQUESTED_MODEL:
+    elif not _accepted_for_mode(observed, mode):
         _error(errors, "analysis_observed_model_not_expected", observed)
     evidence = data.get("model_evidence")
     if evidence not in MODEL_EVIDENCE:
@@ -171,7 +188,6 @@ def _validate_model_metadata(data: dict[str, Any], errors: list[str]) -> None:
         _error(errors, "analysis_model_evidence_ref_invalid", str(ref))
     elif evidence == "parent-runtime" and not _RUNTIME_REF_RE.fullmatch(ref.strip()):
         _error(errors, "analysis_model_evidence_ref_invalid", str(ref))
-    mode = data.get("analysis_agent_mode")
     if mode == "scientific-reviewer-subagent":
         if evidence != "session-metadata":
             _error(errors, "analysis_model_evidence_unverifiable", str(evidence))
@@ -405,7 +421,7 @@ def _validate_reviewer_evidence(
         if result.get("exitCode") != 0:
             _error(errors, "review_subagent_failed", f"{ref}:{result.get('exitCode')}")
         runtime_model = result.get("model")
-        if not isinstance(runtime_model, str) or not _RUNTIME_MODEL_RE.fullmatch(runtime_model):
+        if not isinstance(runtime_model, str) or not review_model.is_accepted_model_identity(runtime_model, "pi"):
             _error(errors, "review_runtime_model_invalid", f"{ref}:{runtime_model}")
         messages = result.get("messages")
         final_text = ""
@@ -422,7 +438,7 @@ def _validate_reviewer_evidence(
             return
         assert verdict is not None
         runtime_model = verdict.get("observed_model")
-        if not isinstance(runtime_model, str) or not _RUNTIME_MODEL_RE.fullmatch(runtime_model):
+        if not isinstance(runtime_model, str) or not review_model.is_accepted_model_identity(runtime_model, "codex"):
             _error(errors, "review_runtime_model_invalid", f"{ref}:{runtime_model}")
         output_text = verdict.get("review_output")
         final_text = output_text if isinstance(output_text, str) else ""
