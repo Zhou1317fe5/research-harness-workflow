@@ -14,8 +14,25 @@ ANALYSIS_AGENT_MODES = {
     "scientific-reviewer-subagent",
     "codex-exec-independent",
 }
-REQUESTED_MODEL = "openai-codex/gpt-5.6-sol"
+
 ANALYSIS_SKILL = "post-run-result-analysis"
+
+
+def _load_review_model():
+    """Load the canonical review-model constants (searched upward for .agents)."""
+    import importlib.util
+
+    for ancestor in Path(__file__).resolve().parents:
+        module_path = ancestor / ".agents" / "harness" / "review_model.py"
+        if module_path.is_file():
+            spec = importlib.util.spec_from_file_location("review_model", module_path)
+            if spec is None or spec.loader is None:
+                raise RuntimeError(f"cannot load review_model: {module_path}")
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            return module
+    raise RuntimeError("cannot locate .agents/harness/review_model.py")
+REQUESTED_MODEL = _load_review_model().REVIEW_MODEL
 
 
 def _load_validator():

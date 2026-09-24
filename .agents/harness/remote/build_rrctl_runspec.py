@@ -30,9 +30,19 @@ GATE_PROVENANCE_SCHEMA = "prerun.gate-provenance.v3"
 LEGACY_GATE_PROVENANCE_SCHEMA = "prerun.gate-provenance.v2"
 SCIENTIFIC_VERDICT_SCHEMA = "prerun.scientific-verdict.v1"
 # The scientific review model is part of the research contract; a verdict from
-# another model cannot open the gate.
-EXPECTED_REVIEW_MODEL = "openai-codex/gpt-5.6-sol"
-_REVIEW_MODEL_SUFFIXES = (":high", ":max")
+# another model cannot open the gate. Loaded by path so both entry modes work
+# (direct script run only puts .agents on sys.path, not .agents/harness).
+import importlib.util as _importlib_util
+
+_review_model_spec = _importlib_util.spec_from_file_location(
+    "review_model", Path(__file__).resolve().parents[1] / "review_model.py"
+)
+if _review_model_spec is None or _review_model_spec.loader is None:
+    raise RuntimeError("cannot load review_model constants")
+review_model = _importlib_util.module_from_spec(_review_model_spec)
+_review_model_spec.loader.exec_module(review_model)
+EXPECTED_REVIEW_MODEL = review_model.REVIEW_MODEL
+_normalize_review_model = review_model.normalize_model_identity
 COMMIT_RE = re.compile(r"^[0-9a-f]{40}$")
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
@@ -310,11 +320,7 @@ def _verified_verdict(
             continue
         if not isinstance(value, str):
             raise RunSpecBuildError("gate_provenance.verdict_artifact_model_invalid")
-        base = value.strip()
-        for suffix in _REVIEW_MODEL_SUFFIXES:
-            if base.endswith(suffix):
-                base = base[: -len(suffix)]
-                break
+        base = _normalize_review_model(value)
         if label == "observed_model" and value == "unknown":
             raise RunSpecBuildError("gate_provenance.verdict_artifact_model_unverifiable")
         if base != EXPECTED_REVIEW_MODEL:

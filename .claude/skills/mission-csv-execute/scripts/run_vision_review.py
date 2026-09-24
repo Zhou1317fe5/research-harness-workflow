@@ -38,7 +38,21 @@ RESULT_KEYS = {
     "handoff_markdown",
 }
 
-DEFAULT_REVIEW_MODEL = "gpt-5.6-sol"
+def _load_review_model():
+    """Load the canonical review-model constants (searched upward for .agents)."""
+    import importlib.util
+
+    for ancestor in Path(__file__).resolve().parents:
+        module_path = ancestor / ".agents" / "harness" / "review_model.py"
+        if module_path.is_file():
+            spec = importlib.util.spec_from_file_location("review_model", module_path)
+            if spec is None or spec.loader is None:
+                raise RuntimeError(f"cannot load review_model: {module_path}")
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            return module
+    raise RuntimeError("cannot locate .agents/harness/review_model.py")
+DEFAULT_REVIEW_MODEL = _load_review_model().EXEC_MODEL
 # Bounded wait matches reviewer_job's attempt timeout so a stuck exec session
 # is a recorded service failure, not an unbounded block.
 DEFAULT_EXEC_TIMEOUT_SECONDS = 1800

@@ -200,7 +200,7 @@ python .agents/harness/reviewer_job.py \
   --packet <packet.json> \
   --task <review-task.md> \
   --job-dir <mission-dir>/reviews/<prerun-row> \
-  --model openai-codex/gpt-5.6-sol:high
+  --model openai-codex/gpt-5.6-sol:high  # canonical: .agents/harness/review_model.py REVIEW_JOB_MODEL
 ```
 
 Do not use `pi-sub-agent --no-session`, parallel/chain mode, or another one-shot child for this gate.

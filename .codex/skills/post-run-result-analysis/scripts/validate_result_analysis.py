@@ -13,13 +13,34 @@ from pathlib import Path
 from typing import Any
 
 
+def _load_review_model():
+    """Load the canonical review-model constants (searched upward for .agents)."""
+    import importlib.util
+
+    for ancestor in Path(__file__).resolve().parents:
+        module_path = ancestor / ".agents" / "harness" / "review_model.py"
+        if module_path.is_file():
+            spec = importlib.util.spec_from_file_location("review_model", module_path)
+            if spec is None or spec.loader is None:
+                raise RuntimeError(f"cannot load review_model: {module_path}")
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            return module
+    raise RuntimeError("cannot locate .agents/harness/review_model.py")
+
+
+review_model = _load_review_model()
+
+EXPECTED_REQUESTED_MODEL = review_model.REVIEW_MODEL
+_RUNTIME_MODEL_RE = review_model.RUNTIME_MODEL_RE
+
+
 SCHEMA_VERSION = "post-run.result-analysis.v1"
 ANALYSIS_AGENT_MODE = "scientific-reviewer-subagent"
 ANALYSIS_AGENT_MODES = {
     "scientific-reviewer-subagent",
     "codex-exec-independent",
 }
-EXPECTED_REQUESTED_MODEL = "openai-codex/gpt-5.6-sol"
 MODEL_EVIDENCE = {"session-metadata", "event-stream", "parent-runtime"}
 # The codex-exec channel persists the reviewer job verdict under the mission's
 # own reviews directory; the validator recomputes its digest from disk.
@@ -48,7 +69,7 @@ _SESSION_REF_RE = re.compile(
 )
 # 运行时模型身份：项目 reviewer agent 配置 thinking high（skill 亦要求 high），
 # 测试夹具使用 :max；两者都保持 gpt-5.6-sol 的精确匹配，不接受其它模型。
-_RUNTIME_MODEL_RE = re.compile(r"^openai-codex/gpt-5\.6-sol(?::(?:high|max))?$")
+
 _EVENT_REF_RE = re.compile(r"^event:\S+$")
 _EXEC_REF_RE = re.compile(r"^exec:[^#\s]+#verdict$")
 _RUNTIME_REF_RE = re.compile(r"^runtime:\S+$")

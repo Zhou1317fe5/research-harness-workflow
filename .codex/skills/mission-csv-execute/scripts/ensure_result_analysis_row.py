@@ -12,11 +12,27 @@ import sys
 import tempfile
 from pathlib import Path
 
+import importlib.util as _ilu
+
 from csv_state import file_lock
 from mission_completion import read_mission_csv, parse_note_tags, upsert_note_tags
 
 
 ANALYSIS_ROW_ID = "RESULT-ANALYSIS-01"
+
+
+def _review_model() -> str:
+    """Load the canonical review model (searched upward for .agents)."""
+    for ancestor in Path(__file__).resolve().parents:
+        module_path = ancestor / ".agents" / "harness" / "review_model.py"
+        if module_path.is_file():
+            spec = _ilu.spec_from_file_location("review_model", module_path)
+            if spec is None or spec.loader is None:
+                raise RuntimeError("cannot load review_model constants")
+            module = _ilu.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            return module.REVIEW_MODEL
+    raise RuntimeError("cannot locate .agents/harness/review_model.py")
 CLOSED = {"已完成"}
 
 
@@ -46,7 +62,7 @@ def _make_row(fieldnames: list[str], rows: list[dict[str, str]]) -> dict[str, st
         "result_analysis:reviews/result-analysis.json",
         "analysis_agent_mode:pending",
         "analysis_independence:pending",
-        "analysis_requested_model:openai-codex/gpt-5.6-sol",
+        f"analysis_requested_model:{_review_model()}",
         "analysis_observed_model:pending",
         "analysis_model_evidence:pending",
         "analysis_model_evidence_ref:pending",

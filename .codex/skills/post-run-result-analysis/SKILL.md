@@ -12,6 +12,7 @@ description: Use after remote experiment artifacts are ingested to require an in
 - `remote_state=ingested` 的每个非空 `(ExpID, RunID)` 都必须出现在 `reviews/result-analysis.json`。
 - 每个条目必须绑定最终的 `research_workspace/experiments/<ExpID>/analysis/analysis.md`、其 SHA-256、原始证据引用和科学结果状态。
 - 正式分析必须由独立的强模型 reviewer 完成，模型固定为 `openai-codex/gpt-5.6-sol`、thinking `high`；两条等价通道按宿主选择：
+  模型的 canonical 值与运行时匹配正则统一定义在 `.agents/harness/review_model.py`；额度耗尽等原因需要切换时改该文件（一次显式提交），验证器与各 runner 自动跟随，不允许会话内临时传参绕过。
   1. **Pi 通道（`scientific-reviewer-subagent`）**：当前会话派发注册的 `scientific-reviewer` sub-agent（`.pi/agents/scientific-reviewer.md`，`agentScope: project`）；
   2. **codex-exec 通道（`codex-exec-independent`）**：宿主无 sub-agent 派发能力时，用 `scripts/run_result_analysis.py` 启动 fresh、ephemeral、read-only 的 `codex exec -m gpt-5.6-sol` 独立会话。
 - `advisor` 可以在存在冲突解释或研究方向选择时提供辅助意见，但不能生成正式分析、verdict 或关闭分析行。

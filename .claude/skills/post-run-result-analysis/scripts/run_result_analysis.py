@@ -52,8 +52,28 @@ from typing import Any
 
 SCHEMA_VERSION = "post-run.result-analysis.v1"
 VERDICT_SCHEMA = "post-run.result-analysis-verdict.v1"
-REQUESTED_MODEL = "openai-codex/gpt-5.6-sol"
-EXEC_MODEL = "gpt-5.6-sol"
+
+
+def _load_review_model():
+    """Load the canonical review-model constants (searched upward for .agents)."""
+    import importlib.util
+
+    for ancestor in Path(__file__).resolve().parents:
+        module_path = ancestor / ".agents" / "harness" / "review_model.py"
+        if module_path.is_file():
+            spec = importlib.util.spec_from_file_location("review_model", module_path)
+            if spec is None or spec.loader is None:
+                raise RuntimeError(f"cannot load review_model: {module_path}")
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            return module
+    raise RuntimeError("cannot locate .agents/harness/review_model.py")
+
+
+review_model = _load_review_model()
+
+REQUESTED_MODEL = review_model.REVIEW_MODEL
+EXEC_MODEL = review_model.EXEC_MODEL
 # Bounded wait matches reviewer_job's attempt timeout so a stuck exec session
 # fails closed instead of blocking the analysis row indefinitely.
 EXEC_TIMEOUT_SECONDS = 1800
