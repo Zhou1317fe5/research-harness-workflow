@@ -216,6 +216,12 @@ The reviewer must inspect the committed code and return all currently evaluable 
 
 Treat quota errors, launcher failures, and silence before any scientific verdict as review-service failures. A `running` status alone is not evidence of progress. Let `reviewer_job.py` resume the recorded session first; transport resumes of that same session are not replacements and do not create another scientific opinion. Only after bounded same-session recovery is exhausted may the runner create a fresh independent execution, with the default maximum of one replacement. Keep the candidate commit, evidence, review scope, and single PRERUN row unchanged. Continue within existing task authorization.
 
+Reviewer job lifecycle operations:
+
+- Terminate a stuck reviewer job by exact PID only (`kill <pid>` from `pgrep -f '^python.*reviewer_job\.py'`). Never use a fuzzy `pkill -f reviewer_job` pattern: the Executor's own shell command line contains the same string and `pkill` will kill the Executor shell too.
+- After an external termination, rerun the same `reviewer_job.py` command. The runner detects a `running` state whose transport child is dead, records `service_failed`, and resumes the recorded session instead of creating a second scientific opinion.
+- Standard cleanup sequence after terminating: confirm orphaned `codex`/`pi` transport children are gone, confirm the flock released with the dead process, record the pause in the CSV, and commit the reviewer job artifacts (job.json preserves session_id for resumption).
+
 This replaces a failed execution of the same review; it does not request another scientific opinion. A returned scientific verdict, including `not_evaluable`, ends service recovery and must be handled on its merits. Formatting problems in an available verdict can be normalized without repeating the review. If the replacement also fails, record the capability gap once and continue independent work; do not loop, infer a pass, or weaken the scientific gate. Any user-authorized exception belongs in the project's run record, with the unfulfilled review requirement stated explicitly.
 
 The review gate accepts only `verdict.json` with schema `prerun.scientific-verdict.v1`. Its packet, task, raw-response digests, candidate commit, review mode, result, and reviewer id must validate. Record its repository-relative path as `verdict_artifact:<path>` and in `gate_provenance.verdict_artifact`; reviewer prose or a process exit code alone cannot open the gate.

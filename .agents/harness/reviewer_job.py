@@ -8,6 +8,7 @@ import fcntl
 import hashlib
 import json
 import os
+import re
 import selectors
 import shutil
 import signal
@@ -277,6 +278,27 @@ def reviewer_prompt(task: str, mode: str) -> str:
     )
 
 
+def _reviewer_job_children_alive() -> bool:
+    """Return True if a live descendant looks like a reviewer transport child."""
+    me = str(os.getpid())
+    pattern = re.compile(r"codex\s+exec|\bpi\b.*--mode\s+json")
+    try:
+        with subprocess.Popen(
+            ["ps", "-eo", "ppid=,args="],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+        ) as proc:
+            out, _ = proc.communicate(timeout=5)
+    except (OSError, subprocess.SubprocessError):
+        return True  # cannot inspect: assume alive, never auto-fail a live review
+    for line in out.splitlines():
+        parts = line.strip().split(None, 1)
+        if len(parts) == 2 and parts[0] == me and pattern.search(parts[1]):
+            return True
+    return False
+
+
 def execute(args: argparse.Namespace) -> int:
     packet_path = args.packet.resolve()
     task_path = args.task.resolve()
@@ -325,6 +347,15 @@ def execute(args: argparse.Namespace) -> int:
             identity = (state.get("backend"), state.get("packet_sha256"), state.get("task_sha256"))
             if identity != (args.backend, packet_sha, task_sha):
                 raise ValueError("existing reviewer job belongs to different inputs")
+            if state.get("status") == "running" and not _reviewer_job_children_alive():
+                # A prior runner was killed externally (e.g. pkill); its recorded
+                # session stays resumable, but the attempt itself is dead.
+                state.update(
+                    status="service_failed",
+                    last_error="runner killed externally; resuming recorded session",
+                    updated_at=now(),
+                )
+                atomic_json(state_path, state)
         else:
             state = {
                 "schema_version": JOB_SCHEMA,

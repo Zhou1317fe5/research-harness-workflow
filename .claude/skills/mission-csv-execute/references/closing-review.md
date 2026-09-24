@@ -75,7 +75,7 @@ python scripts/run_vision_review.py \
   --model gpt-5.6-sol
 ```
 
-兼容 CSV 没有 source doc 时省略 `--source-doc`。脚本成功时输出 review JSON；把 JSON 摘要写入 review log，并把 `review_json:<path>`、mode、independence、requested/observed model、model evidence、coverage、result 和必要的 `validation_limited` 写入 CSV `notes`。脚本失败不等于 review 完成：记录失败原因后进入 self-review。
+兼容 CSV 没有 source doc 时省略 `--source-doc`。脚本成功时输出 review JSON；把 JSON 摘要写入 review log，并把 `review_json:<path>`、mode、independence、requested/observed model、model evidence、coverage、result 和必要的 `validation_limited` 写入 CSV `notes`。脚本失败不等于 review 完成：记录失败原因后进入 self-review。失败原因必须显式分类（`quota_error` / `transport_error` / `timeout`——脚本 stderr 会输出 `review_service_failure:<kind>`），不得笼统写"调用失败"，便于事后区分服务故障类型。
 
 ### Reviewer prompt 硬要求
 

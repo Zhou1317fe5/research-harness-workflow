@@ -39,6 +39,13 @@ RESULT_KEYS = {
 }
 
 DEFAULT_REVIEW_MODEL = "gpt-5.6-sol"
+# Bounded wait matches reviewer_job's attempt timeout so a stuck exec session
+# is a recorded service failure, not an unbounded block.
+DEFAULT_EXEC_TIMEOUT_SECONDS = 1800
+_QUOTA_ERROR_MARKERS = (
+    "insufficient_quota", "quota exceeded", "rate_limit", "rate limit",
+    "429", "usage limit", "credits", "billing", "too many requests",
+)
 MODEL_EVIDENCE = {
     "session-metadata",
     "event-stream",
@@ -94,15 +101,33 @@ def build_exec_command(executable: str, workdir: str, model: str) -> list[str]:
     ]
 
 
-def run_codex_exec(cmd: list[str], prompt: str) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        cmd,
-        input=prompt,
-        text=True,
-        encoding="utf-8",
-        capture_output=True,
-        check=False,
-    )
+def classify_service_failure(*texts: str) -> str:
+    """Distinguish quota failures from generic transport failures for the log."""
+    joined = "\n".join(texts).lower()
+    if any(marker in joined for marker in _QUOTA_ERROR_MARKERS):
+        return "quota_error"
+    return "transport_error"
+
+
+def run_codex_exec(
+    cmd: list[str],
+    prompt: str,
+    timeout_seconds: float = DEFAULT_EXEC_TIMEOUT_SECONDS,
+) -> subprocess.CompletedProcess[str]:
+    try:
+        return subprocess.run(
+            cmd,
+            input=prompt,
+            text=True,
+            encoding="utf-8",
+            capture_output=True,
+            check=False,
+            timeout=timeout_seconds,
+        )
+    except subprocess.TimeoutExpired:
+        return subprocess.CompletedProcess(
+            cmd, 124, "", f"codex exec timed out after {timeout_seconds}s"
+        )
 
 
 def existing_file(value: str, workdir: Path) -> str:
@@ -728,6 +753,8 @@ def main() -> int:
     if proc.returncode != 0:
         sys.stderr.write(proc.stderr)
         sys.stderr.write(proc.stdout)
+        kind = classify_service_failure(proc.stderr or "", proc.stdout or "")
+        sys.stderr.write(f"review_service_failure:{kind}; continue with self-review fallback\n")
         return proc.returncode
 
     final_message, observed_model = parse_json_events(proc.stdout)

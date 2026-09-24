@@ -54,6 +54,13 @@ SCHEMA_VERSION = "post-run.result-analysis.v1"
 VERDICT_SCHEMA = "post-run.result-analysis-verdict.v1"
 REQUESTED_MODEL = "openai-codex/gpt-5.6-sol"
 EXEC_MODEL = "gpt-5.6-sol"
+# Bounded wait matches reviewer_job's attempt timeout so a stuck exec session
+# fails closed instead of blocking the analysis row indefinitely.
+EXEC_TIMEOUT_SECONDS = 1800
+_QUOTA_ERROR_MARKERS = (
+    "insufficient_quota", "quota exceeded", "rate_limit", "rate limit",
+    "429", "usage limit", "credits", "billing", "too many requests",
+)
 _REVIEW_OUTPUT_KEYS = {
     "exp_id", "run_ids", "analysis_markdown", "scientific_outcome",
     "limitations", "validation_gaps",
@@ -271,19 +278,36 @@ def run(args: argparse.Namespace) -> int:
         sys.stderr.write("codex executable not found; result-analysis review service unavailable\n")
         return 127
     cmd = build_exec_command(executable, str(workdir), EXEC_MODEL)
-    proc = subprocess.run(
-        cmd,
-        input=task_text,
-        text=True,
-        encoding="utf-8",
-        capture_output=True,
-        check=False,
-    )
+    try:
+        proc = subprocess.run(
+            cmd,
+            input=task_text,
+            text=True,
+            encoding="utf-8",
+            capture_output=True,
+            check=False,
+            timeout=EXEC_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired:
+        sys.stderr.write(
+            f"codex exec timed out after {EXEC_TIMEOUT_SECONDS}s; "
+            "review_service_failure:timeout; rerun the same command after the review service recovers\n"
+        )
+        return 124
     write_atomic(events_path, proc.stdout or "")
     if proc.returncode != 0:
         sys.stderr.write(proc.stderr)
         sys.stderr.write(proc.stdout)
-        sys.stderr.write("codex exec failed; rerun the same command after the review service recovers\n")
+        joined = f"{proc.stderr or ''}\n{proc.stdout or ''}".lower()
+        kind = (
+            "quota_error"
+            if any(marker in joined for marker in _QUOTA_ERROR_MARKERS)
+            else "transport_error"
+        )
+        sys.stderr.write(
+            f"codex exec failed (review_service_failure:{kind}); "
+            "rerun the same command after the review service recovers\n"
+        )
         return proc.returncode or 2
 
     final_message, observed_model = parse_json_events(proc.stdout)
