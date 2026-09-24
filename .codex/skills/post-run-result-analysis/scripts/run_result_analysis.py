@@ -190,10 +190,18 @@ def trusted_event_model(event: dict[str, Any]) -> str | None:
         "session_metadata",
         "turn.started",
         "response.started",
+        # codex CLI (0.155.x) records the effective model in these events;
+        # confirmed from local session logs.
+        "thread_settings_applied",
+        "turn_context",
     }
     if event_type not in trusted_types and payload_type not in trusted_types:
         return None
-    for container in (event, payload):
+    containers = [event, payload]
+    settings = payload.get("thread_settings")
+    if isinstance(settings, dict):
+        containers.append(settings)
+    for container in containers:
         for key in ("model", "model_id"):
             value = container.get(key)
             if isinstance(value, str) and value.strip():

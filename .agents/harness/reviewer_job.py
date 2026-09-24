@@ -211,6 +211,10 @@ def observed_model_from_events(event_path: Path) -> str | None:
         "session_metadata",
         "turn.started",
         "response.started",
+        # codex CLI (0.155.x) records the effective model in these events;
+        # confirmed from local session logs.
+        "thread_settings_applied",
+        "turn_context",
     }
     observed: str | None = None
     try:
@@ -228,7 +232,11 @@ def observed_model_from_events(event_path: Path) -> str | None:
         payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
         if event_type not in trusted_types and payload.get("type") not in trusted_types:
             continue
-        for container in (event, payload):
+        containers = [event, payload]
+        settings = payload.get("thread_settings")
+        if isinstance(settings, dict):
+            containers.append(settings)
+        for container in containers:
             for key in ("model", "model_id"):
                 value = container.get(key)
                 if isinstance(value, str) and value.strip():

@@ -51,7 +51,7 @@ closing review 必须基于以下材料：
 
 | 优先级 | 模式 | 记录值 | 独立性 | 要求 |
 |--------|------|--------|--------|------|
-| 1 | 当前会话派发注册的 `reviewer` 子代理 | `review_agent_mode:reviewer-subagent` | `review_independence:true` | 请求 `gpt-5.6-sol` high；只读；prompt 不含主代理结论；禁止再委派 |
+| 1 | 当前会话派发注册的 `reviewer` 子代理 | `review_agent_mode:reviewer-subagent` | `review_independence:true` | 请求审查模型（见 `review_model.py`）high；只读；prompt 不含主代理结论；禁止再委派 |
 | 2 | `codex exec --ephemeral --json -m gpt-5.6-sol --sandbox read-only` | `review_agent_mode:codex-exec-independent` | `review_independence:true` | 用 `shutil.which("codex")` 解析平台 launcher；由独立 exec 会话完成完整 vision review |
 | 3 | 主会话按同一 prompt 自审 | `review_agent_mode:self-review` | `review_independence:false` | 只在前两项失败时使用；如实记录 capability failure，但完成的 self-review 可以闭环 |
 
@@ -81,7 +81,7 @@ python scripts/run_vision_review.py \
 
 reviewer prompt 必须明确写入：
 
-- 独立路径固定请求 `gpt-5.6-sol`；requested model 与 observed model 分开记录
+- 独立路径固定请求审查模型（canonical 定义在 `.agents/harness/review_model.py`；codex exec 用 `MODELS.codex` 裸名，Pi sub-agent 用 `MODELS.pi` 前缀名）；requested model 与 observed model 分开记录
 - observed model 只能来自 host/session metadata 或 CLI JSON event stream。reviewer 文本和 review JSON 自报的模型不算证据
 - 只基于批准文档或原始请求、CSV、claim/evidence ledger、diff/commit、测试/MCP 证据、交付物声明和 review log
 - 不信任主 agent 的结论性总结

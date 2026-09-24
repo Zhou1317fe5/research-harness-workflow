@@ -3,48 +3,84 @@
 The reviewer model is part of the project's research contract: every gate
 (PRERUN verdict, post-run result analysis, closing review) validates the
 requested and observed model against these constants. Switching models (for
-example when quota is exhausted) is an explicit, auditable change:
+example when quota is exhausted) is an explicit, auditable change: edit the
+values below, sync materialized mirrors, run the mission contract tests, and
+commit. Do not add environment-variable or per-run overrides.
 
-1. edit REVIEW_MODEL / EXEC_MODEL / RUNTIME_MODEL_RE below;
-2. sync the mirrors (.codex and .claude skill trees are hardlinked to
-   .agents, so most consumers follow automatically; re-copy if a mirror was
-   materialized);
-3. update the display values in the skill docs that cite the model;
-4. run the mission contract tests.
+Two namespaces exist because the same logical model is addressed through
+different host registries:
 
-Do not add environment-variable or per-run overrides: the whole point is that
-the model identity can only change through a reviewed commit.
+- ``pi`` covers Pi-launched sessions (the `scientific-reviewer` sub-agent and
+  `pi --model`), whose registry uses provider-prefixed names;
+- ``codex`` covers `codex exec -m`, whose registry/provider configuration
+  resolves bare names.
+
+Records (CSV notes, the analysis index, reviewer verdicts) store the
+provider-prefixed canonical identity so historical evidence stays comparable
+across hosts.
 """
 
 from __future__ import annotations
 
 import re
 
-# Provider-prefixed canonical identity recorded in CSV notes, the analysis
-# index, and reviewer job verdicts.
-REVIEW_MODEL = "openai-codex/gpt-5.6-sol"
+# Logical reviewer model key.
+MODEL_KEY = "gpt-5.6-sol"
 
-# Model name passed to `codex exec -m` (CLI takes the bare name).
-EXEC_MODEL = "gpt-5.6-sol"
+# Model names passed to each host's launcher / agent registry.
+MODELS = {
+    "pi": f"openai-codex/{MODEL_KEY}",
+    "codex": MODEL_KEY,
+}
 
 # Requested thinking level for reviewer sessions.
 REVIEW_THINKING = "high"
 
-# Full reviewer invocation identity used by the PRERUN reviewer job.
-REVIEW_JOB_MODEL = f"{REVIEW_MODEL}:{REVIEW_THINKING}"
 
-# Runtime identities accepted from session metadata / event streams. Test
-# fixtures historically use :max; both suffixes keep the exact model match.
+def model_for_host(host: str) -> str:
+    try:
+        return MODELS[host]
+    except KeyError:
+        raise ValueError(f"unknown review host: {host}") from None
+
+
+def review_job_model(host: str) -> str:
+    """Reviewer invocation identity including the requested thinking level."""
+    return f"{model_for_host(host)}:{REVIEW_THINKING}"
+
+
+# Canonical identity recorded in CSV notes, the analysis index, and verdicts.
+RECORDED_MODEL = model_for_host("pi")
+
+# Runtime identities accepted from session metadata / event streams, for every
+# configured host plus the canonical recorded identity. Test fixtures
+# historically use :max; suffixes keep the exact model match.
 RUNTIME_MODEL_SUFFIXES = ("high", "max")
+_ACCEPTED_BASES = {RECORDED_MODEL, *MODELS.values()}
 RUNTIME_MODEL_RE = re.compile(
-    r"^" + re.escape(REVIEW_MODEL) + r"(?::(?:" + "|".join(RUNTIME_MODEL_SUFFIXES) + r"))?$"
+    r"^(?:"
+    + "|".join(re.escape(base) for base in sorted(_ACCEPTED_BASES))
+    + r")(?::(?:"
+    + "|".join(RUNTIME_MODEL_SUFFIXES)
+    + r"))?$"
 )
 
-# Suffix-stripped comparison for verdict fields recorded by reviewer_job.
+# Backward-compatible aliases for consumers written before MODEL_KEY existed.
+REVIEW_MODEL = RECORDED_MODEL
+EXEC_MODEL = model_for_host("codex")
+REVIEW_JOB_MODEL = review_job_model("pi")
+
+
 def normalize_model_identity(value: str) -> str:
+    """Strip the thinking suffix; returns the bare (possibly prefixed) name."""
     base = value.strip()
     for suffix in RUNTIME_MODEL_SUFFIXES:
         tail = f":{suffix}"
         if base.endswith(tail):
             return base[: -len(tail)]
     return base
+
+
+def is_accepted_model_identity(value: str) -> bool:
+    """True if the runtime identity names the configured model on any host."""
+    return normalize_model_identity(value) in _ACCEPTED_BASES

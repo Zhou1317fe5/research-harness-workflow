@@ -320,10 +320,9 @@ def _verified_verdict(
             continue
         if not isinstance(value, str):
             raise RunSpecBuildError("gate_provenance.verdict_artifact_model_invalid")
-        base = _normalize_review_model(value)
         if label == "observed_model" and value == "unknown":
             raise RunSpecBuildError("gate_provenance.verdict_artifact_model_unverifiable")
-        if base != EXPECTED_REVIEW_MODEL:
+        if not review_model.is_accepted_model_identity(value):
             raise RunSpecBuildError("gate_provenance.verdict_artifact_model_mismatch")
     reviewed_commit = verdict.get("candidate_commit")
     if not isinstance(reviewed_commit, str) or not COMMIT_RE.fullmatch(reviewed_commit):
