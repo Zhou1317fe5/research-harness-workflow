@@ -303,24 +303,52 @@ def git_completion_errors(
     return [error for row in rows for error in row_git_errors(csv_path, row, workdir=workdir)]
 
 
-def csv_completion_errors(
-    csv_path: Path, *, workdir: Path, allow_compat: bool = False
+def review_rows(rows: list[dict[str, str]]) -> list[dict[str, str]]:
+    """Return REVIEW-* rows in CSV order; closing uses the last one as the current verdict."""
+    return [row for row in rows if row.get("id", "").startswith("REVIEW-")]
+
+
+def evidence_completion_errors(
+    csv_path: Path,
+    rows: list[dict[str, str]],
+    *,
+    workdir: Path,
+    skip_row_ids: frozenset[str] = frozenset(),
+    allow_compat: bool = False,
 ) -> list[str]:
-    """Return reasons a CSV is not a fully delivered Mission terminal state."""
+    """Row/Git/ingest/claim/result-analysis checks shared by both closing stages.
+
+    ``delivered`` (``csv_completion_errors``) skips no row. A ``pre_closing``
+    readiness check passes its own still-open ``REVIEW-*`` row in ``skip_row_ids``
+    so that unfinished row does not by itself block the decision to start closing.
+    ingest/claim/analysis always evaluate every row because they bind evidence
+    produced by other rows; only terminal/Git state is scoped by ``skip_row_ids``.
+    """
+    scoped = [row for row in rows if row.get("id", "") not in skip_row_ids]
     errors: list[str] = []
-    try:
-        _, rows, _ = read_mission_csv(csv_path, allow_compat=allow_compat)
-    except (OSError, csv.Error, UnicodeError, ValueError) as exc:
-        return [f"csv_read_failed:{exc}"]
-    for row in rows:
+    for row in scoped:
         errors.extend(row_terminal_errors(row, allow_compat=allow_compat))
-    errors.extend(git_completion_errors(csv_path, rows, workdir=workdir))
+    errors.extend(git_completion_errors(csv_path, scoped, workdir=workdir))
     errors.extend(ingest_completion_errors(csv_path, rows, workdir=workdir))
     errors.extend(claim_completion_errors(csv_path, rows, workdir=workdir))
     from result_analysis import result_analysis_completion_errors
     errors.extend(result_analysis_completion_errors(csv_path, rows, workdir=workdir))
+    return errors
 
-    reviews = [row for row in rows if row.get("id", "").startswith("REVIEW-")]
+
+def csv_completion_errors(
+    csv_path: Path, *, workdir: Path, allow_compat: bool = False
+) -> list[str]:
+    """Return reasons a CSV is not a fully delivered Mission terminal state."""
+    try:
+        _, rows, _ = read_mission_csv(csv_path, allow_compat=allow_compat)
+    except (OSError, csv.Error, UnicodeError, ValueError) as exc:
+        return [f"csv_read_failed:{exc}"]
+    errors = evidence_completion_errors(
+        csv_path, rows, workdir=workdir, allow_compat=allow_compat
+    )
+
+    reviews = review_rows(rows)
     if not reviews:
         errors.append("review_row_missing:REVIEW-*")
         return sorted(set(errors))

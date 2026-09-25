@@ -12,13 +12,10 @@ from pathlib import Path
 from typing import Any
 
 from mission_completion import (
-    row_terminal_errors,
-    claim_completion_errors,
-    git_completion_errors,
-    ingest_completion_errors,
+    evidence_completion_errors,
     read_mission_csv,
+    review_rows,
 )
-from result_analysis import result_analysis_completion_errors
 
 
 SCHEMA_VERSION = "mission.final-ready.v2"
@@ -78,6 +75,11 @@ def _text_list(value: Any, field: str, errors: list[str]) -> list[str]:
 
 
 def _read_csv(path: Path, review_row_id: str, errors: list[str]) -> list[dict[str, str]]:
+    """Read the CSV and verify the named review row exists and is the final one.
+
+    Row terminal/Git/evidence checks live in ``evidence_completion_errors`` so the
+    pre-closing and delivered stages cannot drift apart.
+    """
     try:
         _, rows, _ = read_mission_csv(path, allow_compat=True)
     except (OSError, csv.Error, UnicodeError, ValueError) as exc:
@@ -90,10 +92,7 @@ def _read_csv(path: Path, review_row_id: str, errors: list[str]) -> list[dict[st
         if not row_id or row_id in ids:
             _error(errors, "row_id_invalid", f"csv:{index}", row_id or "missing")
         ids.add(row_id)
-        if row_id == review_row_id:
-            continue
-        errors.extend(row_terminal_errors(row, allow_compat=True))
-    review_ids = [row.get("id", "") for row in rows if row.get("id", "").startswith("REVIEW-")]
+    review_ids = [row.get("id", "") for row in review_rows(rows)]
     if review_row_id not in ids:
         _error(errors, "review_row_missing", "review_row_id", review_row_id)
     elif not review_ids or review_row_id != review_ids[-1]:
@@ -187,10 +186,15 @@ def check_final_ready(payload: Any, *, workdir: Path | None = None) -> dict[str,
 
     if csv_path is not None and review_row_id:
         rows = _read_csv(csv_path, review_row_id, errors)
-        errors.extend(git_completion_errors(csv_path, [row for row in rows if row["id"] != review_row_id], workdir=root))
-        errors.extend(ingest_completion_errors(csv_path, rows, workdir=root))
-        errors.extend(claim_completion_errors(csv_path, rows, workdir=root))
-        errors.extend(result_analysis_completion_errors(csv_path, rows, workdir=root))
+        errors.extend(
+            evidence_completion_errors(
+                csv_path,
+                rows,
+                workdir=root,
+                skip_row_ids=frozenset({review_row_id}),
+                allow_compat=True,
+            )
+        )
         actual_run_ids = sorted(
             {row.get("run_id", "").strip() for row in rows if row.get("run_id", "").strip()}
         )
