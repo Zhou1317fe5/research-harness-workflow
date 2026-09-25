@@ -13,6 +13,8 @@ from pathlib import Path
 
 EXPECTED_FIELDS = [
     "id", "priority", "phase", "area", "title", "description",
+    # `required_mcp` 为 legacy 兼容列：保留列位以继续读取存量 CSV，但无运行时消费者，
+    # 新行只写空值，不再作为执行合同或证据要求。
     "acceptance_criteria", "test_mcp", "required_skills", "required_mcp",
     "review_initial_requirements", "review_regression_requirements", "dev_state",
     "review_initial_state", "review_regression_state", "git_state", "owner", "refs",
@@ -46,6 +48,7 @@ SINGLETON_NOTE_KEYS = frozenset({
     "result_analysis", "analysis_kind", "analysis_agent_mode", "analysis_independence",
     "analysis_requested_model", "analysis_observed_model", "analysis_model_evidence",
     "analysis_model_evidence_ref",
+    # `handoff_humanized` 为历史兼容键：继续参与旧 CSV 的冲突检测，但已不是完成门禁。
     "handoff", "handoff_contract", "handoff_humanized", "gated_run",
     "pre_run_result", "pre_run_code_commit", "verdict_artifact", "blocker_closure_evidence",
     "readiness_result", "command_owner", "legacy_reason",

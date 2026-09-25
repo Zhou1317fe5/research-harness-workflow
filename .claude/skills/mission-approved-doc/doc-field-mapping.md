@@ -88,7 +88,7 @@ claim_ledger:<stem>.claims.json; claims:CLAIM-001,CLAIM-004; evidence_level:inte
 
 ### `required_mcp`
 
-- backend / infra：留空
+- Legacy 兼容列，无运行时消费者：固定留空，不作为执行合同、证据要求或生成推断项。
 
 ## Vision Review Rows
 

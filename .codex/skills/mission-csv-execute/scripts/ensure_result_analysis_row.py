@@ -82,6 +82,7 @@ def _make_row(fieldnames: list[str], rows: list[dict[str, str]]) -> dict[str, st
             "acceptance_criteria": "Every ingested ExpID/RunID is covered by reviews/result-analysis.json; each analysis.md has Change/Result/Finding/Next, evidence refs, SHA-256, per-entry reviewer evidence and output SHA-256, and a verifiable scientific outcome; strong reviewer identity is recorded from parent session/tool evidence (Pi sub-agent channel) or a codex-exec verdict with event-stream model evidence; no Executor self-review fallback.",
             "test_mcp": "contract",
             "required_skills": "post-run-result-analysis",
+            # legacy 兼容列：无消费者，固定留空。
             "required_mcp": "",
             "review_initial_requirements": "Verify the independent strong-reviewer input (Pi sub-agent or codex-exec session) is raw evidence rather than the Executor's conclusion.",
             "review_regression_requirements": "Verify analysis index coverage, channel-appropriate model evidence, analysis hashes, evidence refs and fixed four-section analysis before REVIEW-*.",

@@ -275,7 +275,7 @@ flowchart LR
 
 ### 可选文字润色
 
-`humanizer-zh` 只辅助改善可读性，不是 REVIEW 或 handoff 的完成条件。缺少该工具不阻止交付。Outcome answer 表、blocked claim 表、Deferred Findings 标记、trace id、路径和证据必须保持与结构化来源一致；只润色解释文字。旧 `handoff_humanized` 标签仍可保留，但不参与机械放行。
+`humanizer-zh` 只辅助改善可读性，不是 REVIEW 或 handoff 的完成条件。缺少该工具不阻止交付。Outcome answer 表、blocked claim 表、Deferred Findings 标记、trace id、路径和证据必须保持与结构化来源一致；只润色解释文字。旧 `handoff_humanized` 标签仅为历史兼容读取，新 review 不再记录该字段，它也不参与机械放行。
 
 ### handoff 生成失败的降级（反卡死）
 
@@ -370,7 +370,6 @@ REVIEW-02
 - Claim coverage: complete | gaps | unknown
 - Claim/evidence alignment: matched | mismatches found | limited
 - Limited validation honestly reported: yes | no | not_applicable
-- Handoff humanized: true | false
 - Result: vision_met | gaps_found | limited_review
 - Scientific outcome: hypothesis_supported | hypothesis_not_supported | gate_failed | inconclusive | not_applicable
 - Gaps: <none or bullet list>

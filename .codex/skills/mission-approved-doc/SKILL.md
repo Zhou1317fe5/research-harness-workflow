@@ -31,7 +31,7 @@ description: Use when the input is a committed, unchanged canonical mission spec
 |------|------|----------|
 | canonical spec 正文 | 是 | Goal, scope, constraints, affected files, task structure |
 | 显式 testing / validation 章节 | 重要 | 验收口径、命令、风险点 |
-| 与文档直接关联的 code/file refs | 重要 | `refs`, `area`, `required_mcp` 推断 |
+| 与文档直接关联的 code/file refs | 重要 | `refs`, `area` 推断 |
 
 字段抽取与拆分规则详见 `doc-field-mapping.md`。
 
@@ -126,7 +126,7 @@ python <mission-csv-execute>/scripts/validate_outcome_contract.py issues/<stem>/
 - 生成前读取 `issues/TEMPLATE.csv`，并使用 structured CSV writer 生成完全一致的 28 列表头
 - `acceptance_criteria` 优先从文档里的 validation / testing / success criteria 提取
 - **原子性约束**：单个 issue 必须是一个可独立验证、独立提交的原子变更
-- `required_skills` 与 `required_mcp` 必须在生成阶段显式写全
+- `required_skills` 必须在生成阶段显式写全（`required_mcp` 为 legacy 兼容列，固定留空）
 - `refs` 必须至少包含 1 个 `path:line`
 - **闭环路径约束**：生成组件 issue 后，必须按 `doc-field-mapping.md` 闭环路径规则扫描跨模块消费关系、启动注册、工具注册、flow 注入点，为每个被文档承诺的连接点生成独立接线 issue
 - 每个普通 issue 和 `REVIEW-01` 的 `notes` 必须引用 `outcome_contract:<stem>.outcomes.json`
@@ -143,7 +143,7 @@ python <mission-csv-execute>/scripts/validate_outcome_contract.py issues/<stem>/
 1. 回读 Phase 2.6 的 claim ledger
 2. 对每条 claim，检查是否至少被一个 issue 的 `acceptance_criteria` 显式覆盖
 3. 若 claim 要求生产路径，检查是否存在独立接线 issue 或该 issue 的 AC 明确覆盖生产路径
-4. 检查每条 claim 的 `evidence_required` 是否能被对应 issue 的 `test_mcp` / `required_mcp` / review 条件支撑
+4. 检查每条 claim 的 `evidence_required` 是否能被对应 issue 的 `test_mcp` / review 条件支撑
 5. 未覆盖的 claim 按以下规则处理：
    - 在 `execution_scope` 内 → **补 issue** 或追加到现有 issue 的 AC
    - 在 `execution_scope` 外（文档明确标注为 non-goal / future / deferred / 超出用户指定范围）→ 在 CSV 末尾 notes 记录 `out_of_scope:<doc-section>;<reason>`
@@ -193,7 +193,7 @@ claim_ledger:<stem>.claims.json; claims:CLAIM-001,CLAIM-002; claim_coverage:X/Y;
 | `acceptance_criteria` | `WHEN all non-review issues before this row are closed THEN run mechanical readiness and choose evidence-close for L0-L2 or an unchanged commit already covered by independent scientific PRERUN; WHEN unresolved L3/L4 risk, evidence conflict or a suspected current-scope gap exists THEN try reviewer-subagent, codex-exec-independent, then self-review; WHEN a current-scope gap or overstated claim is found THEN append follow-up issues and REVIEW-02; WHEN no current-scope gaps remain THEN close the CSV while recording Mission result separately from scientific outcome.` |
 | `test_mcp` | `manual` |
 | `required_skills` | 留空 |
-| `required_mcp` | 留空，除非文档本身要求浏览器或外部验证 |
+| `required_mcp` | Legacy 兼容列，固定留空 |
 | `review_initial_requirements` | `Verify all prior non-review rows are closed before running this review.` |
 | `review_regression_requirements` | `Run risk-routed closing review against approved goals, claim/evidence ledger, acceptance criteria, delivered diff and validation evidence; do not repeat independent review when the same scientific commit already passed PRERUN and no scientific sink changed; separate Mission execution result from scientific outcome.` |
 | `refs` | `<doc-path>:1` |

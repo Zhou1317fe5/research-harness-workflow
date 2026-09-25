@@ -29,7 +29,7 @@ id,priority,phase,area,title,description,acceptance_criteria,test_mcp,required_s
 | `acceptance_criteria` | Verifiable acceptance criteria. May contain commas, arrows, parentheses, or newlines; must be CSV-escaped by a writer. |
 | `test_mcp` | Primary verification surface such as `local_cli`, `remote_cli`, or `manual`. |
 | `required_skills` | Semicolon-separated skill names that must be read before implementation; leave empty if none. `PRERUN-REVIEW-N` rows use `pre-run-implementation-review`. |
-| `required_mcp` | Semicolon-separated tool ids required for evidence; leave empty if none. |
+| `required_mcp` | Legacy compatibility column with no runtime consumer; keep empty and do not plan evidence around it. Retained only so existing CSVs keep a valid header. |
 | `review_initial_requirements` | Initial review requirements. |
 | `review_regression_requirements` | Regression review requirements. |
 | `dev_state` | `未开始`, `进行中`, or `已完成`. |
