@@ -209,8 +209,19 @@ class ResearchBindingTests(unittest.TestCase):
         self.git("add", "repair.txt")
         self.git("commit", "-m", "fixture reviewer repair")
         repaired = self.git("rev-parse", "HEAD")
-        closure = self.root / "issues/T/reviews/PRERUN-REVIEW-1/closure.txt"
-        closure.write_text("production sink evidence\n")
+        evidence = self.root / "issues/T/reviews/PRERUN-REVIEW-1/closure-evidence.json"
+        evidence.write_text('{"evidence": "production sink output"}\n')
+        closure = self.root / "issues/T/reviews/PRERUN-REVIEW-1/closure.json"
+        closure.write_text(json.dumps({
+            "schema_version": 1,
+            "reviewed_commit": self.commit,
+            "blockers": [{
+                "id": "B1",
+                "verdict": "closed_repaired",
+                "fix": "repaired production sink",
+                "evidence": ["issues/T/reviews/PRERUN-REVIEW-1/closure-evidence.json"],
+            }],
+        }) + "\n")
         verdict_path = self.root / "issues/T/reviews/PRERUN-REVIEW-1/verdict.json"
         verdict = json.loads(verdict_path.read_text())
         verdict.update(result="scientifically_incorrect", decision="do_not_run")
@@ -220,14 +231,14 @@ class ResearchBindingTests(unittest.TestCase):
         request["gate_provenance"].update(
             pre_run_code_commit=repaired,
             review_result="scientifically_incorrect",
-            blocker_closure_evidence=["issues/T/reviews/PRERUN-REVIEW-1/closure.txt"],
+            blocker_closure_evidence=["issues/T/reviews/PRERUN-REVIEW-1/closure.json"],
         )
         self.row["commit_hash"] = repaired
         self.review["notes"] = (
             f"gated_run:RUN-ROW; pre_run_code_commit:{repaired}; pre_run_result:pass; "
             "review_mode:scientific_review; review_result:scientifically_incorrect; "
             "verdict_artifact:issues/T/reviews/PRERUN-REVIEW-1/verdict.json; "
-            "blocker_closure_evidence:issues/T/reviews/PRERUN-REVIEW-1/closure.txt"
+            "blocker_closure_evidence:issues/T/reviews/PRERUN-REVIEW-1/closure.json"
         )
         self.write_csv()
         validate_mission_launch(build_runspec(request))

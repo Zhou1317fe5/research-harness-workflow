@@ -256,6 +256,22 @@ def validate_mission_launch(spec: dict, *, resume: bool = False, spec_path: Path
         for value in gate["blocker_closure_evidence"]:
             if reference_file(value, csv_path.parent, repo) is None:
                 raise ValueError("scientific blocker closure requires a local evidence artifact")
+        if gate["review_result"] in ("scientifically_incorrect", "targeted_incorrect"):
+            # 与 RunSpec builder 同一实现：负面裁决的放行必须由可校验的关闭文档支撑。
+            from harness.remote.build_rrctl_runspec import validate_repaired_closure
+            verdict_path = repo / gate["verdict_artifact"]
+            reviewed_commit = ""
+            if verdict_path.is_file():
+                try:
+                    reviewed_commit = str(json.loads(
+                        verdict_path.read_text(encoding="utf-8")).get("candidate_commit") or "")
+                except (OSError, UnicodeError, json.JSONDecodeError):
+                    reviewed_commit = ""
+            try:
+                validate_repaired_closure(list(gate["blocker_closure_evidence"]),
+                                          repo_root=repo, reviewed_commit=reviewed_commit)
+            except Exception as exc:  # noqa: BLE001 - 统一转成准入拒绝
+                raise ValueError(f"scientific blocker closure is not verifiable: {exc}") from exc
 
 
 def rrctl_call(argv: list[str], repo_root: Path) -> subprocess.CompletedProcess:

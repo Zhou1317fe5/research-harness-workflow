@@ -356,6 +356,83 @@ def _verified_verdict(
     return relative.as_posix()
 
 
+# repaired_pass 的 closure 证据必须自证：至少一份 JSON 关闭文档，逐 blocker 给出
+# 已关闭判定与**存在的**证据文件。仅检查「文件存在」不足以说明科学缺陷已关闭。
+CLOSURE_OPEN_VERDICTS = {
+    "open", "unresolved", "pending", "todo", "in_progress", "not_fixed", "unclosed",
+}
+CLOSURE_CLOSED_PREFIXES = (
+    "confirmed_", "closed", "fixed", "acknowledged_", "resolved", "verified",
+)
+
+
+def _closure_evidence_paths(entry: Any, repo_root: Path, label: str) -> list[str]:
+    values = _string_list(entry.get("evidence") or entry.get("evidence_paths") or [],
+                          f"{label}.evidence")
+    if not values:
+        raise RunSpecBuildError(f"{label}.evidence_required")
+    resolved: list[str] = []
+    for item in values:
+        if item.startswith(("commit:", "user:", "command:", "note:")):
+            continue
+        candidate = (repo_root / item).resolve()
+        if not candidate.is_relative_to(repo_root) or not candidate.is_file():
+            raise RunSpecBuildError(f"{label}.evidence_missing:{item}")
+        resolved.append(item)
+    if not resolved:
+        raise RunSpecBuildError(f"{label}.evidence_missing")
+    return resolved
+
+
+def validate_repaired_closure(paths: list[str], *, repo_root: Path,
+                             reviewed_commit: str) -> int:
+    """校验 repaired_pass 的关闭证据；返回关闭文档声明的 blocker 数。"""
+    documents = 0
+    blockers_total = 0
+    for value in paths:
+        candidate = (repo_root / value).resolve()
+        if not candidate.is_relative_to(repo_root) or not candidate.is_file():
+            raise RunSpecBuildError(f"gate_provenance.blocker_closure_missing:{value}")
+        if candidate.suffix.lower() != ".json":
+            continue
+        try:
+            document = json.loads(candidate.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+            raise RunSpecBuildError(
+                f"gate_provenance.blocker_closure_invalid:{value}"
+            ) from exc
+        if not isinstance(document, dict):
+            raise RunSpecBuildError(f"gate_provenance.blocker_closure_invalid:{value}")
+        declared_commit = document.get("reviewed_commit")
+        if declared_commit is not None and declared_commit != reviewed_commit:
+            raise RunSpecBuildError(
+                f"gate_provenance.blocker_closure_commit_mismatch:{value}"
+            )
+        blockers = document.get("blockers")
+        if not isinstance(blockers, list) or not blockers:
+            raise RunSpecBuildError(f"gate_provenance.blocker_closure_blocks_missing:{value}")
+        for index, blocker in enumerate(blockers):
+            label = f"gate_provenance.blocker_closure_evidence[{value}][{index}]"
+            if not isinstance(blocker, dict):
+                raise RunSpecBuildError(f"{label}.invalid")
+            blocker_id = str(blocker.get("id") or blocker.get("blocker_id") or "").strip()
+            if not blocker_id:
+                raise RunSpecBuildError(f"{label}.id_missing")
+            verdict_value = str(blocker.get("verdict") or blocker.get("status") or "").strip()
+            lowered = verdict_value.lower()
+            if (not verdict_value or lowered in CLOSURE_OPEN_VERDICTS
+                    or not lowered.startswith(CLOSURE_CLOSED_PREFIXES)):
+                raise RunSpecBuildError(f"{label}.not_closed:{blocker_id}")
+            if not str(blocker.get("fix") or blocker.get("fix_target") or "").strip():
+                raise RunSpecBuildError(f"{label}.fix_missing:{blocker_id}")
+            _closure_evidence_paths(blocker, repo_root, label)
+            blockers_total += 1
+        documents += 1
+    if not documents:
+        raise RunSpecBuildError("gate_provenance.blocker_closure_document_required")
+    return blockers_total
+
+
 def _gate_provenance(
     raw: Any, *, source_commit: str, repo_root: Path,
     allow_legacy_resume: bool = False,
@@ -434,6 +511,18 @@ def _gate_provenance(
         "scientifically_incorrect",
         "targeted_incorrect",
     } and bool(closure)
+    if repaired_pass:
+        # 关闭声明必须可校验地指向同一份 verdict 并逐条给出已关闭判定与证据。
+        reviewed_commit = ""
+        if verdict_artifact is not None:
+            try:
+                reviewed_commit = str(
+                    json.loads((repo_root / verdict_artifact).read_text(encoding="utf-8"))
+                    .get("candidate_commit") or "")
+            except (OSError, UnicodeError, json.JSONDecodeError):
+                reviewed_commit = ""
+        validate_repaired_closure(closure, repo_root=repo_root,
+                                 reviewed_commit=reviewed_commit)
     if not (direct_pass or repaired_pass):
         raise RunSpecBuildError("gate_provenance.correctness_not_closed")
     return {
