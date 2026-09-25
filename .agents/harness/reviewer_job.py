@@ -209,12 +209,10 @@ def command_for(
         "--no-context-files", "--system-prompt",
         "You are an independent, read-only scientific implementation reviewer. Follow the supplied task exactly and return only the required JSON object.",
     ]
-    # `--no-extensions` disables extension *discovery* only: explicitly listed
-    # `--extension` sources still load. A provider registered by an extension must
-    # therefore be listed in review_model.REVIEW_EXTENSIONS, so the reviewer loads
-    # that provider instead of every installed user extension.
-    for source in review_model.review_extension_sources("pi"):
-        base += ["--extension", source]
+    # `--no-extensions` is unconditional: no extension code runs in the review
+    # session, so the approved model must come from a built-in provider or from
+    # the agent-level models.json. Use the codex backend when a provider only
+    # exists as an extension.
     if model:
         base += ["--model", model]
     if session_id:

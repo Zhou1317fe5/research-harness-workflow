@@ -10,7 +10,7 @@ schema_version = 1
 
 # 每个宿主获批的审查模型。键只能是 review_model.py 已知的宿主。
 #   pi    —— Pi 启动的会话（scientific-reviewer 子代理与 `pi --model`）；
-#            provider 前缀名，例如由扩展注册的 provider。
+#            provider 前缀名。
 #   codex —— `codex exec -m`，解析裸模型名。
 [models]
 # pi = "<provider>/<model>"
@@ -22,11 +22,12 @@ schema_version = 1
 # level = "high"
 # suffix_hosts = ["pi"]
 
-# 审查会话需显式加载的 provider 扩展（Pi `--extension` 源：
-# `npm:<pkg>` / `git:<repo>@<ref>` / URL / 本地路径），按宿主列出。
-#
-# 审查会话用 `--no-extensions` 关闭扩展“发现”，因此由扩展注册的 provider
-# 必须写在这里才会被加载——这样 reviewer 只加载这一项，而不是全部用户扩展。
-# 留空即最严隔离，此时获批模型必须来自内置 provider。
-[extensions]
-# pi = ["npm:<provider-package>"]
+# 关于 provider 可用性（无需在这里配置）：
+# 审查会话固定以 `--no-extensions` 启动——审查进程不执行任何扩展代码。因此获批
+# 模型必须来自以下之一：
+#   1. Pi 内置 provider（如 `openai-codex/*`，走 /login 或环境变量凭据）；
+#   2. agent 级 `models.json` 声明的 OpenAI/Anthropic/Google 兼容端点
+#      （见 Pi 文档 Choose a Model → Configure a compatible endpoint）；
+#   3. 审查走 codex 后端（`--backend codex`），它用 `codex exec`，与 Pi 扩展无关。
+# 若某模型只能由扩展注册，请把它声明进 `models.json`，或改用 codex 后端；
+# 不要为了跑审查而在审查进程里放开扩展加载。

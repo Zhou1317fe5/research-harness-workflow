@@ -84,31 +84,17 @@ class ReviewerJobTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "review packet is not ready"):
             reviewer_job.validate_packet(self.packet)
 
-    def test_pi_argv_keeps_discovery_isolation_and_loads_only_listed_extensions(self):
+    def test_pi_argv_always_disables_extension_discovery(self):
         argv, _ = reviewer_job.command_for(
             "pi", self.root, self.job, 0, None, self.job / "response.json",
             self.job / "schema.json", self.task, "openai-codex/gpt-5.6-sol:high",
         )
+        # 隔离是无条件不变量：审查进程不执行任何扩展代码，也不能被配置放宽。
         self.assertIn("--no-extensions", argv)
+        self.assertNotIn("--extension", argv)
         self.assertIn("--no-skills", argv)
         self.assertIn("--no-context-files", argv)
         self.assertEqual(argv[argv.index("--tools") + 1], "read,grep,find,ls")
-        self.assertNotIn("--extension", argv)
-
-        with patch.dict(
-            reviewer_job.review_model.REVIEW_EXTENSIONS,
-            {"pi": ("npm:pi-provider-newapi",), "codex": ()},
-        ):
-            argv, _ = reviewer_job.command_for(
-                "pi", self.root, self.job, 0, None, self.job / "response.json",
-                self.job / "schema.json", self.task, None,
-            )
-        # 隔离仍然保留：只做发现禁用 + 显式加载，而不是加载全部用户扩展。
-        self.assertIn("--no-extensions", argv)
-        self.assertEqual(
-            [argv[index + 1] for index, item in enumerate(argv) if item == "--extension"],
-            ["npm:pi-provider-newapi"],
-        )
 
     def test_execute_uses_canonical_model_when_launcher_omits_it(self):
         seen = {}

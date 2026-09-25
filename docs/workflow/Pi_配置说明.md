@@ -96,6 +96,14 @@ tools: read, grep, find, ls
 
 项目已经提供只读 profile 和 Reviewer task 的传递规则，不需要另写一份科研审查 prompt。
 
+**关于 provider 与扩展。** 审查会话（`reviewer_job.py --backend pi`）固定以 `--no-extensions` 启动：
+审查进程不执行任何扩展代码，因此获批的审查模型必须来自 Pi 内置 provider（如 `openai-codex/*`，
+用 `/login` 或环境变量凭据）、或 `~/.pi/agent/models.json` 里声明的兼容端点。把该端点写进
+`models.json` 后，即使某个扩展也注册了同名 provider，审查也不需要加载该扩展。若某模型只能由扩展
+注册，改用 codex 后端的审查通道（`--backend codex`，走 `codex exec`，与 Pi 扩展无关）。获批值与
+thinking 级别记录在 `.agents/harness/config/review_contract.toml`（缺失时用 `review_model.py`
+的内置默认值）。
+
 `pi-fff` 建议保持默认 `tools-and-ui` 模式。它增加 `fffind`、`ffgrep`、`fff-multi-grep` 和 FFF 文件补全，同时保留 Pi 原有工具。需要显式指定时，可以这样启动：
 
 ```bash

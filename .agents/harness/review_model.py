@@ -30,8 +30,10 @@ Contract shape::
     level = "high"        # requested thinking level for reviewer sessions
     suffix_hosts = ["pi"] # hosts that resolve the level inside the model id
 
-    [extensions]          # Pi `--extension` sources the reviewer may load
-    pi = ["npm:<provider-package>"]
+The reviewer session runs with extension discovery disabled, so an approved
+model must come from a built-in provider, a logged-in provider, or a compatible
+endpoint declared in the agent-level ``models.json``. See
+``config/review_contract.example.toml``.
 """
 
 from __future__ import annotations
@@ -76,7 +78,7 @@ DEFAULT_SUFFIX_HOSTS = ("pi",)
 
 CONTRACT_PATH = Path(__file__).resolve().parent / "config" / "review_contract.toml"
 CONTRACT_SCHEMA_VERSION = 1
-_CONTRACT_KEYS = {"schema_version", "models", "thinking", "extensions"}
+_CONTRACT_KEYS = {"schema_version", "models", "thinking"}
 
 
 class ReviewContract(NamedTuple):
@@ -85,7 +87,6 @@ class ReviewContract(NamedTuple):
     models: dict[str, str]
     thinking: str
     suffix_hosts: tuple[str, ...]
-    extensions: dict[str, tuple[str, ...]]
 
 
 def _invalid(message: str) -> ValueError:
@@ -106,7 +107,6 @@ def _default_contract() -> ReviewContract:
         models=dict(DEFAULT_MODELS),
         thinking=DEFAULT_THINKING,
         suffix_hosts=tuple(DEFAULT_SUFFIX_HOSTS),
-        extensions={host: () for host in KNOWN_HOSTS},
     )
 
 
@@ -159,14 +159,6 @@ def load_contract(path: Path = CONTRACT_PATH) -> ReviewContract:
             raise _invalid("thinking.suffix_hosts:expected_known_hosts")
         contract = contract._replace(suffix_hosts=tuple(dict.fromkeys(hosts)))
 
-    extensions = _host_table(data.get("extensions", {}), "extensions")
-    for host, sources in extensions.items():
-        if not isinstance(sources, list) or any(
-            not isinstance(source, str) or not source.strip() for source in sources
-        ):
-            raise _invalid(f"extensions.{host}:expected_non_empty_string_list")
-        contract.extensions[host] = tuple(source.strip() for source in sources)
-
     for host in KNOWN_HOSTS:
         if not contract.models.get(host):
             raise _invalid(f"models.{host}:missing")
@@ -178,7 +170,6 @@ CONTRACT = load_contract()
 MODELS = CONTRACT.models
 REVIEW_THINKING = CONTRACT.thinking
 MODEL_TAKES_THINKING_SUFFIX = {host: host in CONTRACT.suffix_hosts for host in MODELS}
-REVIEW_EXTENSIONS: dict[str, tuple[str, ...]] = CONTRACT.extensions
 
 
 def model_for_host(host: str) -> str:
@@ -201,29 +192,6 @@ def review_job_model(host: str) -> str:
     if host not in MODEL_TAKES_THINKING_SUFFIX:
         raise ValueError(f"unknown review host: {host}") from None
     return f"{base}:{REVIEW_THINKING}" if MODEL_TAKES_THINKING_SUFFIX[host] else base
-
-
-def review_extension_sources(host: str) -> tuple[str, ...]:
-    """Explicit `--extension` sources the reviewer launcher may load for a host.
-
-    The Pi reviewer session runs with extension discovery disabled
-    (``--no-extensions``) so no unrelated user extension can register tools,
-    inject prompt content or observe the session. ``--no-extensions`` only
-    disables *discovery*: explicitly listed sources still load, which keeps the
-    reviewer's extension surface at the reviewed provider instead of every
-    installed extension. An empty tuple keeps the strictest isolation, and then
-    the host's approved model must come from a built-in provider.
-    """
-    if host not in REVIEW_EXTENSIONS:
-        raise ValueError(f"unknown review host: {host}") from None
-    sources = REVIEW_EXTENSIONS[host]
-    if not isinstance(sources, tuple) or any(
-        not isinstance(source, str) or not source.strip() for source in sources
-    ):
-        raise ValueError(
-            f"review extensions for host {host!r} must be non-empty --extension sources"
-        )
-    return sources
 
 
 # Canonical recorded identity per host, written into CSV notes, the analysis

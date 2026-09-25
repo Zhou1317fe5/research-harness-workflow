@@ -151,15 +151,11 @@ class ReviewContractLoadingTests(unittest.TestCase):
         self.assertEqual(contract.models, self.review_model.DEFAULT_MODELS)
         self.assertEqual(contract.thinking, self.review_model.DEFAULT_THINKING)
         self.assertEqual(contract.suffix_hosts, self.review_model.DEFAULT_SUFFIX_HOSTS)
-        self.assertEqual(
-            contract.extensions, {host: () for host in self.review_model.KNOWN_HOSTS}
-        )
 
     def test_partial_contract_overrides_only_what_it_names(self):
         contract = self.review_model.load_contract(self.write(
             'schema_version = 1\n\n[models]\npi = "xiaojimao/gpt-6-astra"\n\n'
-            '[thinking]\nlevel = "max"\n\n'
-            '[extensions]\npi = ["npm:pi-provider-newapi"]\n'
+            '[thinking]\nlevel = "max"\n'
         ))
         self.assertEqual(contract.models["pi"], "xiaojimao/gpt-6-astra")
         self.assertEqual(
@@ -167,8 +163,6 @@ class ReviewContractLoadingTests(unittest.TestCase):
         )
         self.assertEqual(contract.thinking, "max")
         self.assertEqual(contract.suffix_hosts, self.review_model.DEFAULT_SUFFIX_HOSTS)
-        self.assertEqual(contract.extensions["pi"], ("npm:pi-provider-newapi",))
-        self.assertEqual(contract.extensions["codex"], ())
 
     def test_malformed_contract_fails_closed(self):
         cases = {
@@ -178,7 +172,6 @@ class ReviewContractLoadingTests(unittest.TestCase):
             "schema 版本": 'schema_version = 99\n',
             "suffix_hosts 非数组": '[thinking]\nsuffix_hosts = "pi"\n',
             "suffix_hosts 未知宿主": '[thinking]\nsuffix_hosts = ["newapi"]\n',
-            "extensions 非字符串数组": '[extensions]\npi = [1]\n',
             "TOML 语法": '[models\npi = "a/b"\n',
         }
         for label, body in cases.items():
@@ -190,7 +183,6 @@ class ReviewContractLoadingTests(unittest.TestCase):
         contract = self.review_model.CONTRACT
         self.assertEqual(self.review_model.MODELS, contract.models)
         self.assertEqual(self.review_model.REVIEW_THINKING, contract.thinking)
-        self.assertEqual(self.review_model.REVIEW_EXTENSIONS, contract.extensions)
         self.assertEqual(
             self.review_model.MODEL_TAKES_THINKING_SUFFIX,
             {host: host in contract.suffix_hosts for host in contract.models},
