@@ -216,9 +216,17 @@ The reviewer must inspect the committed code and return all currently evaluable 
 
 Treat quota errors, launcher failures, and silence before any scientific verdict as review-service failures. A `running` status alone is not evidence of progress. Let `reviewer_job.py` resume the recorded session first; transport resumes of that same session are not replacements and do not create another scientific opinion. Only after bounded same-session recovery is exhausted may the runner create a fresh independent execution, with the default maximum of one replacement. Keep the candidate commit, evidence, review scope, and single PRERUN row unchanged. Continue within existing task authorization.
 
+Reviewer job lifecycle operations:
+
+- Ownership comes from the job's lock, not from a process-name match. `reviewer_job.py` takes an exclusive `flock` on `<job-dir>/job.lock`, so a second runner fails with `reviewer job is already running`; establish ownership from that lock plus the recorded job inputs (`job.json` backend / packet / task identity) before terminating anything. Never use a fuzzy `pkill -f reviewer_job`: the Executor's own shell command line contains the same string, so the pattern also kills the Executor shell.
+- To recover a job you have established ownership of, terminate that exact PID and rerun the same `reviewer_job.py` command. The runner then sees the recorded `running` state while no reviewer transport child is running under its own PID, records `service_failed`, and resumes the recorded session instead of creating a second scientific opinion. Transport children orphaned by the killed runner are not visible to the new runner; confirm them manually with `pgrep`/`ps`. Where the process table is unavailable the runner conservatively treats the job as alive and the bounded attempt timeout ends the attempt instead.
+- Keep the candidate commit, evidence, review scope and the single PRERUN row unchanged through recovery.
+
 This replaces a failed execution of the same review; it does not request another scientific opinion. A returned scientific verdict, including `not_evaluable`, ends service recovery and must be handled on its merits. Formatting problems in an available verdict can be normalized without repeating the review. If the replacement also fails, record the capability gap once and continue independent work; do not loop, infer a pass, or weaken the scientific gate. Any user-authorized exception belongs in the project's run record, with the unfulfilled review requirement stated explicitly.
 
 The review gate accepts only `verdict.json` with schema `prerun.scientific-verdict.v1`. Its packet, task, raw-response digests, candidate commit, review mode, result, and reviewer id must validate. Record its repository-relative path as `verdict_artifact:<path>` and in `gate_provenance.verdict_artifact`; reviewer prose or a process exit code alone cannot open the gate.
+
+A verdict written by `reviewer_job.py` also records `requested_model` and an event-stream `observed_model`, and RunSpec construction checks both with the shared validator in `.agents/harness/review_model.py`: an `observed_model` of `unknown` is rejected as unverifiable, any other recorded identity must match a model approved for a configured host, and verdicts that record no model fields stay accepted for backward compatibility. The approved identity for each host lives only in `review_model.py`, which is the single place to change it.
 
 ## Blocker Repair
 

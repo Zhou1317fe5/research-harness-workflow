@@ -769,6 +769,11 @@ class MissionContractTests(unittest.TestCase):
             "skills/mission-csv-execute/scripts/final_ready.py",
             "skills/mission-recovery/scripts/scan_recovery.py",
             "skills/mission-approved-doc/SKILL.md",
+            "skills/pre-run-implementation-review/SKILL.md",
+            "skills/pre-run-implementation-review/agents/openai.yaml",
+            "skills/pre-run-implementation-review/scripts/prerun_core.py",
+            "skills/pre-run-implementation-review/scripts/prerun_ready.py",
+            "skills/pre-run-implementation-review/scripts/prerun_route.py",
         ]
         for relative in mirrored:
             with self.subTest(relative=relative):
