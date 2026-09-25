@@ -14,6 +14,7 @@ PRERUN launcher 与 closing review 的运行参数则决定 verdict 记录的 `r
 """
 import importlib.util
 import re
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -39,6 +40,7 @@ NON_RESTATING_FILES = (
     ROOT / ".claude/skills/mission-csv-execute/references/closing-review.md",
     ROOT / ".codex/skills/mission-approved-doc/SKILL.md",
     ROOT / ".claude/skills/mission-approved-doc/SKILL.md",
+    ROOT / ".agents/harness/config/review_contract.example.toml",
     *PRERUN_LAUNCHERS,
 )
 
@@ -128,6 +130,85 @@ class ReviewModelSyncTests(unittest.TestCase):
                     present, [],
                     f"{path} 复述了 canonical 模型值 {present}；应改为指向 review_model.py",
                 )
+
+
+class ReviewContractLoadingTests(unittest.TestCase):
+    """值在项目自有配置里，逻辑仍在本仓；缺文件回退默认值，坏文件 fail-closed。"""
+
+    def setUp(self):
+        self.review_model = _load_review_model()
+        self.temp = tempfile.TemporaryDirectory(prefix="review-contract-")
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+
+    def write(self, body: str) -> Path:
+        path = self.root / "review_contract.toml"
+        path.write_text(body, encoding="utf-8")
+        return path
+
+    def test_missing_contract_file_keeps_builtin_defaults(self):
+        contract = self.review_model.load_contract(self.root / "absent.toml")
+        self.assertEqual(contract.models, self.review_model.DEFAULT_MODELS)
+        self.assertEqual(contract.thinking, self.review_model.DEFAULT_THINKING)
+        self.assertEqual(contract.suffix_hosts, self.review_model.DEFAULT_SUFFIX_HOSTS)
+        self.assertEqual(
+            contract.extensions, {host: () for host in self.review_model.KNOWN_HOSTS}
+        )
+
+    def test_partial_contract_overrides_only_what_it_names(self):
+        contract = self.review_model.load_contract(self.write(
+            'schema_version = 1\n\n[models]\npi = "xiaojimao/gpt-6-astra"\n\n'
+            '[thinking]\nlevel = "max"\n\n'
+            '[extensions]\npi = ["npm:pi-provider-newapi"]\n'
+        ))
+        self.assertEqual(contract.models["pi"], "xiaojimao/gpt-6-astra")
+        self.assertEqual(
+            contract.models["codex"], self.review_model.DEFAULT_MODELS["codex"]
+        )
+        self.assertEqual(contract.thinking, "max")
+        self.assertEqual(contract.suffix_hosts, self.review_model.DEFAULT_SUFFIX_HOSTS)
+        self.assertEqual(contract.extensions["pi"], ("npm:pi-provider-newapi",))
+        self.assertEqual(contract.extensions["codex"], ())
+
+    def test_malformed_contract_fails_closed(self):
+        cases = {
+            "未知宿主": '[models]\nnewapi = "a/b"\n',
+            "未知顶层键": 'schema_version = 1\n[extra]\nx = 1\n',
+            "空值": '[models]\npi = "  "\n',
+            "schema 版本": 'schema_version = 99\n',
+            "suffix_hosts 非数组": '[thinking]\nsuffix_hosts = "pi"\n',
+            "suffix_hosts 未知宿主": '[thinking]\nsuffix_hosts = ["newapi"]\n',
+            "extensions 非字符串数组": '[extensions]\npi = [1]\n',
+            "TOML 语法": '[models\npi = "a/b"\n',
+        }
+        for label, body in cases.items():
+            with self.subTest(label=label):
+                with self.assertRaisesRegex(ValueError, "review_contract_invalid"):
+                    self.review_model.load_contract(self.write(body))
+
+    def test_module_constants_come_from_the_contract(self):
+        contract = self.review_model.CONTRACT
+        self.assertEqual(self.review_model.MODELS, contract.models)
+        self.assertEqual(self.review_model.REVIEW_THINKING, contract.thinking)
+        self.assertEqual(self.review_model.REVIEW_EXTENSIONS, contract.extensions)
+        self.assertEqual(
+            self.review_model.MODEL_TAKES_THINKING_SUFFIX,
+            {host: host in contract.suffix_hosts for host in contract.models},
+        )
+        self.assertEqual(
+            self.review_model.REVIEW_JOB_MODEL,
+            self.review_model.review_job_model("pi"),
+        )
+
+    def test_project_owned_contract_file_is_excluded_from_template_sync(self):
+        # workflow_sync.py 是模板侧的本地工具（在本仓被 .gitignore 排除），
+        # 新克隆的仓库可能没有它；只在本机存在时校验排除项。
+        source_path = ROOT / ".agents/harness/workflow/workflow_sync.py"
+        if not source_path.is_file():
+            self.skipTest("workflow_sync.py 不在本工作树中")
+        source = source_path.read_text(encoding="utf-8")
+        self.assertIn(".agents/harness/config/review_contract.toml", source)
+        self.assertNotIn(".agents/harness/config/review_contract.example.toml", source)
 
 
 if __name__ == "__main__":

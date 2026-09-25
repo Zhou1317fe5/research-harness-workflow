@@ -122,7 +122,7 @@ Keep commonly used `notes` tags stable:
 | `deferred_coverage:<covered>/<open>` | Open deferred findings rendered in the final handoff. |
 | `review_agent_mode:<mode>` | Closing mode: `evidence-close`, `reviewer-subagent`, `codex-exec-independent`, `self-review`, or `pending`. |
 | `review_independence:<true\|false\|pending>` | Boolean closing-review independence; `evidence-close` and self-review are `false`. |
-| `review_requested_model:<model>` | Requested independent reviewer model; the codex value comes from `.agents/harness/review_model.py`. `evidence-close` uses `not_applicable`. |
+| `review_requested_model:<model>` | Requested independent reviewer model; the codex value comes from `.agents/harness/config/review_contract.toml`. `evidence-close` uses `not_applicable`. |
 | `review_observed_model:<model>` | Model observed from session metadata/event stream; `evidence-close` uses `not_applicable`. |
 | `review_model_evidence:<session-metadata\|event-stream\|parent-runtime\|unknown\|not_applicable\|pending>` | Source supporting the observed model value; `pending` is generation-only. |
 | `review_result:<vision_met\|gaps_found\|limited_review>` | Closing review outcome. |
@@ -130,7 +130,7 @@ Keep commonly used `notes` tags stable:
 | `result_analysis:<path>` | Canonical `reviews/result-analysis.json` consumed by `RESULT-ANALYSIS-01` and the final `REVIEW-*`; both rows must reference the same index. |
 | `analysis_agent_mode:<scientific-reviewer-subagent\|codex-exec-independent>` | Formal post-run analysis comes from an isolated strong reviewer: the Pi `scientific-reviewer` sub-agent, or an ephemeral read-only `codex exec` session via `run_result_analysis.py`. |
 | `analysis_independence:<true\|pending>` | Post-run analysis independence; `true` is required for completion. |
-| `analysis_requested_model:<model>` | Requested post-run reviewer model; the canonical value is the host entry in `.agents/harness/review_model.py`. |
+| `analysis_requested_model:<model>` | Requested post-run reviewer model; the canonical value is the host entry in `.agents/harness/config/review_contract.toml`. |
 | `analysis_observed_model:<model>` | Model observed from host/session metadata or event stream, not self-reported reviewer text. |
 | `analysis_model_evidence:<session-metadata\|event-stream\|parent-runtime\|pending>` | Evidence source for the observed post-run reviewer model; `scientific-reviewer-subagent` requires `session-metadata`, `codex-exec-independent` requires `event-stream`. |
 | `analysis_model_evidence_ref:<ref>` | Verifiable reviewer evidence: `session:<uuid>#tool:<subagent-tool-call-id>` for the Pi sub-agent channel, or `exec:<csv-relative-verdict-path>#verdict` for the codex-exec channel; the validator resolves the real reviewer result and its output hash. |

@@ -1,0 +1,32 @@
+# 审查模型契约：项目 / 宿主级科研契约，随项目走，不参与模板同步。
+#
+# 复制为同目录的 `review_contract.toml` 后按需填写；文件缺失或留空时使用
+# `.agents/harness/review_model.py` 的内置默认值（模板默认值即该文件的默认值）。
+# 参数含义、校验规则与按宿主的推导都在 `review_model.py`；本文件只承载取值。
+#
+# 校验在导入时 fail-closed：未知宿主、未知键、空值或不匹配的 schema_version
+# 都会直接报错，不会静默用一个未获批准的模型去跑审查。
+schema_version = 1
+
+# 每个宿主获批的审查模型。键只能是 review_model.py 已知的宿主。
+#   pi    —— Pi 启动的会话（scientific-reviewer 子代理与 `pi --model`）；
+#            provider 前缀名，例如由扩展注册的 provider。
+#   codex —— `codex exec -m`，解析裸模型名。
+[models]
+# pi = "<provider>/<model>"
+# codex = "<model>"
+
+# 审查会话的 thinking 级别，以及哪些宿主把它写进模型 id。
+# Pi 接受 `model:thinking`；codex CLI 用裸名，reasoning 另行配置。
+[thinking]
+# level = "high"
+# suffix_hosts = ["pi"]
+
+# 审查会话需显式加载的 provider 扩展（Pi `--extension` 源：
+# `npm:<pkg>` / `git:<repo>@<ref>` / URL / 本地路径），按宿主列出。
+#
+# 审查会话用 `--no-extensions` 关闭扩展“发现”，因此由扩展注册的 provider
+# 必须写在这里才会被加载——这样 reviewer 只加载这一项，而不是全部用户扩展。
+# 留空即最严隔离，此时获批模型必须来自内置 provider。
+[extensions]
+# pi = ["npm:<provider-package>"]

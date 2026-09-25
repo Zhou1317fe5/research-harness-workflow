@@ -163,7 +163,7 @@ claim_ledger:<stem>.claims.json; claims:CLAIM-001,CLAIM-002; claim_coverage:X/Y;
 
 - 只为 canonical 28 列科研 CSV 生成；显式 19 列 compatibility CSV 不迁移
 - 所有 `remote_state=ingested` 的非空 `(exp_id, run_id)` 必须由全新的 `scientific-reviewer` sub-agent 分析，并在索引中逐一覆盖
-- `notes` 至少包含 `analysis_kind:post_run; result_analysis:reviews/result-analysis.json; analysis_agent_mode:pending; analysis_independence:pending; analysis_requested_model:<review_model 的 Pi 当前值>; analysis_observed_model:pending; analysis_model_evidence:pending; analysis_model_evidence_ref:pending`
+- `notes` 至少包含 `analysis_kind:post_run; result_analysis:reviews/result-analysis.json; analysis_agent_mode:pending; analysis_independence:pending; analysis_requested_model:<review_contract.toml 的 Pi 当前值>; analysis_observed_model:pending; analysis_model_evidence:pending; analysis_model_evidence_ref:pending`
 - 分析输出必须原样落入 `research_workspace/experiments/<ExpID>/analysis/analysis.md`，严格包含 `Change / Result / Finding / Next` 四段；`reviews/result-analysis.json` 必须记录 hash、证据引用、固定 scientific outcome、逐条 `review_evidence_ref` 和 `review_output_sha256`，并绑定可核验模型证据
 - `final_ready.py` 与 `csv_completion_errors()` 都会在进入 `REVIEW-*` 前 fail-closed 检查；advisor、closing review 或 self-review 不能替代该行
 
