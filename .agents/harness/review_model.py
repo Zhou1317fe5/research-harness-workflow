@@ -52,6 +52,39 @@ def review_job_model(host: str) -> str:
     return f"{model_for_host(host)}:{REVIEW_THINKING}"
 
 
+# Reviewer launcher isolation.
+#
+# The Pi reviewer session runs with extension discovery disabled
+# (`--no-extensions`) so no unrelated user extension can register tools, inject
+# prompt content or observe the session. `--no-extensions` only disables
+# *discovery*: explicitly listed `--extension` sources still load. A provider
+# that is itself supplied by an extension (for example an npm provider package)
+# must therefore be listed here, which keeps the reviewer's extension surface at
+# the reviewed provider instead of every installed extension.
+#
+# Entries are Pi `--extension` sources: `npm:<pkg>`, `git:<repo>@<ref>`, a URL,
+# or a local path. An empty tuple keeps the strictest isolation, and then the
+# host's approved model must come from a built-in provider.
+REVIEW_EXTENSIONS: dict[str, tuple[str, ...]] = {
+    "pi": (),
+    "codex": (),
+}
+
+
+def review_extension_sources(host: str) -> tuple[str, ...]:
+    """Explicit `--extension` sources the reviewer launcher may load for a host."""
+    if host not in REVIEW_EXTENSIONS:
+        raise ValueError(f"unknown review host: {host}") from None
+    sources = REVIEW_EXTENSIONS[host]
+    if not isinstance(sources, tuple) or any(
+        not isinstance(source, str) or not source.strip() for source in sources
+    ):
+        raise ValueError(
+            f"review extensions for host {host!r} must be non-empty --extension sources"
+        )
+    return sources
+
+
 # Canonical recorded identity per host, written into CSV notes, the analysis
 # index, and verdicts for that host's channel.
 RECORDED_MODELS = {host: model_for_host(host) for host in MODELS}

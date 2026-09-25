@@ -84,6 +84,120 @@ class ReviewerJobTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "review packet is not ready"):
             reviewer_job.validate_packet(self.packet)
 
+    def test_pi_argv_keeps_discovery_isolation_and_loads_only_listed_extensions(self):
+        argv, _ = reviewer_job.command_for(
+            "pi", self.root, self.job, 0, None, self.job / "response.json",
+            self.job / "schema.json", self.task, "openai-codex/gpt-5.6-sol:high",
+        )
+        self.assertIn("--no-extensions", argv)
+        self.assertIn("--no-skills", argv)
+        self.assertIn("--no-context-files", argv)
+        self.assertEqual(argv[argv.index("--tools") + 1], "read,grep,find,ls")
+        self.assertNotIn("--extension", argv)
+
+        with patch.dict(
+            reviewer_job.review_model.REVIEW_EXTENSIONS,
+            {"pi": ("npm:pi-provider-newapi",), "codex": ()},
+        ):
+            argv, _ = reviewer_job.command_for(
+                "pi", self.root, self.job, 0, None, self.job / "response.json",
+                self.job / "schema.json", self.task, None,
+            )
+        # 隔离仍然保留：只做发现禁用 + 显式加载，而不是加载全部用户扩展。
+        self.assertIn("--no-extensions", argv)
+        self.assertEqual(
+            [argv[index + 1] for index, item in enumerate(argv) if item == "--extension"],
+            ["npm:pi-provider-newapi"],
+        )
+
+    def test_execute_uses_canonical_model_when_launcher_omits_it(self):
+        seen = {}
+
+        def run(argv, _prompt, _events, _stderr, _timeout, on_session, _cwd):
+            seen["argv"] = argv
+            on_session("pi-session-fixture")
+            (self.job / "pi-session-0.jsonl").write_text(
+                json.dumps({"type": "session", "id": "01a0d664"}) + "\n"
+                + json.dumps({"type": "message", "role": "assistant", "content": []}) + "\n"
+                + json.dumps({"type": "model_change", "provider": "xiaojimao",
+                              "modelId": "gpt-6-astra"}) + "\n",
+                encoding="utf-8",
+            )
+            return 0, json.dumps({
+                "reviewer_id": "independent-fixture",
+                "review_mode": "scientific_review",
+                "result": "scientifically_correct",
+                "decision": "allow_run",
+                "report_markdown": "No blockers.",
+            }), False
+
+        args = self.args()
+        args.backend = "pi"
+        args.model = None
+        with patch.object(reviewer_job, "validate_packet", return_value=(json.loads(self.packet.read_text()), "f" * 64)), patch.object(reviewer_job.shutil, "which", return_value="/fixture/pi"), patch.object(reviewer_job, "run_process", side_effect=run):
+            self.assertEqual(reviewer_job.execute(args), 0)
+        self.assertEqual(
+            seen["argv"][seen["argv"].index("--model") + 1],
+            reviewer_job.review_model.review_job_model("pi"),
+        )
+        verdict = json.loads((self.job / "verdict.json").read_text())
+        self.assertEqual(
+            verdict["requested_model"], reviewer_job.review_model.review_job_model("pi")
+        )
+        # 取证来自 Pi 会话事件（provider/modelId 组合），而不是 --mode text 的 stdout。
+        self.assertEqual(verdict["observed_model"], "xiaojimao/gpt-6-astra")
+        self.assertEqual(verdict["model_evidence"], "event-stream")
+
+    def test_pi_observed_model_reads_only_runtime_model_change_events(self):
+        cases = {
+            "provider 前缀缺失时拼接": (
+                {"type": "model_change", "provider": "xiaojimao", "modelId": "gpt-6-astra"},
+                "xiaojimao/gpt-6-astra",
+            ),
+            "modelId 自带前缀时不再拼接": (
+                {"type": "model_change", "provider": "clinePass",
+                 "modelId": "cline-pass/deepseek-v4.1-flash"},
+                "cline-pass/deepseek-v4.1-flash",
+            ),
+            "无 modelId 的 model_change 不算证据": (
+                {"type": "model_change", "provider": "xiaojimao"}, None,
+            ),
+        }
+        for label, (event, expected) in cases.items():
+            with self.subTest(label=label):
+                path = self.root / "pi-session.jsonl"
+                path.write_text(json.dumps(event) + "\n", encoding="utf-8")
+                self.assertEqual(reviewer_job.observed_model_from_pi_session(path), expected)
+
+        # reviewer 自己的 message 文本不能伪造身份。
+        forged = self.root / "forged.jsonl"
+        forged.write_text(
+            json.dumps({"type": "message", "role": "assistant",
+                        "content": [{"type": "text", "text": "model_change provider=evil"}]}) + "\n",
+            encoding="utf-8",
+        )
+        self.assertIsNone(reviewer_job.observed_model_from_pi_session(forged))
+        self.assertIsNone(reviewer_job.observed_model_from_pi_session(self.root / "missing.jsonl"))
+
+    def test_observed_model_source_follows_the_backend(self):
+        events = self.root / "events.jsonl"
+        events.write_text(
+            json.dumps({"type": "thread.started", "model": "gpt-5.6-sol"}) + "\n",
+            encoding="utf-8",
+        )
+        session = self.root / "pi-session.jsonl"
+        session.write_text(
+            json.dumps({"type": "model_change", "provider": "xiaojimao",
+                        "modelId": "gpt-6-astra"}) + "\n",
+            encoding="utf-8",
+        )
+        self.assertEqual(
+            reviewer_job.observed_model_for_backend("codex", events, session), "gpt-5.6-sol"
+        )
+        self.assertEqual(
+            reviewer_job.observed_model_for_backend("pi", events, session), "xiaojimao/gpt-6-astra"
+        )
+
     def test_valid_verdict_survives_trailing_transport_error(self):
         def run(argv, _prompt, _events, _stderr, _timeout, on_session, _cwd):
             on_session("session-fixture")

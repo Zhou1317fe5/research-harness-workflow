@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import fcntl
 import hashlib
+import importlib.util
 import json
 import os
 import re
@@ -18,6 +19,20 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+
+def _load_review_model():
+    """Per-host review model registry shared with the gates."""
+    path = Path(__file__).resolve().parent / "review_model.py"
+    spec = importlib.util.spec_from_file_location("review_model", path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"cannot load review model registry: {path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+review_model = _load_review_model()
 
 
 VERDICT_SCHEMA = "prerun.scientific-verdict.v1"
@@ -194,6 +209,12 @@ def command_for(
         "--no-context-files", "--system-prompt",
         "You are an independent, read-only scientific implementation reviewer. Follow the supplied task exactly and return only the required JSON object.",
     ]
+    # `--no-extensions` disables extension *discovery* only: explicitly listed
+    # `--extension` sources still load. A provider registered by an extension must
+    # therefore be listed in review_model.REVIEW_EXTENSIONS, so the reviewer loads
+    # that provider instead of every installed user extension.
+    for source in review_model.review_extension_sources("pi"):
+        base += ["--extension", source]
     if model:
         base += ["--model", model]
     if session_id:
@@ -244,6 +265,53 @@ def observed_model_from_events(event_path: Path) -> str | None:
                 if isinstance(value, str) and value.strip():
                     observed = value.strip()
     return observed
+
+
+def observed_model_from_pi_session(session_path: Path) -> str | None:
+    """Extract the effective model from the Pi session event stream.
+
+    Only runtime-written top-level events are trusted; the reviewer's own message
+    text is never parsed for identity. Pi records conversation content as
+    ``{"type":"message",...}`` and establishes the session model as
+    ``{"type":"model_change","provider":"<provider>","modelId":"<model>"}``
+    (including the launch ``--model``). The Pi backend runs with ``--mode text``,
+    so its captured stdout holds only the reviewer's answer; the session file is
+    the only place this event exists.
+    """
+    observed: str | None = None
+    try:
+        lines = session_path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return None
+    for line in lines:
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(event, dict) or event.get("type") != "model_change":
+            continue
+        model_id = event.get("modelId")
+        if not isinstance(model_id, str) or not model_id.strip():
+            continue
+        model_id = model_id.strip()
+        provider = event.get("provider")
+        # The provider prefix is only missing sometimes. Real samples cover both
+        # shapes: provider=xiaojimao/modelId=gpt-6-astra needs the prefix, while
+        # provider=clinePass/modelId=cline-pass/deepseek-v4.1-flash already
+        # carries one and its provider casing does not match that prefix.
+        if isinstance(provider, str) and provider.strip() and "/" not in model_id:
+            model_id = f"{provider.strip()}/{model_id}"
+        observed = model_id
+    return observed
+
+
+def observed_model_for_backend(
+    backend: str, event_path: Path, session_path: Path
+) -> str | None:
+    """Trusted runtime model identity from a backend's own transport artifacts."""
+    if backend == "pi":
+        return observed_model_from_pi_session(session_path)
+    return observed_model_from_events(event_path)
 
 
 def run_process(
@@ -368,6 +436,9 @@ def execute(args: argparse.Namespace) -> int:
     task_text = task_bytes.decode("utf-8")
     task_sha = sha256_bytes(task_bytes)
     mode = packet["review_mode"]
+    # The approved reviewer identity comes from review_model.py; a launcher may
+    # omit --model and inherit it instead of restating the value.
+    model = args.model or review_model.review_job_model(args.backend)
     job_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
     lock_path = job_dir / "job.lock"
     with lock_path.open("a+") as lock:
@@ -449,7 +520,7 @@ def execute(args: argparse.Namespace) -> int:
             stderr_path = job_dir / f"stderr-{execution}.log"
             argv, continuation = command_for(
                 args.backend, cwd, job_dir, execution, session_id, raw_path,
-                schema_path, prompt_path, args.model,
+                schema_path, prompt_path, model,
             )
             prompt = continuation or (initial_prompt if args.backend == "codex" else "")
             state.update(status="running", invocations=sequence, updated_at=now())
@@ -469,6 +540,7 @@ def execute(args: argparse.Namespace) -> int:
             pi_session = job_dir / f"pi-session-{execution}.jsonl"
             if args.backend == "pi" and state.get("session_id") is None and pi_session.is_file():
                 record_session(str(job_dir / f"pi-session-{execution}.jsonl"))
+            observed = observed_model_for_backend(args.backend, event_path, pi_session)
             if not raw_path.is_file():
                 raw_path.write_text(stdout, encoding="utf-8")
                 os.chmod(raw_path, 0o600)
@@ -483,9 +555,9 @@ def execute(args: argparse.Namespace) -> int:
                     "backend": args.backend,
                     "reviewer_session_id": state.get("session_id"),
                     "reviewer_id": response["reviewer_id"].strip(),
-                    "requested_model": args.model,
-                    "observed_model": observed_model_from_events(event_path) or "unknown",
-                    "model_evidence": "event-stream" if observed_model_from_events(event_path) else "unknown",
+                    "requested_model": model,
+                    "observed_model": observed or "unknown",
+                    "model_evidence": "event-stream" if observed else "unknown",
                     "review_mode": mode,
                     "result": response["result"],
                     "decision": response["decision"],
