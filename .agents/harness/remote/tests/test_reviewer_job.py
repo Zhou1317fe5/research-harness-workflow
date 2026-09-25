@@ -84,17 +84,18 @@ class ReviewerJobTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "review packet is not ready"):
             reviewer_job.validate_packet(self.packet)
 
-    def test_pi_argv_always_disables_extension_discovery(self):
+    def test_pi_argv_keeps_read_only_constraints_and_shared_model_registry(self):
         argv, _ = reviewer_job.command_for(
             "pi", self.root, self.job, 0, None, self.job / "response.json",
-            self.job / "schema.json", self.task, "openai-codex/gpt-5.6-sol:high",
+            self.job / "schema.json", self.task, "xiaojimao/gpt-6-astra:high",
         )
-        # 隔离是无条件不变量：审查进程不执行任何扩展代码，也不能被配置放宽。
-        self.assertIn("--no-extensions", argv)
-        self.assertNotIn("--extension", argv)
+        # 审查侧只保留只读约束；不禁用扩展发现，以便与 /model 使用同一套 provider
+        # 注册表（扩展注册的模型也要能直接当审查模型）。
+        self.assertEqual(argv[argv.index("--tools") + 1], "read,grep,find,ls")
         self.assertIn("--no-skills", argv)
         self.assertIn("--no-context-files", argv)
-        self.assertEqual(argv[argv.index("--tools") + 1], "read,grep,find,ls")
+        self.assertNotIn("--no-extensions", argv)
+        self.assertEqual(argv[argv.index("--model") + 1], "xiaojimao/gpt-6-astra:high")
 
     def test_execute_uses_canonical_model_when_launcher_omits_it(self):
         seen = {}

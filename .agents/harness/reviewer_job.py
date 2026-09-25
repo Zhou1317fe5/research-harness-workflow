@@ -205,14 +205,13 @@ def command_for(
     session_path = job_dir / f"pi-session-{execution}.jsonl"
     base = [
         executable, "--mode", "text", "--print", "--session", str(session_path),
-        "--tools", "read,grep,find,ls", "--no-extensions", "--no-skills",
+        "--tools", "read,grep,find,ls", "--no-skills",
         "--no-context-files", "--system-prompt",
         "You are an independent, read-only scientific implementation reviewer. Follow the supplied task exactly and return only the required JSON object.",
     ]
-    # `--no-extensions` is unconditional: no extension code runs in the review
-    # session, so the approved model must come from a built-in provider or from
-    # the agent-level models.json. Use the codex backend when a provider only
-    # exists as an extension.
+    # 审查会话与交互会话共用同一套 Pi 模型注册表（含扩展注册的 provider），所以
+    # `/model` 里能选的模型都能直接作为审查模型。审查侧的约束只保留只读工具白名单、
+    # --no-skills 与 --no-context-files，不做扩展发现禁用。
     if model:
         base += ["--model", model]
     if session_id:

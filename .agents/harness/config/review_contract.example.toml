@@ -22,12 +22,6 @@ schema_version = 1
 # level = "high"
 # suffix_hosts = ["pi"]
 
-# 关于 provider 可用性（无需在这里配置）：
-# 审查会话固定以 `--no-extensions` 启动——审查进程不执行任何扩展代码。因此获批
-# 模型必须来自以下之一：
-#   1. Pi 内置 provider（如 `openai-codex/*`，走 /login 或环境变量凭据）；
-#   2. agent 级 `models.json` 声明的 OpenAI/Anthropic/Google 兼容端点
-#      （见 Pi 文档 Choose a Model → Configure a compatible endpoint）；
-#   3. 审查走 codex 后端（`--backend codex`），它用 `codex exec`，与 Pi 扩展无关。
-# 若某模型只能由扩展注册，请把它声明进 `models.json`，或改用 codex 后端；
-# 不要为了跑审查而在审查进程里放开扩展加载。
+# 关于 provider：审查会话与交互会话共用同一套 Pi 模型注册表（含扩展注册的 provider），
+# 因此 `/model` 里能选的模型都能直接作为审查模型，不需要在 models.json 里重复声明。
+# 审查侧保留的约束只有只读工具白名单、`--no-skills` 与 `--no-context-files`。

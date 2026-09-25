@@ -201,8 +201,6 @@ python .agents/harness/reviewer_job.py \
   --task <review-task.md> \
   --job-dir <mission-dir>/reviews/<prerun-row>
 # 模型不在命令行复述：runner 按 --backend 取 review_model.review_job_model(<backend>)；切换模型只改 review_contract.toml
-# runner 固定以 --no-extensions 启动，审查进程不加载任何扩展：获批模型须来自内置 provider、
-# 凭据登录或 ~/.pi/agent/models.json 声明的兼容端点。provider 只能由扩展提供时，改用 --backend codex。
 ```
 
 Do not use `pi-sub-agent --no-session`, parallel/chain mode, or another one-shot child for this gate.
