@@ -47,9 +47,25 @@ def model_for_host(host: str) -> str:
     return value
 
 
+# Whether a host resolves the thinking level inside the model id. Pi accepts
+# `model:thinking`; the codex CLI takes a bare model name and configures
+# reasoning separately (the closing review runner passes the bare name too).
+MODEL_TAKES_THINKING_SUFFIX = {
+    "pi": True,
+    "codex": False,
+}
+
+
 def review_job_model(host: str) -> str:
-    """Reviewer invocation identity including the requested thinking level."""
-    return f"{model_for_host(host)}:{REVIEW_THINKING}"
+    """Reviewer invocation identity a host's launcher/runner must pass.
+
+    Launchers omit ``--model`` and inherit this value, so switching a host's
+    model stays a single edit in this file.
+    """
+    base = model_for_host(host)
+    if host not in MODEL_TAKES_THINKING_SUFFIX:
+        raise ValueError(f"unknown review host: {host}") from None
+    return f"{base}:{REVIEW_THINKING}" if MODEL_TAKES_THINKING_SUFFIX[host] else base
 
 
 # Reviewer launcher isolation.

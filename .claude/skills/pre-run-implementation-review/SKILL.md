@@ -199,8 +199,8 @@ python .agents/harness/reviewer_job.py \
   --backend codex \
   --packet <packet.json> \
   --task <review-task.md> \
-  --job-dir <mission-dir>/reviews/<prerun-row> \
-  --model gpt-5.6-sol
+  --job-dir <mission-dir>/reviews/<prerun-row>
+# 模型不在命令行复述：runner 按 --backend 取 review_model.review_job_model(<backend>)；切换模型只改 review_model.py
 ```
 
 Do not add `--ephemeral`, launch a parallel reviewer, or bypass this job with a one-shot `codex exec`.

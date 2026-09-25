@@ -11,10 +11,10 @@ description: Use after remote experiment artifacts are ingested to require an in
 
 - `remote_state=ingested` 的每个非空 `(ExpID, RunID)` 都必须出现在 `reviews/result-analysis.json`。
 - 每个条目必须绑定最终的 `research_workspace/experiments/<ExpID>/analysis/analysis.md`、其 SHA-256、原始证据引用和科学结果状态。
-- 正式分析必须由独立的强模型 reviewer 完成，模型固定为 `openai-codex/gpt-5.6-sol`、thinking `high`；两条等价通道按宿主选择：
+- 正式分析必须由独立的强模型 reviewer 完成，模型取 `review_model.model_for_host("<宿主>")` 的当前值、thinking 固定 `high`；两条等价通道按宿主选择：
   模型的 canonical 值与运行时匹配正则统一定义在 `.agents/harness/review_model.py`；额度耗尽等原因需要切换时改该文件（一次显式提交），验证器与各 runner 自动跟随，不允许会话内临时传参绕过。 同一逻辑模型在不同宿主的注册名可不同（Pi 用 provider 前缀名，codex CLI 用裸名），`review_model.py` 的 `MODELS` 映射按宿主给出调用名；索引与 CSV 记录统一用 canonical（Pi 侧）名字，验证器接受任一宿主注册名加 thinking 后缀的运行时观测值。
   1. **Pi 通道（`scientific-reviewer-subagent`）**：当前会话派发注册的 `scientific-reviewer` sub-agent（`.pi/agents/scientific-reviewer.md`，`agentScope: project`）；
-  2. **codex-exec 通道（`codex-exec-independent`）**：宿主无 sub-agent 派发能力时，用 `scripts/run_result_analysis.py` 启动 fresh、ephemeral、read-only 的 `codex exec -m gpt-5.6-sol` 独立会话。
+  2. **codex-exec 通道（`codex-exec-independent`）**：宿主无 sub-agent 派发能力时，用 `scripts/run_result_analysis.py` 启动 fresh、ephemeral、read-only 的独立 `codex exec` 会话（模型取自 `review_model.model_for_host("codex")`）。
 - `advisor` 可以在存在冲突解释或研究方向选择时提供辅助意见，但不能生成正式分析、verdict 或关闭分析行。
 - 强模型身份无法从 host/session metadata 或 CLI 事件流核验时，停止在分析行；不得回退到主 Executor、自审或把模型自报名称当作证据。两条通道各自只接受可机械核验的证据：
   - Pi 通道：`model_evidence_ref` 必须绑定真实 session UUID 和 `subagent` tool-call ID（`session:<uuid>#tool:<tool-call-id>`），由验证器核对 `scientific-reviewer`、实际模型、成功终态和输出 hash；
@@ -43,7 +43,7 @@ result_analysis_targets: {"exp_id":"<ExpID>","run_ids":["<RunID-1>","<RunID-2>"]
 ```
 
 - 只读、不得调用 advisor、不得再次委派；
-- 请求模型 `openai-codex/gpt-5.6-sol`、thinking `high`；
+- 请求模型取 `.agents/harness/review_model.py` 的当前 Pi 值、thinking `high`；
 
 codex-exec 通道的调用方式（quota、launcher 失败与静默都是 review-service failure，修好服务后用同一命令重跑，不产生第二次科学意见）：
 
@@ -97,8 +97,8 @@ runner 从 CSV 校验 `(ExpID, RunID)` 覆盖、写 `reviews/result-analysis-<Ex
      "status": "complete",
      "analysis_agent_mode": "scientific-reviewer-subagent | codex-exec-independent",
      "analysis_independence": true,
-     "requested_model": "openai-codex/gpt-5.6-sol",
-     "observed_model": "openai-codex/gpt-5.6-sol",
+     "requested_model": "<review_model 的宿主当前值>",
+     "observed_model": "<同一模型的运行时观测值>",
      "model_evidence": "session-metadata | event-stream",
      "model_evidence_ref": "session:<uuid>#tool:<subagent-tool-call-id> 或 exec:reviews/result-analysis-<ExpID>/verdict.json#verdict",
      "entries": [

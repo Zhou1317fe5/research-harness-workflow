@@ -199,8 +199,8 @@ python .agents/harness/reviewer_job.py \
   --backend pi \
   --packet <packet.json> \
   --task <review-task.md> \
-  --job-dir <mission-dir>/reviews/<prerun-row> \
-  --model openai-codex/gpt-5.6-sol:high  # canonical: .agents/harness/review_model.py review_job_model("pi")；codex backend 用 review_job_model("codex")
+  --job-dir <mission-dir>/reviews/<prerun-row>
+# 模型不在命令行复述：runner 按 --backend 取 review_model.review_job_model(<backend>)；切换模型只改 review_model.py
 ```
 
 Do not use `pi-sub-agent --no-session`, parallel/chain mode, or another one-shot child for this gate.

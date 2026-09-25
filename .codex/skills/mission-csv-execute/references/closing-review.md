@@ -52,7 +52,7 @@ closing review 必须基于以下材料：
 | 优先级 | 模式 | 记录值 | 独立性 | 要求 |
 |--------|------|--------|--------|------|
 | 1 | 当前会话派发注册的 `reviewer` 子代理 | `review_agent_mode:reviewer-subagent` | `review_independence:true` | 请求审查模型（见 `review_model.py`）high；只读；prompt 不含主代理结论；禁止再委派 |
-| 2 | `codex exec --ephemeral --json -m gpt-5.6-sol --sandbox read-only` | `review_agent_mode:codex-exec-independent` | `review_independence:true` | 用 `shutil.which("codex")` 解析平台 launcher；由独立 exec 会话完成完整 vision review |
+| 2 | `codex exec --ephemeral --json --sandbox read-only`（模型取 `review_model.py` 的 codex 值） | `review_agent_mode:codex-exec-independent` | `review_independence:true` | 用 `shutil.which("codex")` 解析平台 launcher；由独立 exec 会话完成完整 vision review |
 | 3 | 主会话按同一 prompt 自审 | `review_agent_mode:self-review` | `review_independence:false` | 只在前两项失败时使用；如实记录 capability failure，但完成的 self-review 可以闭环 |
 
 `codex review` 只能补充 Git diff 证据，不是 closing mode。运行过 diff-only review 后，仍要走上述阶梯完成 vision review。
@@ -71,8 +71,7 @@ python scripts/run_vision_review.py \
   --review-log <csv-path-without-.csv>.review.md \
   --output reviews/review-01.json \
   --handoff <csv-path-without-.csv>.handoff.md \
-  --workdir <repo-root> \
-  --model gpt-5.6-sol
+  --workdir <repo-root>
 ```
 
 兼容 CSV 没有 source doc 时省略 `--source-doc`。脚本成功时输出 review JSON；把 JSON 摘要写入 review log，并把 `review_json:<path>`、mode、independence、requested/observed model、model evidence、coverage、result 和必要的 `validation_limited` 写入 CSV `notes`。脚本失败不等于 review 完成：记录失败原因后进入 self-review。失败原因必须显式分类（`quota_error` / `transport_error` / `timeout`——脚本 stderr 会输出 `review_service_failure:<kind>`），不得笼统写"调用失败"，便于事后区分服务故障类型。
@@ -362,7 +361,7 @@ REVIEW-02
 - Source doc: <path>
 - Review agent: reviewer-subagent | codex-exec-independent | self-review
 - Review independence: true | false
-- Review requested model: gpt-5.6-sol
+- Review requested model: <review_model.py 的 codex 值>
 - Review observed model: <catalog model id | unknown>
 - Review model evidence: session-metadata | event-stream | parent-runtime | unknown
 - Scope checked: <goals/non-goals/acceptance areas>

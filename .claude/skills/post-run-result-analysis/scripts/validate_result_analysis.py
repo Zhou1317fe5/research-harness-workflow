@@ -68,7 +68,7 @@ _SESSION_REF_RE = re.compile(
     r"^session:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}#tool:\S+$"
 )
 # 运行时模型身份：项目 reviewer agent 配置 thinking high（skill 亦要求 high），
-# 测试夹具使用 :max；两者都保持 gpt-5.6-sol 的精确匹配，不接受其它模型。
+# 测试夹具使用 :max；两者都必须匹配 review_model.py 中该宿主的获批身份，不接受其它模型。
 
 _EVENT_REF_RE = re.compile(r"^event:\S+$")
 _EXEC_REF_RE = re.compile(r"^exec:[^#\s]+#verdict$")

@@ -296,9 +296,9 @@ def observed_model_from_pi_session(session_path: Path) -> str | None:
         model_id = model_id.strip()
         provider = event.get("provider")
         # The provider prefix is only missing sometimes. Real samples cover both
-        # shapes: provider=xiaojimao/modelId=gpt-6-astra needs the prefix, while
-        # provider=clinePass/modelId=cline-pass/deepseek-v4.1-flash already
-        # carries one and its provider casing does not match that prefix.
+        # shapes: ``provider=<p>/modelId=<bare-name>`` needs the prefix, while
+        # ``provider=<p>/modelId=<prefixed/name>`` already carries one and its
+        # provider casing does not match that prefix.
         if isinstance(provider, str) and provider.strip() and "/" not in model_id:
             model_id = f"{provider.strip()}/{model_id}"
         observed = model_id

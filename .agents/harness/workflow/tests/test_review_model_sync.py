@@ -1,12 +1,16 @@
 #!/usr/bin/env python3
-"""审查模型"复述 = canonical"约束。
+"""审查模型"单源"约束。
 
-`review_model.py` 是每个宿主审查模型的唯一事实源。但宿主工具仍需复述具体值：
-Pi 的 `scientific-reviewer` agent frontmatter 决定子代理实际用哪个模型，PRERUN
-launcher 的 `--model` 则成为 verdict 的 `requested_model`。这两处若在换模型时漏改，
-门禁会在运行时以 fail-closed 拒收（`analysis_requested_model_invalid` /
-`gate_provenance.verdict_artifact_model_mismatch`），但那要等到跑完审查才发现。
-本测试把这类漏改提前到提交前。
+`review_model.py` 是每个宿主审查模型的唯一事实源。宿主工具仍需在少数结构化位置
+实际使用该值：Pi 的 `scientific-reviewer` agent frontmatter 决定子代理用哪个模型，
+PRERUN launcher 与 closing review 的运行参数则决定 verdict 记录的 `requested_model`。
+本测试把两类漏改提前到提交前：
+
+1. 结构化位置必须与 canonical 值一致（frontmatter 精确相等，launcher 不再复述）；
+2. 说明性文档不得复述 canonical 值，而应指向 `review_model.py`。
+
+否则换模型时只能等门禁在运行时 fail-closed 拒收（`analysis_requested_model_invalid`
+/ `gate_provenance.verdict_artifact_model_mismatch`）才发现。
 """
 import importlib.util
 import re
@@ -15,14 +19,28 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[4]
 REVIEW_MODEL_PATH = ROOT / ".agents/harness/review_model.py"
+PI_REVIEWER_AGENT = ROOT / ".pi/agents/scientific-reviewer.md"
+LAUNCHER_START = "<!-- reviewer-launcher:start -->"
+LAUNCHER_END = "<!-- reviewer-launcher:end -->"
 PRERUN_LAUNCHERS = (
     ROOT / ".codex/skills/pre-run-implementation-review/SKILL.md",
     ROOT / ".claude/skills/pre-run-implementation-review/SKILL.md",
     ROOT / ".pi/skills/pre-run-implementation-review/SKILL.md",
 )
-PI_REVIEWER_AGENT = ROOT / ".pi/agents/scientific-reviewer.md"
-LAUNCHER_START = "<!-- reviewer-launcher:start -->"
-LAUNCHER_END = "<!-- reviewer-launcher:end -->"
+# 说明性文档与注释：必须指向 canonical 源，不得复述具体模型值。
+NON_RESTATING_FILES = (
+    ROOT / ".codex/skills/post-run-result-analysis/SKILL.md",
+    ROOT / ".claude/skills/post-run-result-analysis/SKILL.md",
+    ROOT / ".codex/skills/post-run-result-analysis/scripts/validate_result_analysis.py",
+    ROOT / ".claude/skills/post-run-result-analysis/scripts/validate_result_analysis.py",
+    ROOT / ".codex/skills/mission-csv-execute/csv-schema.md",
+    ROOT / ".claude/skills/mission-csv-execute/csv-schema.md",
+    ROOT / ".codex/skills/mission-csv-execute/references/closing-review.md",
+    ROOT / ".claude/skills/mission-csv-execute/references/closing-review.md",
+    ROOT / ".codex/skills/mission-approved-doc/SKILL.md",
+    ROOT / ".claude/skills/mission-approved-doc/SKILL.md",
+    *PRERUN_LAUNCHERS,
+)
 
 
 def _load_review_model():
@@ -62,6 +80,14 @@ def _launcher_option(block: str, option: str) -> str:
     return match.group(1)
 
 
+def _without_launcher_blocks(text: str) -> str:
+    while LAUNCHER_START in text and LAUNCHER_END in text:
+        head, rest = text.split(LAUNCHER_START, 1)
+        _, tail = rest.split(LAUNCHER_END, 1)
+        text = head + tail
+    return text
+
+
 class ReviewModelSyncTests(unittest.TestCase):
     def setUp(self):
         self.review_model = _load_review_model()
@@ -71,18 +97,36 @@ class ReviewModelSyncTests(unittest.TestCase):
         self.assertEqual(fields["model"], self.review_model.model_for_host("pi"))
         self.assertEqual(fields["thinking"], self.review_model.REVIEW_THINKING)
 
-    def test_each_prerun_launcher_requests_an_approved_model_for_its_backend(self):
+    def test_each_prerun_launcher_leaves_the_model_to_review_model(self):
         for path in PRERUN_LAUNCHERS:
-            with self.subTest(path=path.name, host=path.parent.parent.parent.name):
+            with self.subTest(path=path.name):
                 block = _launcher_block(path)
                 backend = _launcher_option(block, "--backend")
-                model = _launcher_option(block, "--model")
                 self.assertIn(backend, self.review_model.MODELS, f"未知 backend: {backend}")
-                # codex CLI 只接受裸模型名，Pi 接受带 thinking 后缀的调用名，因此断言
-                # "属于该宿主的获批身份"而不是与 review_job_model() 精确相等。
+                self.assertNotIn(
+                    "--model", block,
+                    f"{path.name} 不应复述模型值；省略 --model 让 runner 取 canonical 值",
+                )
+                # runner 的默认值必须确实是该宿主的获批身份（两个函数保持一致的护栏）。
                 self.assertTrue(
-                    self.review_model.is_accepted_model_identity(model, backend),
-                    f"{path.name} 的 --model={model} 不是 {backend} 宿主的获批身份",
+                    self.review_model.is_accepted_model_identity(
+                        self.review_model.review_job_model(backend), backend
+                    ),
+                    f"{backend} 的默认调用名不是获批身份",
+                )
+
+    def test_docs_and_comments_do_not_restate_the_canonical_model(self):
+        literals = set(self.review_model.RECORDED_MODELS.values())
+        literals |= {
+            self.review_model.review_job_model(host) for host in self.review_model.MODELS
+        }
+        for path in NON_RESTATING_FILES:
+            with self.subTest(path=path.name, parent=path.parent.name):
+                text = _without_launcher_blocks(path.read_text(encoding="utf-8"))
+                present = sorted(literal for literal in literals if literal in text)
+                self.assertEqual(
+                    present, [],
+                    f"{path} 复述了 canonical 模型值 {present}；应改为指向 review_model.py",
                 )
 
 
