@@ -122,7 +122,7 @@ Keep commonly used `notes` tags stable:
 | `deferred_coverage:<covered>/<open>` | Open deferred findings rendered in the final handoff. |
 | `review_agent_mode:<mode>` | Closing mode: `evidence-close`, `reviewer-subagent`, `codex-exec-independent`, `self-review`, or `pending`. |
 | `review_independence:<true\|false\|pending>` | Boolean closing-review independence; `evidence-close` and self-review are `false`. |
-| `review_requested_model:<model>` | Requested independent reviewer model; the codex value comes from `.agents/harness/config/review_contract.toml`. `evidence-close` uses `not_applicable`. |
+| `review_requested_model:<model>` | Review model actually requested: the current session (executor) model. Recorded and runtime-attested rather than pinned to a contract value; `evidence-close` uses `not_applicable`. |
 | `review_observed_model:<model>` | Model observed from session metadata/event stream; `evidence-close` uses `not_applicable`. |
 | `review_model_evidence:<session-metadata\|event-stream\|parent-runtime\|unknown\|not_applicable\|pending>` | Source supporting the observed model value; `pending` is generation-only. |
 | `review_result:<vision_met\|gaps_found\|limited_review>` | Closing review outcome. |

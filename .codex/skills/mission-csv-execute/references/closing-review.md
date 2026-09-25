@@ -51,9 +51,15 @@ closing review 必须基于以下材料：
 
 | 优先级 | 模式 | 记录值 | 独立性 | 要求 |
 |--------|------|--------|--------|------|
-| 1 | 当前会话派发注册的 `reviewer` 子代理 | `review_agent_mode:reviewer-subagent` | `review_independence:true` | 请求审查模型（见 `config/review_contract.toml`）high；只读；prompt 不含主代理结论；禁止再委派 |
-| 2 | `codex exec --ephemeral --json --sandbox read-only`（模型取 `config/review_contract.toml` 的 codex 值） | `review_agent_mode:codex-exec-independent` | `review_independence:true` | 用 `shutil.which("codex")` 解析平台 launcher；由独立 exec 会话完成完整 vision review |
+| 1 | 当前会话派发注册的 `scientific-reviewer` 子代理（**用当前会话（执行）模型**、fresh 只读会话） | `review_agent_mode:reviewer-subagent` | `review_independence:true` | 只读；prompt 不含主代理结论；禁止再委派 |
+| 2 | `codex exec --ephemeral --json --sandbox read-only`（模型用当前会话（执行）模型） | `review_agent_mode:codex-exec-independent` | `review_independence:true` | 用 `shutil.which("codex")` 解析平台 launcher；由独立 exec 会话完成完整 vision review |
 | 3 | 主会话按同一 prompt 自审 | `review_agent_mode:self-review` | `review_independence:false` | 只在前两项失败时使用；如实记录 capability failure，但完成的 self-review 可以闭环 |
+
+closing review 的审查模型固定为**当前会话（执行）模型**：不要求改成另一个“高级”模型，因此这里的
+`review_independence:true` 含义是**结构独立**——fresh 只读会话、prompt 不含主代理结论、禁止再委派；
+模型与执行模型相同是允许的。但 requested/observed 必须如实记录并来自可确证的运行时通道
+（`session-metadata` / `event-stream` / `parent-runtime`），记录 `unknown` 会被验证器拒绝。
+同一模型意味着两者盲区相同，抓不住“模型本身就这么想”的错误：读者应据此判断该结论的证据强度。
 
 `codex review` 只能补充 Git diff 证据，不是 closing mode。运行过 diff-only review 后，仍要走上述阶梯完成 vision review。
 
@@ -71,7 +77,8 @@ python scripts/run_vision_review.py \
   --review-log <csv-path-without-.csv>.review.md \
   --output reviews/review-01.json \
   --handoff <csv-path-without-.csv>.handoff.md \
-  --workdir <repo-root>
+  --workdir <repo-root> \
+  --model <当前会话模型>
 ```
 
 兼容 CSV 没有 source doc 时省略 `--source-doc`。脚本成功时输出 review JSON；把 JSON 摘要写入 review log，并把 `review_json:<path>`、mode、independence、requested/observed model、model evidence、coverage、result 和必要的 `validation_limited` 写入 CSV `notes`。脚本失败不等于 review 完成：记录失败原因后进入 self-review。失败原因必须显式分类（`quota_error` / `transport_error` / `timeout`——脚本 stderr 会输出 `review_service_failure:<kind>`），不得笼统写"调用失败"，便于事后区分服务故障类型。
@@ -80,7 +87,7 @@ python scripts/run_vision_review.py \
 
 reviewer prompt 必须明确写入：
 
-- 独立路径固定请求审查模型（canonical 值定义在 `.agents/harness/config/review_contract.toml`；codex exec 用 `[models].codex` 裸名，Pi sub-agent 用 `[models].pi` 前缀名）；requested model 与 observed model 分开记录
+- 独立路径的请求模型 = 当前会话（执行）模型（`reviewer-subagent` 用 `provider/model` 调用名，`codex exec -m` 用可解析的裸名）；requested model 与 observed model 分开记录，observed 必须来自运行时可确证的通道
 - observed model 只能来自 host/session metadata 或 CLI JSON event stream。reviewer 文本和 review JSON 自报的模型不算证据
 - 只基于批准文档或原始请求、CSV、claim/evidence ledger、diff/commit、测试/MCP 证据、交付物声明和 review log
 - 不信任主 agent 的结论性总结
@@ -361,7 +368,7 @@ REVIEW-02
 - Source doc: <path>
 - Review agent: reviewer-subagent | codex-exec-independent | self-review
 - Review independence: true | false
-- Review requested model: <config/review_contract.toml 的 codex 值>
+- Review requested model: <当前会话（执行）模型>
 - Review observed model: <catalog model id | unknown>
 - Review model evidence: session-metadata | event-stream | parent-runtime | unknown
 - Scope checked: <goals/non-goals/acceptance areas>

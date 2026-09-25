@@ -202,7 +202,6 @@ RECORDED_MODELS = {host: model_for_host(host) for host in MODELS}
 # per-host split (the Pi canonical name, the project's primary host).
 RECORDED_MODEL = RECORDED_MODELS["pi"]
 REVIEW_MODEL = RECORDED_MODEL  # backward-compatible alias
-EXEC_MODEL = model_for_host("codex")  # backward-compatible alias
 REVIEW_JOB_MODEL = review_job_model("pi")  # backward-compatible alias
 
 # Runtime identities accepted from session metadata / event streams: every

@@ -38,21 +38,11 @@ RESULT_KEYS = {
     "handoff_markdown",
 }
 
-def _load_review_model():
-    """Load the canonical review-model constants (searched upward for .agents)."""
-    import importlib.util
-
-    for ancestor in Path(__file__).resolve().parents:
-        module_path = ancestor / ".agents" / "harness" / "review_model.py"
-        if module_path.is_file():
-            spec = importlib.util.spec_from_file_location("review_model", module_path)
-            if spec is None or spec.loader is None:
-                raise RuntimeError(f"cannot load review_model: {module_path}")
-            module = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(module)
-            return module
-    raise RuntimeError("cannot locate .agents/harness/review_model.py")
-DEFAULT_REVIEW_MODEL = _load_review_model().EXEC_MODEL
+# Closing review runs on the current session (executor) model: the model arrives via
+# --model instead of being pinned to the contract, so validation only requires the
+# recorded identity to be runtime-attested (see validate_review_result). `unknown` /
+# `not_applicable` are only legal for evidence-close, which runs no model.
+RUNTIME_MODEL_EVIDENCE = ("session-metadata", "event-stream", "parent-runtime")
 # Bounded wait matches reviewer_job's attempt timeout so a stuck exec session
 # is a recorded service failure, not an unbounded block.
 DEFAULT_EXEC_TIMEOUT_SECONDS = 1800
@@ -61,9 +51,7 @@ _QUOTA_ERROR_MARKERS = (
     "429", "usage limit", "credits", "billing", "too many requests",
 )
 MODEL_EVIDENCE = {
-    "session-metadata",
-    "event-stream",
-    "parent-runtime",
+    *RUNTIME_MODEL_EVIDENCE,
     "unknown",
     "not_applicable",
 }
@@ -325,20 +313,31 @@ def validate_review_result(result: dict, contract: dict | None) -> list[str]:
     elif mode in {"self-review", "evidence-close"} and independence:
         errors.append(f"{mode} requires review_independence=false")
     requested_model = result.get("review_requested_model")
+    observed_model = result.get("review_observed_model")
+    evidence = result.get("review_model_evidence")
     if mode == "evidence-close":
         if requested_model != "not_applicable":
             errors.append("evidence-close review_requested_model must be not_applicable")
-        if result.get("review_observed_model") != "not_applicable":
+        if observed_model != "not_applicable":
             errors.append("evidence-close review_observed_model must be not_applicable")
-        if result.get("review_model_evidence") != "not_applicable":
+        if evidence != "not_applicable":
             errors.append("evidence-close review_model_evidence must be not_applicable")
-    elif requested_model != DEFAULT_REVIEW_MODEL:
-        errors.append(f"review_requested_model must be {DEFAULT_REVIEW_MODEL}")
-    if not isinstance(result.get("review_observed_model"), str) or not result[
-        "review_observed_model"
-    ].strip():
-        errors.append("review_observed_model must be a non-empty string")
-    if result.get("review_model_evidence") not in MODEL_EVIDENCE:
+    else:
+        # Closing review 不固定模型（用当前会话模型），但记录值必须来自可确证的运行时通道：
+        # 否则这三个字段退化成调用方自己的说法，审查记录就没有证据价值。
+        if not isinstance(requested_model, str) or not requested_model.strip():
+            errors.append("review_requested_model must be a non-empty string")
+        elif requested_model == "not_applicable":
+            errors.append("review_requested_model must name the session model")
+        if not isinstance(observed_model, str) or not observed_model.strip():
+            errors.append("review_observed_model must be a non-empty string")
+        elif observed_model == "unknown":
+            errors.append("review_observed_model must be attested by the runtime, not 'unknown'")
+        if evidence not in RUNTIME_MODEL_EVIDENCE:
+            errors.append(
+                f"review_model_evidence must be one of {', '.join(RUNTIME_MODEL_EVIDENCE)}"
+            )
+    if evidence not in MODEL_EVIDENCE:
         errors.append(f"invalid review_model_evidence: {result.get('review_model_evidence')}")
     if result.get("result") not in {"vision_met", "gaps_found", "limited_review"}:
         errors.append(f"invalid review result: {result.get('result')}")
@@ -733,8 +732,8 @@ def main() -> int:
     parser.add_argument("--workdir", default=os.getcwd())
     parser.add_argument(
         "--model",
-        default=DEFAULT_REVIEW_MODEL,
-        help=f"Reviewer model. Fixed to {DEFAULT_REVIEW_MODEL}; the result validator rejects other values, so an override only breaks the review.",
+        required=True,
+        help="审查模型：用当前会话（执行）模型。脚本不再固定为契约值，验证器只要求记录值来自可确证的运行时通道。",
     )
     parser.add_argument("--output", help="Write final JSON to this file.")
     parser.add_argument("--handoff", help="Write handoff_markdown to this .md file.")

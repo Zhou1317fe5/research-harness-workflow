@@ -97,7 +97,9 @@ tools: read, grep, find, ls
 项目已经提供只读 profile 和 Reviewer task 的传递规则，不需要另写一份科研审查 prompt。
 
 **关于审查模型。** 审查会话与交互会话共用同一套 Pi 模型注册表，所以 `/model` 里能选的模型都能直接
-作为审查模型（包括由扩展注册的 provider），不需要额外声明。获批值与 thinking 级别记录在
+作为审查模型（包括由扩展注册的 provider），不需要额外声明。**closing review（`REVIEW-*`）用的就是
+当前会话（执行）模型**：不要求另换一个高级模型，独立性来自 fresh 只读会话与不含主代理结论的 prompt，
+requested/observed 会如实记录。PRERUN 与 post-run 分析仍用下述契约里的模型。获批值与 thinking 级别记录在
 `.agents/harness/config/review_contract.toml`（缺失时用 `.agents/harness/review_model.py`
 的内置默认值）；改模型只需改这一个文件。
 
