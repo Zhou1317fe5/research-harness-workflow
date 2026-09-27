@@ -28,7 +28,14 @@ from harness.workflow.mission_state import update
 from validate_deferred_ledger import load_csv_deferred
 from validate_claim_ledger import validate_ledger
 from ensure_result_analysis_row import ensure_result_analysis_row
-from result_analysis import result_analysis_completion_errors
+from result_analysis import (
+    result_analysis_completion_errors,
+    review_model as _review_model,
+)
+
+# 审查模型是项目自有契约（`config/review_contract.toml`），测试不得复述模板默认值。
+PI_MODEL = _review_model.RECORDED_MODEL
+CODEX_MODEL = _review_model.RECORDED_MODELS["codex"]
 
 
 class MissionContractTests(unittest.TestCase):
@@ -327,7 +334,7 @@ class MissionContractTests(unittest.TestCase):
             "message": {
                 "role": "toolResult", "toolName": "subagent", "toolCallId": tool_id,
                 "details": {"results": [{
-                    "agent": "scientific-reviewer", "model": "openai-codex/gpt-5.6-sol:max",
+                    "agent": "scientific-reviewer", "model": f"{PI_MODEL}:max",
                     "exitCode": 0, "messages": [{
                         "role": "assistant", "content": [{"type": "text", "text": review_output}],
                     }],
@@ -360,8 +367,8 @@ class MissionContractTests(unittest.TestCase):
                     "result_analysis:reviews/result-analysis.json; "
                     "analysis_agent_mode:scientific-reviewer-subagent; "
                     "analysis_independence:true; "
-                    "analysis_requested_model:openai-codex/gpt-5.6-sol; "
-                    "analysis_observed_model:openai-codex/gpt-5.6-sol; "
+                    f"analysis_requested_model:{PI_MODEL}; "
+                    f"analysis_observed_model:{PI_MODEL}; "
                     "analysis_model_evidence:session-metadata; "
                     f"analysis_model_evidence_ref:{evidence_ref}"
                 ),
@@ -375,8 +382,8 @@ class MissionContractTests(unittest.TestCase):
             "status": "complete",
             "analysis_agent_mode": "scientific-reviewer-subagent",
             "analysis_independence": True,
-            "requested_model": "openai-codex/gpt-5.6-sol",
-            "observed_model": "openai-codex/gpt-5.6-sol",
+            "requested_model": PI_MODEL,
+            "observed_model": PI_MODEL,
             "model_evidence": "session-metadata",
             "model_evidence_ref": evidence_ref,
             "entries": [{
@@ -593,8 +600,8 @@ class MissionContractTests(unittest.TestCase):
                              required_skills="post-run-result-analysis",
                              notes=("analysis_kind:post_run; result_analysis:reviews/result-analysis.json; "
                                     "analysis_agent_mode:scientific-reviewer-subagent; "
-                                    "analysis_independence:true; analysis_requested_model:openai-codex/gpt-5.6-sol; "
-                                    "analysis_observed_model:openai-codex/gpt-5.6-sol; "
+                                    f"analysis_independence:true; analysis_requested_model:{PI_MODEL}; "
+                                    f"analysis_observed_model:{PI_MODEL}; "
                                     "analysis_model_evidence:session-metadata; "
                                     "analysis_model_evidence_ref:session:00000000-0000-0000-0000-000000000001#tool:call-test")),
                     self.row(id="REVIEW-01", phase="review", notes="result_analysis:reviews/result-analysis.json"),
@@ -630,8 +637,8 @@ class MissionContractTests(unittest.TestCase):
             "backend": "codex-exec",
             "exp_id": "EXP-1",
             "run_ids": list(run_ids),
-            "requested_model": "openai-codex/gpt-5.6-sol",
-            "observed_model": "gpt-5.6-sol:high",
+            "requested_model": CODEX_MODEL,
+            "observed_model": f"{CODEX_MODEL}:high",
             "task_sha256": hashlib.sha256(b"task").hexdigest(),
             "events_sha256": hashlib.sha256(b"events").hexdigest(),
             "review_output": review_output,
@@ -645,8 +652,8 @@ class MissionContractTests(unittest.TestCase):
             "status": "complete",
             "analysis_agent_mode": "codex-exec-independent",
             "analysis_independence": True,
-            "requested_model": "gpt-5.6-sol",
-            "observed_model": "gpt-5.6-sol",
+            "requested_model": CODEX_MODEL,
+            "observed_model": CODEX_MODEL,
             "model_evidence": "event-stream",
             "model_evidence_ref": evidence_ref,
             "entries": [{
@@ -664,8 +671,8 @@ class MissionContractTests(unittest.TestCase):
         rows[1]["notes"] = (
             "analysis_kind:post_run; result_analysis:reviews/result-analysis.json; "
             "analysis_agent_mode:codex-exec-independent; analysis_independence:true; "
-            "analysis_requested_model:gpt-5.6-sol; "
-            "analysis_observed_model:gpt-5.6-sol; "
+            f"analysis_requested_model:{CODEX_MODEL}; "
+            f"analysis_observed_model:{CODEX_MODEL}; "
             "analysis_model_evidence:event-stream; "
             f"analysis_model_evidence_ref:{evidence_ref}"
         )

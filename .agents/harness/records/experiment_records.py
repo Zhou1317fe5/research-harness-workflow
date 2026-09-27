@@ -168,7 +168,11 @@ def _read_run_projection(
     repo_root: Path | None = None, artifacts: Path | None = None,
     projection: dict | None = None,
 ) -> tuple[list[dict], dict, list[str]]:
-    """只投影来源完整的 Run；历史缺口留在 _pending，不混入正式指标。"""
+    """只投影来源完整的 Run；历史缺口留在 _pending，不混入正式指标。
+
+    RunSpec 合同未声明标量指标时（矩阵/链式 pipeline 的摘要是控制摘要），
+    该 Run 仍以 `metric=None` 入册，标量指标留在 _pending。
+    """
     project_root = (repo_root or REPO_ROOT).resolve()
     root = (artifacts or ARTIFACTS) / identifier(exp_id)
     settings = settings or {}
@@ -194,6 +198,13 @@ def _read_run_projection(
             spec, manifest = load_run_provenance(csv_path, exp_id, run_root.name,
                                                  repo_root=project_root, artifacts=root.parent)
             provenance = manifest["provenance"]
+            # 该 Run 自己的 RunSpec 合同才是「摘要该有哪些字段」的权威声明。
+            # 合同没有要求标量指标时，摘要里没有它只说明该 pipeline 不产出单一指标
+            # （例如 matrix_chain 的链摘要，逐臂结果在 evaluate/ 下），
+            # 不足以丢弃这个 Run 的身份与产物证据。
+            contract = spec["metadata"].get("adapter_contract") or {}
+            declared_metric = settings.get("primary_metric", "metric") in tuple(
+                contract.get("summary_required_fields") or ())
             run_results: list[dict] = []
             for summary in sorted(run_root.glob(settings.get("summary_glob", "summary.json"))):
                 if "diagnostics" in summary.relative_to(run_root).parts:
@@ -213,11 +224,25 @@ def _read_run_projection(
                     "exp_id", "spec_id", "commit", "run_spec_sha256")}}
                 if any(data.get(key) not in (None, value) for key, value in identities.items()):
                     raise ValueError(f"summary identity mismatch: {summary}")
-                metric = dotted_value(data, settings.get("primary_metric", "metric"), "summary")
-                if isinstance(metric, bool) or not isinstance(metric, (int, float)) or not math.isfinite(metric):
-                    raise ValueError(f"summary primary metric is not finite: {summary}")
+                try:
+                    metric = dotted_value(data, settings.get("primary_metric", "metric"), "summary")
+                except AdapterContractError:
+                    # 合同声明了该指标时缺失仍是硬错；合同未声明时按「无标量指标」投影。
+                    if declared_metric:
+                        raise
+                    metric = None
+                else:
+                    # 字段存在但不是有限标量（含 null / NaN / 字符串）仍硬错。
+                    if (metric is None or isinstance(metric, bool)
+                            or not isinstance(metric, (int, float)) or not math.isfinite(metric)):
+                        raise ValueError(f"summary primary metric is not finite: {summary}")
                 auxiliary = settings.get("secondary_metric")
-                dimensions = {k: dotted_value(data, k, "summary") for k in settings.get("dimensions", [])}
+                # 只在合同未声明标量指标时容许维度缺失；指标在册时维度仍必须存在，
+                # 避免该实验的协议/维度拼写错误被静默降级成 None。
+                dimension_fields = settings.get("dimensions", [])
+                dimensions = ({k: dotted_value(data, k, "summary") for k in dimension_fields}
+                              if declared_metric
+                              else {k: optional_summary_value(data, k) for k in dimension_fields})
                 protocol = optional_summary_value(data, settings.get("protocol_field", "protocol"))
                 if protocol is not None and (not isinstance(protocol, str) or not protocol.strip()):
                     raise ValueError(f"summary protocol must be non-empty text: {summary}")

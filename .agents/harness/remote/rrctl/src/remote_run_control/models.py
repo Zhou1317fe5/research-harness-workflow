@@ -92,6 +92,10 @@ class ResourcesSpec:
     device: str = "gpu"
     gpu_ids: tuple[str, ...] = ()
     minimum_free_mib: int = 1024
+    # 默认独占：目标 GPU 上存在任何他人进程即视为不可用。
+    # allow_occupied=True 时只校验空闲显存（用于项目所有者明确允许共用 GPU 的场景），
+    # 该选择必须显式写在 RunSpec 里并随运行留痕。
+    allow_occupied: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -377,7 +381,7 @@ class RunSpec:
         resources = None
         if root.get("resources") is not None:
             values = _mapping(root["resources"], "resources")
-            if set(values) - {"device", "gpu_ids", "minimum_free_mib"}:
+            if set(values) - {"device", "gpu_ids", "minimum_free_mib", "allow_occupied"}:
                 raise RRCError("resources_fields", "unknown resources field", "schema")
             device = values.get("device", "gpu")
             ids = values.get("gpu_ids", [])
@@ -402,7 +406,19 @@ class RunSpec:
                     "resources.minimum_free_mib must be an integer >= 0",
                     "schema",
                 )
-            resources = ResourcesSpec(device=device, gpu_ids=tuple(ids), minimum_free_mib=minimum)
+            allow_occupied = values.get("allow_occupied", False)
+            if not isinstance(allow_occupied, bool):
+                raise RRCError(
+                    "resources_occupancy",
+                    "resources.allow_occupied must be a boolean",
+                    "schema",
+                )
+            resources = ResourcesSpec(
+                device=device,
+                gpu_ids=tuple(ids),
+                minimum_free_mib=minimum,
+                allow_occupied=allow_occupied,
+            )
 
         return cls(
             schema_version=_text(root.get("schema_version"), "schema_version"),

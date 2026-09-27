@@ -31,10 +31,14 @@ class RecordRefreshTests(unittest.TestCase):
                            ("EXPERIMENTS", self.experiments), ("LEDGER", self.ledger)):
             self.stack.enter_context(patch.object(records, key, value))
 
-    def summary(self, exp="E1", run="R1", value=1, name="summary.json", **extra):
+    def summary(self, exp="E1", run="R1", value=1, name="summary.json", required=("metric",),
+                with_metric=True, **extra):
         path = self.artifacts / exp / run / name
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps({"metric": value, "protocol": "p1", "commit": "a" * 40, **extra}))
+        payload = {"protocol": "p1", "commit": "a" * 40, **extra}
+        if with_metric:
+            payload["metric"] = value
+        path.write_text(json.dumps(payload))
         run_root = self.artifacts / exp / run
         progress = run_root / "progress.json"
         progress.write_text('{"step": 1}')
@@ -50,7 +54,7 @@ class RecordRefreshTests(unittest.TestCase):
             "environment": {"kind": "conda", "name": "fixture", "conda_sh": "/fixture/conda.sh"},
             "workload": {"argv": ["bash", "train.sh"]},
             "adapter_contract": {"progress_path": "progress.json", "progress_count_field": "step", "first_step_min_count": 1,
-                                 "completion_min_count": 1, "summary_path": name, "summary_required_fields": ["metric"]},
+                                 "completion_min_count": 1, "summary_path": name, "summary_required_fields": list(required)},
             "artifacts": [{"path": item.relative_to(run_root).as_posix(), "required": True} for item in summaries],
             "metadata": {"mission_csv": f"issues/{exp}/tasks.csv"},
         })
@@ -259,6 +263,30 @@ class RecordRefreshTests(unittest.TestCase):
         self.assertEqual([run["run_id"] for run in record["runs"]], ["R1"])
         self.assertIsNone(record["metrics"]["ours_metric"])
         self.assertTrue(any("runs.R2.provenance" in gap for gap in record["_pending"]))
+
+    def test_contract_without_scalar_metric_still_projects_the_run(self):
+        # 链/控制类 pipeline：合同不声明标量指标，摘要里也就没有它。
+        self.summary(with_metric=False, required=())
+        record = records.build_record("E1", None)
+        self.assertEqual([run["run_id"] for run in record["runs"]], ["R1"])
+        self.assertIsNone(record["runs"][0]["metric"])
+        self.assertIsNone(record["metrics"]["ours_metric"])
+        self.assertIn("metrics.ours_metric", record["_pending"])
+        self.assertEqual(record["source"]["commit"], ["a" * 40])
+
+    def test_contract_requiring_the_metric_keeps_a_missing_metric_fatal(self):
+        self.summary(with_metric=False, required=("metric",))
+        record = records.build_record("E1", None)
+        self.assertEqual(record["runs"], [])
+        self.assertTrue(any("summary_missing: metric" in gap for gap in record["_pending"]))
+
+    def test_present_but_non_finite_metric_stays_fatal_without_contract_requirement(self):
+        for extra in ({"metric": None}, {"metric": "0.5"}, {"metric": float("nan")}):
+            with self.subTest(extra=extra):
+                self.summary(with_metric=False, required=(), **extra)
+                record = records.build_record("E1", None)
+                self.assertEqual(record["runs"], [])
+                self.assertTrue(any("not finite" in gap for gap in record["_pending"]))
 
     def test_restricted_runs_do_not_require_official_artifacts(self):
         self.summary()

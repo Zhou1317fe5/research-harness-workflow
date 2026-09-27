@@ -106,6 +106,47 @@ class ResourceTests(unittest.TestCase):
         ):
             resources.available_devices(self.spec(minimum=30000))
 
+    def test_occupied_gpu_is_refused_by_default(self):
+        """默认独占：目标 GPU 上有他人进程即拒绝，并报告占用进程。"""
+
+        def inventory(fields, *, applications=False):
+            if applications:
+                return [["GPU-one", "4242"]]
+            return [["0", "GPU-one", "24000"]]
+
+        with patch.object(resources, "_query", side_effect=inventory):
+            with self.assertRaises(RRCError) as caught:
+                resources.available_devices(self.spec(ids=["0"]))
+            self.assertEqual(caught.exception.code, "gpu_busy")
+            self.assertEqual(caught.exception.details["processes"], [{"gpu_uuid": "GPU-one", "pid": "4242"}])
+            self.assertFalse(caught.exception.details["allow_occupied"])
+
+    def test_allow_occupied_shares_gpu_when_memory_budget_holds(self):
+        """显式 allow_occupied：他人占用不再拒绝，但仍要求空闲显存达标。"""
+
+        def inventory(fields, *, applications=False):
+            if applications:
+                return [["GPU-one", "4242"]]
+            return [["0", "GPU-one", "24000"]]
+
+        spec = self.spec(ids=["0"])
+        shared = SimpleNamespace(
+            run_id=spec.run_id,
+            resources=ResourcesSpec("gpu", ("0",), 8192, allow_occupied=True),
+        )
+        with patch.object(resources, "_query", side_effect=inventory):
+            self.assertEqual(resources.available_devices(shared), ["GPU-one"])
+            # 空闲显存不足时仍然拒绝，共享模式不放宽显存预算
+            tight = SimpleNamespace(
+                run_id=spec.run_id,
+                resources=ResourcesSpec("gpu", ("0",), 40960, allow_occupied=True),
+            )
+            with self.assertRaises(RRCError) as caught:
+                resources.available_devices(tight)
+            self.assertEqual(caught.exception.code, "gpu_busy")
+            self.assertEqual(caught.exception.details["below_memory_budget"], ["GPU-one"])
+            self.assertTrue(caught.exception.details["allow_occupied"])
+
     def test_invalid_registry_fails_without_deleting_it(self):
         with (
             tempfile.TemporaryDirectory() as name,

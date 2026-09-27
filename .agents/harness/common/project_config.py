@@ -142,7 +142,7 @@ def load_config(path: Path = DEFAULT_CONFIG, *, pipeline: str | None = None) -> 
     if set(environment) - {"variables", "required_modules", "preflight_argv"}:
         raise ValueError("project environment accepts variables, required_modules and preflight_argv")
     resources = config.get("resources", {})
-    if set(resources) - {"device", "gpu_ids", "minimum_free_mib"}:
+    if set(resources) - {"device", "gpu_ids", "minimum_free_mib", "allow_occupied"}:
         raise ValueError("unknown project resources field")
     if set(config.get("health", {})) - {"first_step", "periodic", "completion"}:
         raise ValueError("unknown project health phase")

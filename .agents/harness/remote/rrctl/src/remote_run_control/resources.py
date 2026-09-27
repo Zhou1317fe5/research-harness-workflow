@@ -72,7 +72,10 @@ def available_devices(spec: RunSpec) -> list[str]:
         if row[0] in selected:
             busy.append({"gpu_uuid": row[0], "pid": row[1]})
     low = [uuid for uuid in selected if inventory[uuid] < resources.minimum_free_mib]
-    if busy or low:
+    # 默认独占：目标 GPU 上有任何他人进程即拒绝。
+    # resources.allow_occupied=True 是项目所有者显式授权的共享模式，此时只校验空闲显存预算。
+    blocked = low if resources.allow_occupied else (busy or low)
+    if blocked:
         raise RRCError(
             "gpu_busy",
             "requested GPUs are occupied or below the free-memory budget",
@@ -81,6 +84,7 @@ def available_devices(spec: RunSpec) -> list[str]:
                 "processes": busy,
                 "below_memory_budget": low,
                 "minimum_free_mib": resources.minimum_free_mib,
+                "allow_occupied": resources.allow_occupied,
             },
         )
     return selected
