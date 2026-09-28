@@ -1,0 +1,82 @@
+{
+  "schema_version": "audit.baseline.v1",
+  "baseline_commit": "3ef28b1887621195d3d45eab8cd9fe9ce76db5eb",
+  "generated_at": "2026-09-28",
+  "notes": "本文件是审计的可持续基线。下次审查：1) 读本文件拿基线 commit 与已 pass 清单；2) 只对 git diff baseline_commit..HEAD 变更的文件重跑相关层检查；3) findings.jsonl 中 status=open 的条目持续跟踪，fixed/wontfix 归档；4) 新发现的进 findings.jsonl，本文件同步更新。",
+  "checks": {
+    "L0": {
+      "areas": [
+        "mirror-consistency",
+        "doc-reference",
+        "schema-consistency",
+        "rule-duplication"
+      ],
+      "result_values": [
+        "pass",
+        "finding-open",
+        "finding-fixed",
+        "finding-wontfix",
+        "needs-recheck",
+        "superseded"
+      ]
+    }
+  },
+  "layers": {
+    "L0": {
+      "as_of_commit": "3ef28b1887621195d3d45eab8cd9fe9ce76db5eb",
+      "areas": {
+        "mirror-consistency": {
+          "method": "diff -rq codex↔claude + mirrored 清单枚举",
+          "scope_files": [
+            ".codex/skills",
+            ".claude/skills",
+            ".pi/skills"
+          ],
+          "result": "finding-open",
+          "findings": [
+            "F-001",
+            "F-002",
+            "F-003"
+          ]
+        },
+        "doc-reference": {
+          "method": "反引号引用正则扫描 → 文件系统/argparse 对账",
+          "scope_files": [
+            ".codex/skills/**/*.md",
+            "AGENTS.md",
+            "CLAUDE.md"
+          ],
+          "result": "finding-open",
+          "findings": [
+            "F-004",
+            "F-005"
+          ]
+        },
+        "schema-consistency": {
+          "method": "schema 字面量的读/写调用点 grep 对齐",
+          "scope_files": [
+            ".codex/skills/**/*.py",
+            ".agents/harness/**/*.py"
+          ],
+          "result": "finding-open",
+          "findings": [
+            "F-006",
+            "F-007"
+          ]
+        },
+        "rule-duplication": {
+          "method": "8 条核心规则关键词聚类",
+          "scope_files": [
+            ".codex/skills/**/*.md",
+            "AGENTS.md",
+            "CLAUDE.md"
+          ],
+          "result": "handoff-to-L4",
+          "findings": [
+            "F-008"
+          ]
+        }
+      }
+    }
+  }
+}
