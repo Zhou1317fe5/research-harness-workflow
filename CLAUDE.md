@@ -100,6 +100,8 @@ research_workspace/
 
 # Skills
 
+命中 skill 时按宿主读取对应副本，不读 canonical 源：Pi 会话存在 `.pi/skills/<name>/` 时只读该份，Codex/Claude 会话读各自目录；`.agents/skills/`（链接到 `.codex/skills/`）是 canonical 同步源，不是任何宿主的运行副本。两边仅允许在标记的宿主专属块（如 reviewer launcher）内不同，其余内容必须逐字一致。
+
 - `mission`：spec、CSV、执行与恢复的统一入口。
 - `mission-spec`：需求讨论、canonical spec 和批准边界。
 - `mission-approved-doc`：approved spec 到 issues 工件。

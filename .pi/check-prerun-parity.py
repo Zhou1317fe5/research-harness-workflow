@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""校验两个 PRERUN skill 仅启动块不同；脚本资源仍指向 canonical 实现。"""
+"""校验 PRERUN skill 各宿主副本仅启动块不同；脚本资源仍指向 canonical 实现。"""
 from __future__ import annotations
 
 import argparse
@@ -23,16 +23,32 @@ def protocol(text: str) -> str:
     return before + START + "\n<launcher>\n" + END + after
 
 
-def check(codex: Path, pi: Path) -> list[str]:
-    first, second = protocol(codex.read_text()), protocol(pi.read_text())
+def check(codex: Path, pi: Path, agents: Path | None = None) -> list[str]:
+    canonical = protocol(codex.read_text())
     errors = []
-    if first != second:
+    other = protocol(pi.read_text())
+    if canonical != other:
         errors.append("PRERUN protocol drift：除 launcher 外的内容必须保持一致\n" + "".join(
-            difflib.unified_diff(first.splitlines(True), second.splitlines(True),
+            difflib.unified_diff(canonical.splitlines(True), other.splitlines(True),
                                  fromfile="Codex protocol", tofile="Pi protocol")))
     helpers = pi.parent / "scripts"
     if not helpers.is_symlink() or helpers.resolve() != (codex.parent / "scripts").resolve():
         errors.append("Pi scripts 必须软链接到 canonical PRERUN scripts")
+    # .agents/skills 是 canonical 同步源（通常为指向 .codex/skills 的链接）：
+    # 其 launcher 必须与 codex 运行副本逐字一致，否则经该路径读到 skill 的宿主
+    # 会拿到错误的 reviewer 后端。
+    if agents is not None:
+        agents_path = agents
+        if not agents_path.exists():
+            errors.append(f".agents PRERUN skill 缺失: {agents_path}")
+        else:
+            agents_text = agents_path.read_text()
+            codex_text = codex.read_text()
+            if agents_path.resolve() != codex.resolve() and agents_text != codex_text:
+                errors.append(
+                    ".agents PRERUN skill 必须与 canonical codex 副本逐字一致（含 launcher）\n" + "".join(
+                        difflib.unified_diff(codex_text.splitlines(True), agents_text.splitlines(True),
+                                             fromfile="Codex SKILL.md", tofile=".agents SKILL.md")))
     return errors
 
 
@@ -63,10 +79,12 @@ def main():
                         default=ROOT / ".codex/skills/pre-run-implementation-review/SKILL.md")
     parser.add_argument("--pi", type=Path,
                         default=ROOT / ".pi/skills/pre-run-implementation-review/SKILL.md")
+    parser.add_argument("--agents", type=Path,
+                        default=ROOT / ".agents/skills/pre-run-implementation-review/SKILL.md")
     parser.add_argument("--self-test", action="store_true", help="额外在临时副本中验证防漂移检查")
     args = parser.parse_args()
     try:
-        errors = check(args.codex, args.pi)
+        errors = check(args.codex, args.pi, args.agents)
         if args.self_test and not errors:
             self_test(args.codex, args.pi)
     except (ValueError, OSError) as error:
