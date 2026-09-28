@@ -302,13 +302,69 @@ def observed_model_from_pi_session(session_path: Path) -> str | None:
     return observed
 
 
+def observed_model_from_codex_session(session_path: Path) -> str | None:
+    """Extract the effective model from the Codex rollout session file.
+
+    Codex CLI (0.155.x) writes rollout files under CODEX_HOME/sessions (default
+    ``~/.codex/sessions``) named ``rollout-<ts>-<thread-id>.jsonl``; the runtime
+    ``turn_context`` payload records the effective ``model``. Only this
+    runtime-written rollout event is trusted -- the reviewer's own message text
+    is never parsed for identity. Mirrors the Pi backend, which reads
+    ``model_change`` from its session file.
+    """
+    try:
+        lines = session_path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return None
+    observed: str | None = None
+    for line in lines:
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(event, dict) or event.get("type") != "turn_context":
+            continue
+        payload = event.get("payload")
+        if not isinstance(payload, dict):
+            continue
+        value = payload.get("model")
+        if isinstance(value, str) and value.strip():
+            observed = value.strip()
+    return observed
+
+
+def _codex_sessions_root() -> Path:
+    codex_home = os.environ.get("CODEX_HOME")
+    if codex_home:
+        return Path(codex_home) / "sessions"
+    return Path.home() / ".codex" / "sessions"
+
+
+def find_codex_rollout(thread_id: str) -> Path | None:
+    """Locate the rollout file for one thread under the Codex sessions root."""
+    if not thread_id or not thread_id.strip():
+        return None
+    pattern = f"rollout-*-{thread_id.strip()}.jsonl"
+    try:
+        matches = sorted(_codex_sessions_root().rglob(pattern))
+    except OSError:
+        return None
+    return matches[-1] if matches else None
+
+
 def observed_model_for_backend(
-    backend: str, event_path: Path, session_path: Path
+    backend: str, event_path: Path, session_path: Path, thread_id: str | None = None
 ) -> str | None:
     """Trusted runtime model identity from a backend's own transport artifacts."""
     if backend == "pi":
         return observed_model_from_pi_session(session_path)
-    return observed_model_from_events(event_path)
+    observed = observed_model_from_events(event_path)
+    if observed:
+        return observed
+    rollout = find_codex_rollout(thread_id) if thread_id else None
+    if rollout is not None:
+        return observed_model_from_codex_session(rollout)
+    return None
 
 
 def run_process(
@@ -537,7 +593,9 @@ def execute(args: argparse.Namespace) -> int:
             pi_session = job_dir / f"pi-session-{execution}.jsonl"
             if args.backend == "pi" and state.get("session_id") is None and pi_session.is_file():
                 record_session(str(job_dir / f"pi-session-{execution}.jsonl"))
-            observed = observed_model_for_backend(args.backend, event_path, pi_session)
+            observed = observed_model_for_backend(
+                args.backend, event_path, pi_session, state.get("session_id")
+            )
             if not raw_path.is_file():
                 raw_path.write_text(stdout, encoding="utf-8")
                 os.chmod(raw_path, 0o600)

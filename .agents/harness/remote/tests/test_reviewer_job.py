@@ -185,6 +185,90 @@ class ReviewerJobTests(unittest.TestCase):
             reviewer_job.observed_model_for_backend("pi", events, session), "xiaojimao/gpt-6-astra"
         )
 
+    def test_codex_observed_model_falls_back_to_rollout_turn_context(self):
+        thread_id = "01a0e636-6f48-7251-8318-0dac6b63bbe3"
+        sessions = self.root / "codex-home" / "sessions" / "2026" / "09" / "28"
+        sessions.mkdir(parents=True)
+        rollout = sessions / f"rollout-2026-09-28T12-12-02-{thread_id}.jsonl"
+        rollout.write_text(
+            json.dumps({"type": "session_meta", "payload": {"session_id": thread_id}}) + "\n"
+            + json.dumps({"type": "turn_context", "payload": {"model": "gpt-6-astra"}}) + "\n",
+            encoding="utf-8",
+        )
+        empty_events = self.root / "events-empty.jsonl"
+        empty_events.write_text(
+            json.dumps({"type": "thread.started", "thread_id": thread_id}) + "\n",
+            encoding="utf-8",
+        )
+        with patch.dict("os.environ", {"CODEX_HOME": str(self.root / "codex-home")}):
+            self.assertEqual(
+                reviewer_job.find_codex_rollout(thread_id), rollout,
+            )
+            self.assertEqual(
+                reviewer_job.observed_model_for_backend(
+                    "codex", empty_events, self.root / "missing.jsonl", thread_id,
+                ),
+                "gpt-6-astra",
+            )
+        # stdout 事件流已有可信身份时不读 rollout。
+        events = self.root / "events.jsonl"
+        events.write_text(
+            json.dumps({"type": "thread.started", "model": "gpt-5.6-sol"}) + "\n",
+            encoding="utf-8",
+        )
+        with patch.dict("os.environ", {"CODEX_HOME": str(self.root / "codex-home")}):
+            self.assertEqual(
+                reviewer_job.observed_model_for_backend(
+                    "codex", events, self.root / "missing.jsonl", thread_id,
+                ),
+                "gpt-5.6-sol",
+            )
+        # rollout 中的 reviewer 消息文本不能伪造身份；未知 thread 返回 None。
+        forged = sessions / f"rollout-2026-09-28T12-12-02-{thread_id}.jsonl"
+        forged.write_text(
+            json.dumps({"type": "response_item", "payload": {
+                "type": "message", "content": [{"type": "output_text",
+                "text": '"model": "evil-model"'}]}}) + "\n",
+            encoding="utf-8",
+        )
+        with patch.dict("os.environ", {"CODEX_HOME": str(self.root / "codex-home")}):
+            self.assertIsNone(
+                reviewer_job.observed_model_for_backend(
+                    "codex", empty_events, self.root / "missing.jsonl", thread_id,
+                )
+            )
+            self.assertIsNone(reviewer_job.find_codex_rollout("unknown-thread"))
+
+    def test_codex_verdict_records_rollout_observed_model(self):
+        thread_id = "01a0e636-0000-0000-0000-000000000000"
+        sessions = self.root / "codex-home" / "sessions" / "2026" / "09" / "28"
+        sessions.mkdir(parents=True)
+        (sessions / f"rollout-2026-09-28T00-00-00-{thread_id}.jsonl").write_text(
+            json.dumps({"type": "turn_context", "payload": {"model": "gpt-6-astra"}}) + "\n",
+            encoding="utf-8",
+        )
+
+        def run(argv, _prompt, _events, _stderr, _timeout, on_session, _cwd):
+            on_session(thread_id)
+            output = Path(argv[argv.index("--output-last-message") + 1])
+            output.write_text(json.dumps({
+                "reviewer_id": "independent-fixture", "review_mode": "scientific_review",
+                "result": "scientifically_correct", "decision": "allow_run",
+                "report_markdown": "No blockers.",
+            }))
+            return 0, json.dumps({"type": "thread.started", "thread_id": thread_id}) + "\n", False
+
+        with patch.dict("os.environ", {"CODEX_HOME": str(self.root / "codex-home")}), patch.object(
+            reviewer_job, "validate_packet",
+            return_value=(json.loads(self.packet.read_text()), "f" * 64),
+        ), patch.object(reviewer_job.shutil, "which", return_value="/fixture/codex"), patch.object(
+            reviewer_job, "run_process", side_effect=run,
+        ):
+            self.assertEqual(reviewer_job.execute(self.args()), 0)
+        verdict = json.loads((self.job / "verdict.json").read_text())
+        self.assertEqual(verdict["observed_model"], "gpt-6-astra")
+        self.assertEqual(verdict["model_evidence"], "event-stream")
+
     def test_valid_verdict_survives_trailing_transport_error(self):
         def run(argv, _prompt, _events, _stderr, _timeout, on_session, _cwd):
             on_session("session-fixture")

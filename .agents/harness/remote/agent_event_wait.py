@@ -77,6 +77,21 @@ def start(args: argparse.Namespace) -> int:
     codex = shutil.which("codex")
     if not codex:
         raise ValueError("codex executable is unavailable")
+    path = state_path(runspec, run_id, thread)
+    # 已投递的 attention 事件仍在等待执行者处理时，不启动第二个 relay：重复唤醒
+    # 只会让执行者对同一 RunID 做重复诊断。复用判断不查远端状态（保持 start 快速）。
+    if path.is_file():
+        try:
+            previous = load_json(path)
+        except (OSError, ValueError):
+            previous = {}
+        if previous.get("status") == "attention":
+            print(json.dumps({
+                "status": "attention_pending", "reused": True,
+                "run_id": run_id, "state_path": str(path),
+                "message": "An attention event for this RunID was already delivered; inspect it before starting another relay.",
+            }, ensure_ascii=False))
+            return 0
     capability = subprocess.run(
         [codex, "queue", "--help"], capture_output=True, text=True,
         check=False, timeout=10,
@@ -90,6 +105,12 @@ def start(args: argparse.Namespace) -> int:
         fcntl.flock(lock, fcntl.LOCK_EX)
         if path.is_file():
             previous = load_json(path)
+            if previous.get("status") == "attention":
+                print(json.dumps({
+                    "status": "attention_pending", "reused": True,
+                    "run_id": run_id, "state_path": str(path),
+                }, ensure_ascii=False))
+                return 0
             if previous.get("status") == "waiting" and running(previous):
                 print(json.dumps({
                     "status": "waiting", "reused": True,
