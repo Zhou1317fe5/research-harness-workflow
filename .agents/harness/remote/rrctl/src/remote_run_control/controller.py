@@ -996,11 +996,26 @@ class Controller:
                     }
             raise RRCError(
                 "pull_collision",
-                f"local artifact destination already exists: {destination}",
+                f"local artifact destination already exists: {destination}; "
+                f"if its contents are complete and verified, keep it (pull is idempotent only "
+                f"for a manifest-identical destination); otherwise move it aside or remove it "
+                f"before retrying: mv {destination} {destination}.conflict",
                 "artifact",
             )
         destination.parent.mkdir(parents=True, exist_ok=True)
         temporary = Path(tempfile.mkdtemp(prefix=f".{run_id}.", dir=destination.parent))
+        # 同一次 pull 失败后重试：目标尚不存在但上次残留了同 RunID 的 staging
+        # 目录，直接清理后重来（幂等）。已在传输完成后被 rename 走的目录不受影响。
+        if not temporary.name.startswith(f".{run_id}."):
+            raise RRCError("pull_staging_invalid", "unexpected staging directory name", "artifact")
+        for sibling in destination.parent.iterdir():
+            if (
+                sibling.name.startswith(f".{run_id}.")
+                and sibling != temporary
+                and sibling.is_dir()
+                and not sibling.is_symlink()
+            ):
+                shutil.rmtree(sibling, ignore_errors=True)
         try:
             for entry in manifest["entries"]:
                 relative = Path(entry["path"])

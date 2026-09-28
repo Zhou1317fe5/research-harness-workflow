@@ -154,6 +154,26 @@ class ProcessBackendTests(unittest.TestCase):
         with self.assertRaises(RRCError) as caught:
             self.control.pull(spec.run_id)
         self.assertEqual(caught.exception.code, "pull_collision")
+        # 错误信息必须指出可执行的恢复路径，而不是只有 "already exists"。
+        self.assertIn("manifest-identical", str(caught.exception))
+        self.assertIn(str(destination), str(caught.exception))
+
+    def test_pull_retry_cleans_stale_staging_directory(self):
+        spec = self.spec()
+        self.control.launch(spec)
+        terminal = self.control.wait(spec.run_id, poll_seconds=0.05, max_wait_seconds=5)
+        self.assertEqual(terminal["status"]["state"], "completed")
+        destination = Path(spec.local_pull_root) / spec.run_id
+        # 模拟上次 pull 在传输中断后留下的同 RunID staging 残留。
+        stale = destination.parent / f".{spec.run_id}.stale00"
+        stale.mkdir(parents=True)
+        (stale / "partial.json").write_text("{}")
+        pulled = self.control.pull(spec.run_id)
+        self.assertFalse(pulled["reused"])
+        self.assertFalse(stale.exists())
+        self.assertTrue((destination / "artifact_manifest.json").is_file())
+        # 完整目的地下拉取仍复用；残留清理不影响幂等复用路径。
+        self.assertTrue(self.control.pull(spec.run_id)["reused"])
 
     def test_observation_deadline_preserves_workload_then_resumes(self):
         spec = self.spec(delay=2)
