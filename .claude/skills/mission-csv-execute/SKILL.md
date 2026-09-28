@@ -63,6 +63,8 @@ CSV 的 artifact root 按以下顺序确定：
 
 CSV 更新统一使用 `scripts/csv_state.py`，它锁住整段读改写和 events sidecar。返回的 `csv_sha256` 可作为下一次请求的 `expected_sha256`；版本冲突时重新读取并合并本次字段，不覆盖其他写者。追加 review 和 legacy 归档也使用同一把锁。控制标签用 `set_note_tags` 显式更新；旧冲突返回 `notes_conflict`，不得任取首值/末值。`event` 等证据历史继续追加。
 
+**写入前先跑 `scripts/preflight.py <csv> [request.json ...]`**（只读）：把 `csv_state.py` 的请求面校验（schema、commit_boundary、set_note_tags、PRERUN 枚举）、分支上下文与 claim 引用在首次写入前一次性静态检查，避免在关键路径上逐个踩运行期错误。preflight 不代替 `csv_state.py` 的权威校验，只把可预见的失败前移。
+
 # 闭环完成判定
 
 `csv_completion_errors()` 是唯一最终闭环判断，核验实际 Git、ingest、claim、post-run result analysis 和 handoff；恢复与生命周期 completed 共用它。`final_ready.py` 只检查 closing 前置条件，通过不代表 Mission 已完成。用户要求不提交时，保留真实未提交状态和剩余项。

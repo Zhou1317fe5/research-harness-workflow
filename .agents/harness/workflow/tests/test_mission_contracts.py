@@ -16,6 +16,7 @@ ROOT = Path(__file__).resolve().parents[4]
 sys.path.insert(0, str(ROOT / ".codex/skills/mission-csv-execute/scripts"))
 sys.path.insert(0, str(ROOT / ".agents"))
 from csv_state import SCHEMA, StateUpdateError, apply_update
+import preflight
 from mission_completion import (EXPECTED_FIELDS, parse_note_tags, read_mission_csv,
                                 row_terminal_errors, git_completion_errors, csv_completion_errors,
                                 resolve_reference_path)
@@ -779,6 +780,7 @@ class MissionContractTests(unittest.TestCase):
             "skills/mission-csv-execute/scripts/validate_claim_ledger.py",
             "skills/mission-csv-execute/scripts/validate_outcome_contract.py",
             "skills/mission-csv-execute/scripts/mission_completion.py",
+            "skills/mission-csv-execute/scripts/preflight.py",
             "skills/mission-csv-execute/scripts/final_ready.py",
             "skills/mission-recovery/scripts/scan_recovery.py",
             "skills/mission-approved-doc/SKILL.md",
@@ -794,6 +796,39 @@ class MissionContractTests(unittest.TestCase):
                 claude = ROOT / ".claude" / relative
                 self.assertTrue(codex.is_file(), codex)
                 self.assertEqual(codex.read_bytes(), claude.read_bytes())
+
+    def test_preflight_catches_runtime_update_errors_before_first_write(self):
+        # 9-27 hera-gsr-scnp 会话中三类真实运行期错误必须在首次写入前被 preflight 抓住。
+        self.init_git()
+        self.write_csv([
+            self.row(id="PRERUN-REVIEW-01", phase="prerun",
+                     notes="review_kind:pre_run_implementation; review_mode:scientific_review; gated_run:RUN-1"),
+            self.row(id="INGEST-01", phase="ingest"),
+        ])
+        bad_boundary = {"schema_version": SCHEMA, "row_id": "INGEST-01",
+                        "set": {"dev_state": "已完成"}, "commit_boundary": "bogus_boundary"}
+        bad_result = {"schema_version": SCHEMA, "row_id": "PRERUN-REVIEW-01",
+                      "set_note_tags": {"review_result": "scientifically_incorrect_closed"}}
+        bad_row = {"schema_version": SCHEMA, "row_id": "NOPE-01",
+                   "set": {"dev_state": "已完成"}}
+        ok_request = {"schema_version": SCHEMA, "row_id": "INGEST-01",
+                      "append_notes": ["preflight_probe:ok"], "commit_boundary": "none"}
+        errors = preflight.preflight(self.path, [
+            ("bad_boundary", bad_boundary),
+            ("bad_result", bad_result),
+            ("bad_row", bad_row),
+            ("ok_request", ok_request),
+        ])
+        self.assertTrue(any("commit_boundary_invalid" in e and "bad_boundary" in e for e in errors), errors)
+        self.assertTrue(any("prerun_review_result_invalid" in e and "bad_result" in e for e in errors), errors)
+        self.assertTrue(any("row_lookup_invalid" in e and "bad_row" in e for e in errors), errors)
+        self.assertFalse(any("ok_request" in e for e in errors), errors)
+        # 全部行闭环且无请求时 preflight 通过。
+        closed = self.row(id="X-1", dev_state="已完成", review_initial_state="已完成",
+                          review_regression_state="已完成", git_state="已提交",
+                          remote_state="not_applicable")
+        self.write_csv([closed])
+        self.assertEqual(preflight.preflight(self.path, []), [])
 
     def test_final_ready_also_requires_post_run_analysis(self):
         rows, _ = self.result_analysis_fixture(include_analysis=False)

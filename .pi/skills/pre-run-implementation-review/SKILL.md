@@ -228,6 +228,8 @@ The review gate accepts only `verdict.json` with schema `prerun.scientific-verdi
 
 A verdict written by `reviewer_job.py` also records `requested_model` and an event-stream `observed_model`, and RunSpec construction checks both with the shared validator in `.agents/harness/review_model.py`: an `observed_model` of `unknown` is rejected as unverifiable, any other recorded identity must match a model approved for a configured host, and verdicts that record no model fields stay accepted for backward compatibility. The approved identity for each host lives only in `review_model.py`, which is the single place to change it.
 
+For the codex backend, the runner extracts `observed_model` from the stdout event stream first; when the stream records no model (codex 0.155.x `exec --json`), it falls back to the runtime rollout session file under `$CODEX_HOME/sessions` (default `~/.codex/sessions`) located by the recorded `thread_id`, whose `turn_context` payload carries the effective model. The reviewer's own message text is never parsed for identity.
+
 ## Blocker Repair
 
 When the result is `scientifically_incorrect`:
