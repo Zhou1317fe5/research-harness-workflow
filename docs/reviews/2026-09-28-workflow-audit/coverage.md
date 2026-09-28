@@ -52,6 +52,6 @@
    - 已修复 → 改 `status=fixed`、填 `fix_commit`；
    - 裁定不修 → 改 `status=wontfix`、填理由；
    - 新发现问题 → 追加新行（id 递增，layer 指向所属检查）。
-5. 每层完成且 findings.de 无新增 open blocker 后：更新 `coverage.md` 对应该层一行，并把 `baseline.json` 的 `as_of_commit` 推进到当前 HEAD。
+5. 每层完成且 findings.jsonl 无新增 open blocker 后：更新 `coverage.md` 对应该层一行，并把 `baseline.json` 的 `as_of_commit` 推进到当前 HEAD。
 
 **若新增了一个全新检查（例如批 3 加了 L1 模块单测），则在该层运行后把新检查名写进 `baseline.json.checks` 并在 `layers` 中登记其结果，使下次增量审查知道该检查已存在。**
