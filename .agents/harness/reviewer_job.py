@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import fcntl
+import glob
 import hashlib
 import importlib.util
 import json
@@ -344,7 +345,7 @@ def find_codex_rollout(thread_id: str) -> Path | None:
     """Locate the rollout file for one thread under the Codex sessions root."""
     if not thread_id or not thread_id.strip():
         return None
-    pattern = f"rollout-*-{thread_id.strip()}.jsonl"
+    pattern = f"rollout-*-{glob.escape(thread_id.strip())}.jsonl"
     try:
         matches = sorted(_codex_sessions_root().rglob(pattern))
     except OSError:
@@ -354,17 +355,25 @@ def find_codex_rollout(thread_id: str) -> Path | None:
 
 def observed_model_for_backend(
     backend: str, event_path: Path, session_path: Path, thread_id: str | None = None
-) -> str | None:
-    """Trusted runtime model identity from a backend's own transport artifacts."""
+) -> tuple[str | None, str | None]:
+    """Trusted runtime model identity from a backend's own transport artifacts.
+
+    Returns ``(model, evidence_channel)``. The channel is ``event-stream`` when the
+    identity came from the live transport event stream and ``session-metadata``
+    when it came from the backend's own session/rollout file; downstream gates
+    distinguish the two.
+    """
     if backend == "pi":
-        return observed_model_from_pi_session(session_path)
+        return observed_model_from_pi_session(session_path), "session-metadata"
     observed = observed_model_from_events(event_path)
     if observed:
-        return observed
+        return observed, "event-stream"
     rollout = find_codex_rollout(thread_id) if thread_id else None
     if rollout is not None:
-        return observed_model_from_codex_session(rollout)
-    return None
+        model = observed_model_from_codex_session(rollout)
+        if model:
+            return model, "session-metadata"
+    return None, None
 
 
 def run_process(
@@ -593,7 +602,7 @@ def execute(args: argparse.Namespace) -> int:
             pi_session = job_dir / f"pi-session-{execution}.jsonl"
             if args.backend == "pi" and state.get("session_id") is None and pi_session.is_file():
                 record_session(str(job_dir / f"pi-session-{execution}.jsonl"))
-            observed = observed_model_for_backend(
+            observed, evidence_channel = observed_model_for_backend(
                 args.backend, event_path, pi_session, state.get("session_id")
             )
             if not raw_path.is_file():
@@ -612,7 +621,7 @@ def execute(args: argparse.Namespace) -> int:
                     "reviewer_id": response["reviewer_id"].strip(),
                     "requested_model": model,
                     "observed_model": observed or "unknown",
-                    "model_evidence": "event-stream" if observed else "unknown",
+                    "model_evidence": evidence_channel if observed else "unknown",
                     "review_mode": mode,
                     "result": response["result"],
                     "decision": response["decision"],

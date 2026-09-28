@@ -102,12 +102,13 @@ def _check_request(request: dict, label: str, rows: list[dict[str, str]]) -> lis
     return errors
 
 
-def preflight(csv_path: Path, requests: list[tuple[str, dict]]) -> list[str]:
+def preflight(csv_path: Path, requests: list[tuple[str, dict]]) -> tuple[list[str], bool]:
+    """返回 (errors, branch_check_skipped)。"""
     errors: list[str] = []
     try:
         rows, _has_bom = csv_state._read_csv(csv_path)
     except csv_state.StateUpdateError as exc:
-        return [f"csv_unreadable: {exc}"]
+        return [f"csv_unreadable: {exc}"], True
     try:
         csv_state._validate_rows(rows)
     except csv_state.StateUpdateError as exc:
@@ -118,10 +119,13 @@ def preflight(csv_path: Path, requests: list[tuple[str, dict]]) -> list[str]:
         except ValueError as exc:
             errors.append(f"notes_unparseable:{row['id']}: {exc}")
     # 分支上下文：任何待写行（未闭环）在当前 checkout 下必须可写。
+    # git 不可用（非 git 仓库、rev-parse 失败）时跳过该检查，但必须在输出中显式
+    # 声明，避免静默通过给人“分支上下文已验证”的错觉。
     try:
         current = csv_state._git(["rev-parse", "--abbrev-ref", "HEAD"], csv_path.parent)
     except Exception:  # pragma: no cover - git 不可用时不做分支预检
         current = None
+    branch_check_skipped = not bool(current)
     if current:
         for row in rows:
             if csv_state._is_closed(row):
@@ -140,7 +144,7 @@ def preflight(csv_path: Path, requests: list[tuple[str, dict]]) -> list[str]:
         errors.append(f"claims: {exc}")
     for label, request in requests:
         errors.extend(_check_request(request, label, rows))
-    return errors
+    return errors, branch_check_skipped
 
 
 def main() -> int:
@@ -162,12 +166,13 @@ def main() -> int:
             errors.append(f"{label}: request_invalid: expected object")
             continue
         requests.append((label, value))
-    errors.extend(preflight(csv_path, requests))
+    errors, branch_skipped = preflight(csv_path, requests)
     if errors:
         for error in errors:
             print(f"FAIL {error}")
         return 2
-    print(f"PREFLIGHT OK: {csv_path.name} rows_checked_with_{len(requests)}_requests")
+    note = " (branch-context check skipped: not a git checkout)" if branch_skipped else ""
+    print(f"PREFLIGHT OK: {csv_path.name} rows_checked_with_{len(requests)}_requests{note}")
     return 0
 
 

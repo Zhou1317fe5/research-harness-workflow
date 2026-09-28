@@ -133,7 +133,7 @@ class ReviewerJobTests(unittest.TestCase):
         )
         # 取证来自 Pi 会话事件（provider/modelId 组合），而不是 --mode text 的 stdout。
         self.assertEqual(verdict["observed_model"], "xiaojimao/gpt-6-astra")
-        self.assertEqual(verdict["model_evidence"], "event-stream")
+        self.assertEqual(verdict["model_evidence"], "session-metadata")
 
     def test_pi_observed_model_reads_only_runtime_model_change_events(self):
         cases = {
@@ -179,10 +179,12 @@ class ReviewerJobTests(unittest.TestCase):
             encoding="utf-8",
         )
         self.assertEqual(
-            reviewer_job.observed_model_for_backend("codex", events, session), "gpt-5.6-sol"
+            reviewer_job.observed_model_for_backend("codex", events, session),
+            ("gpt-5.6-sol", "event-stream"),
         )
         self.assertEqual(
-            reviewer_job.observed_model_for_backend("pi", events, session), "xiaojimao/gpt-6-astra"
+            reviewer_job.observed_model_for_backend("pi", events, session),
+            ("xiaojimao/gpt-6-astra", "session-metadata"),
         )
 
     def test_codex_observed_model_falls_back_to_rollout_turn_context(self):
@@ -208,7 +210,7 @@ class ReviewerJobTests(unittest.TestCase):
                 reviewer_job.observed_model_for_backend(
                     "codex", empty_events, self.root / "missing.jsonl", thread_id,
                 ),
-                "gpt-6-astra",
+                ("gpt-6-astra", "session-metadata"),
             )
         # stdout 事件流已有可信身份时不读 rollout。
         events = self.root / "events.jsonl"
@@ -221,7 +223,7 @@ class ReviewerJobTests(unittest.TestCase):
                 reviewer_job.observed_model_for_backend(
                     "codex", events, self.root / "missing.jsonl", thread_id,
                 ),
-                "gpt-5.6-sol",
+                ("gpt-5.6-sol", "event-stream"),
             )
         # rollout 中的 reviewer 消息文本不能伪造身份；未知 thread 返回 None。
         forged = sessions / f"rollout-2026-09-28T12-12-02-{thread_id}.jsonl"
@@ -232,12 +234,26 @@ class ReviewerJobTests(unittest.TestCase):
             encoding="utf-8",
         )
         with patch.dict("os.environ", {"CODEX_HOME": str(self.root / "codex-home")}):
-            self.assertIsNone(
+            self.assertEqual(
                 reviewer_job.observed_model_for_backend(
                     "codex", empty_events, self.root / "missing.jsonl", thread_id,
-                )
+                ),
+                (None, None),
             )
             self.assertIsNone(reviewer_job.find_codex_rollout("unknown-thread"))
+
+    def test_codex_rollout_lookup_escapes_glob_metacharacters(self):
+        # thread_id 来自运行时事件；含 glob 元字符的 id 不得匹配到任何文件。
+        sessions = self.root / "codex-home" / "sessions" / "2026" / "09" / "28"
+        sessions.mkdir(parents=True)
+        (sessions / "rollout-2026-09-28T12-12-02-victim.jsonl").write_text(
+            json.dumps({"type": "turn_context", "payload": {"model": "gpt-6-astra"}}) + "\n",
+            encoding="utf-8",
+        )
+        with patch.dict("os.environ", {"CODEX_HOME": str(self.root / "codex-home")}):
+            self.assertIsNone(reviewer_job.find_codex_rollout("*"))
+            self.assertIsNone(reviewer_job.find_codex_rollout("victim?"))
+            self.assertIsNotNone(reviewer_job.find_codex_rollout("victim"))
 
     def test_codex_verdict_records_rollout_observed_model(self):
         thread_id = "01a0e636-0000-0000-0000-000000000000"
@@ -267,7 +283,8 @@ class ReviewerJobTests(unittest.TestCase):
             self.assertEqual(reviewer_job.execute(self.args()), 0)
         verdict = json.loads((self.job / "verdict.json").read_text())
         self.assertEqual(verdict["observed_model"], "gpt-6-astra")
-        self.assertEqual(verdict["model_evidence"], "event-stream")
+        # 回退通道是 rollout 会话文件（session-metadata），不是事件流。
+        self.assertEqual(verdict["model_evidence"], "session-metadata")
 
     def test_valid_verdict_survives_trailing_transport_error(self):
         def run(argv, _prompt, _events, _stderr, _timeout, on_session, _cwd):

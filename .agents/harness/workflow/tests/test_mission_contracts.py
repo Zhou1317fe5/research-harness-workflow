@@ -813,7 +813,7 @@ class MissionContractTests(unittest.TestCase):
                    "set": {"dev_state": "已完成"}}
         ok_request = {"schema_version": SCHEMA, "row_id": "INGEST-01",
                       "append_notes": ["preflight_probe:ok"], "commit_boundary": "none"}
-        errors = preflight.preflight(self.path, [
+        errors, branch_skipped = preflight.preflight(self.path, [
             ("bad_boundary", bad_boundary),
             ("bad_result", bad_result),
             ("bad_row", bad_row),
@@ -823,12 +823,16 @@ class MissionContractTests(unittest.TestCase):
         self.assertTrue(any("prerun_review_result_invalid" in e and "bad_result" in e for e in errors), errors)
         self.assertTrue(any("row_lookup_invalid" in e and "bad_row" in e for e in errors), errors)
         self.assertFalse(any("ok_request" in e for e in errors), errors)
+        # 只读保证：preflight 不得改动 CSV 字节。
+        before = self.path.read_bytes()
+        preflight.preflight(self.path, [("ok_request", ok_request)])
+        self.assertEqual(before, self.path.read_bytes())
         # 全部行闭环且无请求时 preflight 通过。
         closed = self.row(id="X-1", dev_state="已完成", review_initial_state="已完成",
                           review_regression_state="已完成", git_state="已提交",
                           remote_state="not_applicable")
         self.write_csv([closed])
-        self.assertEqual(preflight.preflight(self.path, []), [])
+        self.assertEqual(preflight.preflight(self.path, []), ([], False))
 
     def test_final_ready_also_requires_post_run_analysis(self):
         rows, _ = self.result_analysis_fixture(include_analysis=False)
