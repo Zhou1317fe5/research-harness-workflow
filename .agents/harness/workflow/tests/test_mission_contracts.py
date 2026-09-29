@@ -763,37 +763,23 @@ class MissionContractTests(unittest.TestCase):
         self.assertTrue(any("analysis_evidence_scope_invalid" in error for error in errors))
 
     def test_codex_claude_skill_mirrors_match(self):
-        mirrored = [
-            "skills/post-run-result-analysis/SKILL.md",
-            "skills/post-run-result-analysis/scripts/run_result_analysis.py",
-            "skills/post-run-result-analysis/scripts/validate_result_analysis.py",
-            "skills/mission-csv-execute/SKILL.md",
-            "skills/mission-csv-execute/csv-schema.md",
-            "skills/mission-csv-execute/references/closing-review.md",
-            "skills/mission-csv-execute/scripts/ensure_review_row.py",
-            "skills/mission-csv-execute/scripts/ensure_result_analysis_row.py",
-            "skills/mission-csv-execute/scripts/result_analysis.py",
-            "skills/mission-csv-execute/scripts/run_vision_review.py",
-            "skills/mission-csv-execute/scripts/check_handoff_contract.py",
-            "skills/mission-csv-execute/scripts/csv_state.py",
-            "skills/mission-csv-execute/scripts/git_isolation.py",
-            "skills/mission-csv-execute/scripts/validate_claim_ledger.py",
-            "skills/mission-csv-execute/scripts/validate_outcome_contract.py",
-            "skills/mission-csv-execute/scripts/mission_completion.py",
-            "skills/mission-csv-execute/scripts/preflight.py",
-            "skills/mission-csv-execute/scripts/final_ready.py",
-            "skills/mission-recovery/scripts/scan_recovery.py",
-            "skills/mission-approved-doc/SKILL.md",
-            "skills/pre-run-implementation-review/SKILL.md",
-            "skills/pre-run-implementation-review/agents/openai.yaml",
-            "skills/pre-run-implementation-review/scripts/prerun_core.py",
-            "skills/pre-run-implementation-review/scripts/prerun_ready.py",
-            "skills/pre-run-implementation-review/scripts/prerun_route.py",
-        ]
-        for relative in mirrored:
+        # .claude/skills 是指向 .codex/skills 的 symlink（物理同源），
+        # 镜像一致性由文件系统保证，测试只需断言链接存在且指向正确。
+        claude_skills = ROOT / ".claude" / "skills"
+        self.assertTrue(claude_skills.is_symlink(), f".claude/skills 应为 symlink: {claude_skills}")
+        self.assertEqual(
+            claude_skills.readlink(), Path("../.codex/skills"),
+            f".claude/skills 应指向 ../.codex/skills，实际: {claude_skills.readlink()}",
+        )
+        # 抽验几个关键文件经 symlink 可读且与 canonical 一致。
+        for relative in (
+            "mission-csv-execute/SKILL.md",
+            "mission-csv-execute/scripts/csv_state.py",
+            "pre-run-implementation-review/SKILL.md",
+        ):
             with self.subTest(relative=relative):
-                codex = ROOT / ".codex" / relative
-                claude = ROOT / ".claude" / relative
+                codex = ROOT / ".codex" / "skills" / relative
+                claude = claude_skills / relative
                 self.assertTrue(codex.is_file(), codex)
                 self.assertEqual(codex.read_bytes(), claude.read_bytes())
 
