@@ -172,3 +172,46 @@
 
 - 三入口 + parity + .pi/tests 全绿；
 - `git diff --check` 干净。
+
+## 批 3 修复轮（2026-09-29 后半）
+
+按用户选定 F-012+F-013+F-014+F-016 修复、F-015/F-017 记为约定待文档、F-018 推迟批 6。
+
+### 提交
+
+| 提交 | 范围 | 说明 |
+|---|---|---|
+| `55171c1` | F-012 major | `csv_state._validate_row_transition()`：dev/review 单调推进 + `_REMOTE_FORWARD` 白名单 + `git=已提交` 两个 junction 禁写。翻新原 8 BC 断言为拒绝，新增 6 个合法迁移烟测，修 1 个 fixture |
+| `40c6e8a` | F-013 minor | `test_lifecycle.setUp` 用 `patch.dict(os.environ, {}, clear=True)` 清除子代理 env，修复子代理环境 2 用例假失败；F-014 `file_lock` 同进程嵌套死锁 docstring 明示（当前不改实现） |
+| `3d03013` | F-016 minor | `install_memory_hooks.install()` 新增 `_validate_hosts()` 拒未知 host；`owned()` 重写为 `_tokens_look_like_install()` 按形状判定（bash -c 内嵌 / 路径 + `--binding <MARKER>`），不再依赖子串启发式 |
+
+### findings 状态
+
+```
+fixed:      9  (F-001 F-004 F-005 F-008 F-009 F-012 F-013 F-014 F-016)
+wontfix:    4  (F-002 F-003 F-006 F-007)
+deferred:   3  (F-015 F-017 F-018)
+open:       2  (F-010 F-011 留批 4)
+```
+
+### BUG-CANDIDATE 状态（批 3 登记的 15 条）
+
+- BC-1..BC-8 → F-012 全部 fixed（断言已翻转为拒绝）
+- BC-9 → F-013 fixed
+- BC-10 → F-014 fixed（文档化约定，未改实现——当前已知调用点均为跨进程/单次使用）
+- BC-11..BC-12 → F-015 deferred（约定待文档）
+- BC-13 → F-016 fixed（未知 host 现 raise）
+- BC-14 → F-016 fixed（owned() 形状判定）
+- BC-15 → F-017 deferred（verify_source 语义约定）
+- flake 两条 → F-018 deferred（批 6）
+
+### 测试入口最终值
+
+| 入口 | 数量 |
+|---|---|
+| remote/rrctl/tests | 231 OK |
+| workflow/tests | 175 OK |
+| remote/tests | 83 OK |
+| memory/tests | 103 OK（含子代理环境） |
+| .pi/tests | 35 pass |
+| prerun-parity | PASS |
