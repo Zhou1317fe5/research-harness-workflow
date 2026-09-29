@@ -70,3 +70,57 @@
 | F-008 | **fixed** | `rule-canonical.md` 登记 8 条规则待裁定清单；canonical 裁定移交批 4 L4 |
 
 **批 1 结论**：8 条 findings 全部处置完毕（4 fixed / 4 wontfix），无 open blocker。
+
+## 批 2 — L5 历史会话回放（完成）
+
+回放 6 个代表会话（4 子代理并行 + 2 主代理补跑失败样本）：
+
+| 样本 | 会话日期 | 大小 | 方法 | 产出 |
+|---|---|---|---|---|
+| 09-20 hera-ase-performance | 2026-09-20 06:25 → 跨日 | 4.2MB | scout aborted，主代理补跑 | replay-2026-09-20-hera-ase-performance.md |
+| 09-22 hera-cgm | 2026-09-22 01:34 → 同日 | 5.3MB | scout 成功 | replay-2026-09-22-hera-cgm.md |
+| 09-23 author-version-full-reproduction | 2026-09-23 03:54 → 同日 | 1.6MB | scout PAD 空，主代理补跑 | replay-2026-09-23-author-version-full-reproduction.md |
+| 09-24 hera-scope-diag | 2026-09-24 06:14 → 跨日 | 5.6MB | 主代理（scout 未派） | replay-2026-09-24-hera-scope-diag.md |
+| 09-28 hera-gsr-scnp-safe | 2026-09-28 03:19 | 4.9MB | scout 成功 | replay-2026-09-28-hera-gsr-scnp-safe.md |
+| 09-29 hera-gsr-scnp-region-full | 2026-09-29 02:55 | 2.3MB | scout 成功 | replay-2026-09-29-hera-gsr-scnp-region-full.md |
+
+### 故障模式频率表（6 回放 + 9-27 主会话）
+
+| 模式 | 层 | 频次 | 覆盖样本 | 处置 |
+|---|---|---|---|---|
+| rrctl event 同 event 重复推送 | L2 | 22 组 | 09-20×6/09-22×3/09-24×5/09-27×8 | relay 层已修（4e21a45）；Pi 侧单测待批 3 |
+| smoke wrapper 适配成本 | L1 | 7 例 | 09-28×4/09-29×3 | Mission 内 fixed-in-row；未升级缺陷 |
+| codex PRERUN rollout observed_model | L1 | 1 | 09-27 | 已修（4e21a45/3ef28b1） |
+| pull staging 残留 | L2 | 1 | 09-27 | 已修（0544962） |
+| CSV schema 首执行错 | L1 | 1 | 09-27 | 已修（preflight.py） |
+| codex verdict 误标 event-stream | L1 | 1 | reviewer | 已修（3ef28b1） |
+| 镜像一致性 25/53 | L0 | 1 | 批 1 | 已修（symlink） |
+| 文档反引号 basename | L0 | 39 | 批 1 | reference-whitelist.json |
+| workflow_sync 双向 | L1 | 1 | 09-23 | 设计覆盖 |
+| 隐私扫描请求 | L3 | 1 | 09-23 | 批 6 L3 真实需求证据 |
+| 基线归属修正 | L0/L1 | 1 | 09-28 | fixed-in-mission |
+| PRERUN 步骤数漂移 | L0/L1 | 2 | 09-29 | fixed-in-mission |
+| remote_state=running_remote 被拒 | L1 | 1 | 09-29 | ✅ 正向 |
+| observer timeout 不误标 failed | L2 | 1 | 09-29 | ✅ 正向 |
+| evidence-close 非独立 | L4 | 2 | 09-28/29 | F-008/L4 待裁定 |
+| 独立 reviewer 触发 vs 用户介入 | L4 | 1 | 09-22 | F-010 |
+| 独立分析 vs closing 冻结点 | L4 | 1 | 09-29 | F-011 |
+
+### 批 2 新增 findings
+
+- F-009 (L2/major) rrctl event Pi 侧重复推送——批 3 L1 补单测
+- F-010 (L4/minor) 独立 reviewer 触发 vs 用户介入
+- F-011 (L4/minor) 独立分析时序 vs closing 冻结点
+
+### 批 2 重要正向证据
+
+- codex 后端 PRERUN 在 09-29 region-full 首次正向使用，批 1 rollout 取证修复端到端正确
+- remote_state=running_remote 非法迁移被 csv_state fail-closed reject
+- observer timeout bounded retries exhausted 不误标 failed（wait 语义区分）
+
+### 对批 3 优先级的调整建议
+
+基于频率表：
+1. **最高优先**：Pi 侧 rrctl-events 扩展单测（F-009 的 22 组历史证据）
+2. **次优先**：L1 smoke wrapper 模式提取（7 例"in-row fix"是否可抽公共模式）
+3. **保持**：各正向证据路径（fail-closed gate、wait 语义）只需要在 L1 只要不是已经覆盖就不用重复测
