@@ -32,12 +32,13 @@
             ".claude/skills",
             ".pi/skills"
           ],
-          "result": "finding-open",
+          "result": "finding-fixed",
           "findings": [
             "F-001",
             "F-002",
             "F-003"
-          ]
+          ],
+          "fix_commit": "f97b1bb"
         },
         "doc-reference": {
           "method": "反引号引用正则扫描 → 文件系统/argparse 对账",
@@ -78,5 +79,13 @@
         }
       }
     }
+  },
+  "exemptions": {
+    "agent_consumed_schemas": [
+      "mission.recovery-scan.v1"
+    ],
+    "phantom_schemas": [
+      "mission.completed-review.v1"
+    ]
   }
 }

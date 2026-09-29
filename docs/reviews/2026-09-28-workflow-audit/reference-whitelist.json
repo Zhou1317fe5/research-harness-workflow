@@ -1,0 +1,45 @@
+{
+  "schema_version": "audit.reference-whitelist.v1",
+  "generated_at": "2026-09-29",
+  "categories": {
+    "runtime-generated": {
+      "description": "运行时生成的文件，模板基线不存在但目标项目运行后存在",
+      "examples": [
+        "status.json",
+        "smoke_summary.json",
+        "verdict.json",
+        "job.json",
+        "artifact-index.json",
+        "analysis.md",
+        "review.md",
+        "handoff.md",
+        "matrix_status.json",
+        "console.log"
+      ]
+    },
+    "contract-file": {
+      "description": "契约文件，目标项目需自行创建或从 example 复制",
+      "examples": [
+        ".agents/harness/config/project.toml",
+        ".agents/harness/config/profiles.json",
+        ".agents/harness/config/review_contract.toml",
+        "config/review_contract.toml"
+      ]
+    },
+    "output-path": {
+      "description": "输出路径示例，非模板文件",
+      "examples": [
+        "reviews/result-analysis.json",
+        "analysis/analysis.md",
+        "issues/.missions.json"
+      ]
+    },
+    "false-positive": {
+      "description": "扫描误报（如 --help 是通用命令非 flag）",
+      "examples": [
+        "--help"
+      ]
+    }
+  },
+  "policy": "L0.2 引用校验时，匹配以上类别的引用不 flag；未匹配且按 basename 无仓库文件的引用才报告 missing_file_ref"
+}

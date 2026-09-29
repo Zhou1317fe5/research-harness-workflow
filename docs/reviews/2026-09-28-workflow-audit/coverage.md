@@ -55,3 +55,18 @@
 5. 每层完成且 findings.jsonl 无新增 open blocker 后：更新 `coverage.md` 对应该层一行，并把 `baseline.json` 的 `as_of_commit` 推进到当前 HEAD。
 
 **若新增了一个全新检查（例如批 3 加了 L1 模块单测），则在该层运行后把新检查名写进 `baseline.json.checks` 并在 `layers` 中登记其结果，使下次增量审查知道该检查已存在。**
+
+## 批 1 补充实施（2026-09-29）
+
+| ID | 处置 | 结果 |
+|---|---|---|
+| F-001 | **fixed** | `.claude/skills` 改为 symlink → `../.codex/skills`（commit f97b1bb），物理同源；测试改为 symlink 断言 |
+| F-002 | **wontfix** | 用户确认为有意设计（仅 PRERUN 有 .pi 副本），归档 |
+| F-003 | **wontfix** | 同 F-002，parity 仅覆盖 PRERUN 是设计结果 |
+| F-004 | **fixed** | `reference-whitelist.json` 建立引用分类（runtime-generated/contract-file/output-path/false-positive） |
+| F-005 | **fixed** | 归入 F-004 机制；`--ephemeral` 标记为 false-positive（反面示例） |
+| F-006 | **wontfix** | Agent-consumed CLI 输出，设计单向；豁免登记 baseline.json |
+| F-007 | **wontfix** | 审计候选清单误报，仓库不存在；豁免登记 baseline.json |
+| F-008 | **fixed** | `rule-canonical.md` 登记 8 条规则待裁定清单；canonical 裁定移交批 4 L4 |
+
+**批 1 结论**：8 条 findings 全部处置完毕（4 fixed / 4 wontfix），无 open blocker。
