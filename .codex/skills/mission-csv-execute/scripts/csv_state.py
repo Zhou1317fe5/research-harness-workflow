@@ -200,6 +200,59 @@ def _validate_single_prerun(
         )
 
 
+# ---------------------------------------------------------------------------
+# 迁移方向约束（F-012 修复）：做过的不可逆事实不得通过单字段或跨字段组合回退。
+#
+# 约束分两类：
+# (1) 字段单调：dev/review_*/git/remote 已有正面枚举，但未约束方向；这里补齐
+#     「只允许向信息更多的一档推进，不允许回退」。
+# (2) 组合（junction）：git=已提交 是「源码冻结」事实，冻结之后 review/dev 不
+#     得回退，remote 也不得处于「正在运行」但未提交判定的中间态。
+#
+# 历史背景（为何叫 F-012）：批 3 worker 4 对 378 个 (d,ri,rr,g,remote) 单元格
+# 穷举后发现 8 类可随意回退的迁移；worker 已按“现状=允许”写了 8 个锁定断言，
+# 本修复翻转那 8 个断言为“拒绝”，并新增 17 个守卫用例。
+
+_PROGRESSION = {"未开始": 0, "进行中": 1, "已完成": 2}
+_REMOTE_FORWARD = {
+    "": {"", "not_applicable", "running_remote"},
+    "not_applicable": {"not_applicable"},
+    "running_remote": {"running_remote", "completed", "failed"},
+    "completed": {"completed", "artifacts_pulled", "ingested"},
+    "artifacts_pulled": {"artifacts_pulled", "ingested"},
+    "ingested": {"ingested"},
+    "failed": {"failed", "artifacts_pulled", "ingested"},
+}
+
+
+def _validate_row_transition(original: dict[str, str], updated: dict[str, str]) -> None:
+    """写后单调性/junction 校验：original 为读入 CSV 的原值，updated 为写后 row。
+
+    只在 apply_update 的 `_validate_rows(rows)` 之前调用（此处抛 StateUpdateError
+    即可阻止该行落盘）。不修改 original 或 updated；违反时抛 StateUpdateError。
+    """
+    for field in ("dev_state", "review_initial_state", "review_regression_state"):
+        o = original.get(field, "")
+        u = updated.get(field, "")
+        if _PROGRESSION.get(u, 0) < _PROGRESSION.get(o, 0):
+            raise StateUpdateError(f"state_regression:{field}:{o}->{u}")
+    o = original.get("git_state", "")
+    u = updated.get("git_state", "")
+    if o == "已提交" and u != "已提交":
+        raise StateUpdateError(f"git_reopen:{original['id']}")
+    o = original.get("remote_state", "")
+    u = updated.get("remote_state", "")
+    if u not in _REMOTE_FORWARD.get(o, {o}):
+        raise StateUpdateError(f"remote_regression:{o}->{u}")
+    if updated.get("git_state") == "已提交":
+        if updated.get("remote_state") == "running_remote":
+            raise StateUpdateError(
+                f"git_committed_with_remote_running:{original['id']}"
+            )
+        if updated.get("dev_state") == "未开始":
+            raise StateUpdateError(f"git_committed_with_dev_unstarted:{original['id']}")
+
+
 def _validate_claims(csv_path: Path, rows: list[dict[str, str]]) -> None:
     from validate_claim_ledger import resolve_path, validate_ledger
 
@@ -381,6 +434,7 @@ def _apply_update_locked(csv_path, request, *, replace):
             f"row_lookup_invalid: {row_id} matched {len(matches)} rows"
         )
     target = matches[0]
+    original_row = dict(target)
     _assert_write_context(csv_path, target)
     original_notes = target["notes"]
     replacement_notes = updates.get("notes")
@@ -417,6 +471,7 @@ def _apply_update_locked(csv_path, request, *, replace):
         target["notes"] = target["notes"] + prefix + "; ".join(append_notes)
 
     _validate_rows(rows)
+    _validate_row_transition(original_row, target)
     try:
         for row in rows:
             parse_note_tags(row["notes"])
