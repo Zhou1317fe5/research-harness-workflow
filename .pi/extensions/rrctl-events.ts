@@ -26,6 +26,7 @@ type Waiter = {
 	root: string;
 	key: string;
 	settled: boolean;
+	settledAt?: number;
 };
 
 type Notification = { root: string; message: string; logPath: string };
@@ -45,6 +46,9 @@ type Broker = {
 };
 
 type SessionContext = { cwd: string; sessionManager: { getSessionId(): string } };
+
+/** settle 后保留 tombstone 的窗口：足以覆盖同 event 重复推送的分钟级窗口。 */
+export const RRCTL_SETTLED_TOMBSTONE_MS = 60 * 60 * 1000;
 
 export const RRCTL_BROKER_KEY = "__researchHarnessRrctlEventsV1";
 
@@ -185,7 +189,10 @@ export function registerRrctlEvents(pi: ExtensionAPI, options: RrctlEventsOption
 	function settle(entry: Waiter, kind: "terminal" | "attention", detail: Record<string, unknown>, message: string): void {
 		if (entry.settled) return;
 		entry.settled = true;
-		broker.waits.delete(entry.key);
+		entry.settledAt = Date.now();
+		// 不立即从 broker.waits 删除：把本 waiter 留作 tombstone，同 key 的同 event
+		// 后续 execute 会命中该 tombstone 并复用其结果，而不是 spawn 新 child
+		// 再推送一次。清理在 execute 的 getOrCreate 路径上做。
 		let writeFailure: string | undefined;
 		try {
 			atomicJson(entry.eventPath, {
@@ -230,14 +237,29 @@ export function registerRrctlEvents(pi: ExtensionAPI, options: RrctlEventsOption
 				const command = buildWaitCommand(root, params);
 				const key = `${root}\u0000${command.runspec}`;
 				const existing = broker.waits.get(key);
-				if (existing && !existing.settled && existing.child.exitCode === null) {
-					return {
-						content: [{ type: "text" as const, text: `Already waiting for RunID ${existing.runId}; no model polling is required.` }],
-						details: { run_id: existing.runId, event_path: existing.eventPath, reused: true },
-						terminate: true as const,
-					};
+				if (existing) {
+					if (existing.settled) {
+						const age = Date.now() - (existing.settledAt ?? 0);
+						if (age < RRCTL_SETTLED_TOMBSTONE_MS) {
+							// 同一 RunID + 同一 session + 同一 runspec 的 event 已在最近 settle 过，
+							// 重复 execute 只是同一事件的回看（不会重 spawn、不会重复推送）。
+							return {
+								content: [{ type: "text" as const, text: `Event for RunID ${existing.runId} already delivered; no new observer is spawned.` }],
+								details: { run_id: existing.runId, event_path: existing.eventPath, reused: true },
+								terminate: true as const,
+							};
+						}
+						broker.waits.delete(key);
+					} else if (existing.child.exitCode === null) {
+						return {
+							content: [{ type: "text" as const, text: `Already waiting for RunID ${existing.runId}; no model polling is required.` }],
+							details: { run_id: existing.runId, event_path: existing.eventPath, reused: true },
+							terminate: true as const,
+						};
+					} else {
+						broker.waits.delete(key);
+					}
 				}
-				if (existing) broker.waits.delete(key);
 				const sessionId = ctx.sessionManager.getSessionId();
 				const digest = createHash("sha256").update(`${sessionId}\0${command.runspec}`).digest("hex").slice(0, 20);
 				const directory = join(root, ".pi/rrctl-events");

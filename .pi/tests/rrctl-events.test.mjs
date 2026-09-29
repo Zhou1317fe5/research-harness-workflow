@@ -127,7 +127,8 @@ test("Pi ends the current turn and wakes exactly once on terminal state", async 
 	}
 	assert.equal(pi.messages.length, 1);
 	assert.match(pi.messages[0].text, /terminal event for RunID RUN-A/);
-	assert.equal(rrctlEventsBroker().waits.size, 0);
+	assert.equal(rrctlEventsBroker().waits.size, 1);
+	assert.equal([...rrctlEventsBroker().waits.values()][0].settled, true);
 });
 
 test("Pi settles a fake child exactly once and delivers to the active session", async (t) => {
@@ -144,7 +145,8 @@ test("Pi settles a fake child exactly once and delivers to the active session", 
 	assert.equal(pi.messages.length, 1);
 	assert.match(pi.messages[0].text, /terminal event for RunID RUN-A/);
 	assert.deepEqual(JSON.parse(readFileSync(result.details.event_path, "utf8")).kind, "terminal");
-	assert.equal(rrctlEventsBroker().waits.size, 0);
+	assert.equal(rrctlEventsBroker().waits.size, 1);
+	assert.equal([...rrctlEventsBroker().waits.values()][0].settled, true);
 });
 
 test("Pi settles once when error and exit both fire", async (t) => {
@@ -160,7 +162,8 @@ test("Pi settles once when error and exit both fire", async (t) => {
 	const event = JSON.parse(readFileSync(result.details.event_path, "utf8"));
 	assert.equal(event.kind, "attention");
 	assert.match(event.error, /spawn failed/);
-	assert.equal(rrctlEventsBroker().waits.size, 0);
+	assert.equal(rrctlEventsBroker().waits.size, 1);
+	assert.equal([...rrctlEventsBroker().waits.values()][0].settled, true);
 });
 
 for (const reason of ["new", "resume", "fork", "reload"]) {
@@ -188,7 +191,8 @@ for (const reason of ["new", "resume", "fork", "reload"]) {
 			assert.match(second.messages[0].text, /terminal event for RunID RUN-A/);
 			assertNoNotificationFailures(result.details.log_path);
 			assert.equal(rrctlEventsBroker().pending.length, 0);
-			assert.equal(rrctlEventsBroker().waits.size, 0);
+			assert.equal(rrctlEventsBroker().waits.size, 1);
+	assert.equal([...rrctlEventsBroker().waits.values()][0].settled, true);
 		});
 	}
 }
@@ -277,7 +281,8 @@ test("Pi still wakes once when the event file cannot be written", async (t) => {
 	assert.equal(pi.messages.length, 1);
 	assert.match(pi.messages[0].text, /terminal event for RunID RUN-A/);
 	assert.match(pi.messages[0].text, /Event file write failed/);
-	assert.equal(rrctlEventsBroker().waits.size, 0);
+	assert.equal(rrctlEventsBroker().waits.size, 1);
+	assert.equal([...rrctlEventsBroker().waits.values()][0].settled, true);
 });
 
 test("Pi never lets a send failure escape the child callback", async (t) => {
@@ -342,4 +347,42 @@ test("Pi rejects a missing project harness without spawning", async (t) => {
 	assert.equal(result.isError, true);
 	assert.equal(spawns.length, 0);
 	assert.equal(existsSync(join(root, ".pi/rrctl-events")), false);
+});
+
+test("Pi reuses a settled tombstone instead of respawning for the same event", async (t) => {
+	resetRrctlEventsBroker();
+	const root = await fixture(t);
+	const spawns = [];
+	const pi = await boot(root, "session-a", spawns);
+	const first = await waitOn(pi, root);
+	assert.equal(first.details.reused, false);
+	spawns[0].child.finish(0, null);
+	assert.equal(pi.messages.length, 1);
+	// 同一 RunID、同一 session、同一 runspec 的第二次 execute：命中 tombstone，
+	// 不再 spawn 新 observer，也不重复向用户推送同一事件。
+	const second = await waitOn(pi, root);
+	assert.equal(second.details.reused, true);
+	assert.equal(second.details.run_id, "RUN-A");
+	assert.equal(second.details.event_path, first.details.event_path);
+	assert.equal(spawns.length, 1);
+	assert.equal(pi.messages.length, 1);
+	assert.match(second.content[0].text, /already delivered/);
+});
+
+test("Pi respawns after the settled tombstone has expired", async (t) => {
+	resetRrctlEventsBroker();
+	const root = await fixture(t);
+	const spawns = [];
+	const pi = await boot(root, "session-a", spawns);
+	const first = await waitOn(pi, root);
+	spawns[0].child.finish(0, null);
+	assert.equal(pi.messages.length, 1);
+	// 手工把 tombstone 的 settledAt 推到窗口之外，模拟过期。
+	const entry = [...rrctlEventsBroker().waits.values()][0];
+	entry.settledAt = Date.now() - (60 * 60 * 1000 + 1);
+	const second = await waitOn(pi, root);
+	assert.equal(second.details.reused, false);
+	assert.equal(spawns.length, 2);
+	spawns[1].child.finish(0, null);
+	assert.equal(pi.messages.length, 2);
 });
