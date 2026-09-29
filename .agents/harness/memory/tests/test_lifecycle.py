@@ -15,6 +15,13 @@ from harness.memory.research_memory import Memory, MemoryError, SYNC_POLICY, ato
 
 class LifecycleTests(unittest.TestCase):
     def setUp(self):
+        # 子代理环境变量（PI_SUB_AGENT_DEPTH / MAGIC_CONTEXT_PI_SUBAGENT）会触发
+        # internal_host_process() 短路，导致 handle_hook 直接返回 disabled。
+        # 测试场景模拟的是前台宿主进程，必须显式清除这两个变量。
+        # patch.dict(os.environ, {}) 默认 clear=False，必须显式 clear=True 才能清空。
+        self._env_patcher = patch.dict(os.environ, {}, clear=True)
+        self._env_patcher.start()
+        self.addCleanup(self._env_patcher.stop)
         self.temp = tempfile.TemporaryDirectory(prefix="memory-lifecycle-")
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
