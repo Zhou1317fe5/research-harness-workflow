@@ -124,3 +124,51 @@
 1. **最高优先**：Pi 侧 rrctl-events 扩展单测（F-009 的 22 组历史证据）
 2. **次优先**：L1 smoke wrapper 模式提取（7 例"in-row fix"是否可抽公共模式）
 3. **保持**：各正向证据路径（fail-closed gate、wait 语义）只需要在 L1 只要不是已经覆盖就不用重复测
+
+## 批 3 — L1 单元与状态机（完成）
+
+4 个 worker 并行 + 主代理验证提交。
+
+### 测试入口规模变化
+
+| 入口 | 批前 | 批后 | 增量 |
+|---|---|---|---|
+| rrctl/tests | 61 | 231 | +170（worker 1 新增 7 文件 118 用例）|
+| remote/tests | 77 | 83 | +6（worker 3 新增 records_ledger）|
+| workflow/tests | 61 | 174 | +113（worker 2 blindspots 61、worker 4 csv-matrix 17、worker 3 lifecycle 等）|
+| memory/tests | — | 103 | 随 adb8601 新增 test_memory_protocol.py 被纳入 |
+| .pi/tests | 21 | 23+12 = 35 | F-009 已修 + 其它 pi 扩展既有用例 |
+
+### 新增测试文件
+
+- `.agents/harness/remote/rrctl/tests/test_security.py / test_readiness.py / test_health.py / test_finalization.py / test_output_cleanup.py / test_output_limits.py / test_zipapp_builder.py`（worker 1，118 用例）
+- `.agents/harness/workflow/tests/test_mission_scripts_blindspots.py`（worker 2，61 用例）
+- `.agents/harness/workflow/tests/test_common_basics.py / test_pipeline_stages.py / test_mission_lifecycle.py` 与 `.agents/harness/remote/tests/test_records_ledger.py` 与 `.agents/harness/memory/tests/test_memory_protocol.py`（worker 3，61 用例）
+- `.agents/harness/workflow/tests/test_mission_contracts.py` 追加 `CsvStateTransitionMatrixTests`（worker 4，17 用例含 8 个 BUG-CANDIDATE 断言现状）
+
+### 新发现（findings.jsonl 增 7 条）
+
+| ID | 层 | 严重度 | 状态 | 简述 |
+|---|---|---|---|---|
+| F-012 | L1 | **major** | open | csv_state 迁移方向无单调性约束（BC-1..BC-8 共 8 类）;worker 4 已写"现状=允许"断言便于翻转为守卫 |
+| F-013 | L1 | minor | open | memory/tests/test_lifecycle.py 在子代理环境下 2 用例失败（BC-9） |
+| F-014 | L1 | minor | open | file_lock 同进程嵌套死锁（BC-10） |
+| F-015 | L1 | info | open | mission_state paused 不清 current_task；终态任务持有 csv 唯一绑定（BC-11/12） |
+| F-016 | L1 | minor | open | install_memory_hooks 未知 host 静默 + owned() 弱启发式（BC-13/14） |
+| F-017 | L1 | info | open | hindsight verify_source dirty 归 unverified 而非 changed（BC-15） |
+| F-018 | L1 | minor | open | monitoring 两个时序敏感用例（flake） |
+
+### BUG-CANDIDATE 汇总文档
+
+`docs/reviews/2026-09-28-workflow-audit/bug-candidates-batch-3.md`（18 条 BC-1..BC-15 + flake 备注）。
+
+### 处置约定（按审计方案 0.4）
+
+- 本批次只补测试不改生产代码——0 个生产文件被修改。
+- BUG-CANDIDATE 的断言按"现状=允许"写，后续修代码翻转断言即得守卫。
+- 待用户逐条裁定（修/不修/推迟）后再进入修复批次。
+
+### 测试
+
+- 三入口 + parity + .pi/tests 全绿；
+- `git diff --check` 干净。
