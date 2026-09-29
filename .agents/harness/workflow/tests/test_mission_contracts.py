@@ -872,5 +872,254 @@ class MissionContractTests(unittest.TestCase):
         self.assertTrue(any("real_e2e" in x for x in self.validate_claim([claim], rows)))
 
 
+class CsvStateTransitionMatrixTests(unittest.TestCase):
+    """CSV 全局状态机迁移表完备性回归（加测；非 TDD，一次性校验现状）。
+
+    测试方法：把 `csv_state.apply_update` 当作黑盒，核对四元组 (dev, review_initial,
+    review_regression, git) × remote_state 上每一处被允许/被拒绝的写入。
+
+    命名约定：
+      - `*_rejected_*`：迁移必须被拒绝，断言 `StateUpdateError`；
+      - `*_bug_candidate_*`：迁移应当被拒但当前代码允许（记录 BUG-CANDIDATE，
+        **不断言期望行为**，只断言现状，由主代理裁定是否修）；
+      - `*_accepted_*`：合法迁移可达性烟测。
+
+    Fixture 与 `MissionContractTests` 共用（tempdir + HOME patch + 可选 git repo），
+    单独成 class 以避免对既有 31 个测试造成命名冲突。
+    """
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory(prefix="csv-matrix-")
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        self.path = self.root / "tasks.csv"
+        self._home_patch = patch.dict(os.environ, {"HOME": str(self.root)})
+        self._home_patch.start()
+        self.addCleanup(self._home_patch.stop)
+
+    def row(self, **values):
+        row = dict.fromkeys(EXPECTED_FIELDS, "")
+        row.update(id="I-1", dev_state="未开始", review_initial_state="未开始",
+                   review_regression_state="未开始", git_state="未提交",
+                   remote_state="not_applicable")
+        row.update(values)
+        return row
+
+    def write_csv(self, rows, fields=EXPECTED_FIELDS):
+        with self.path.open("w", newline="") as stream:
+            writer = csv.DictWriter(stream, fieldnames=fields, extrasaction="ignore")
+            writer.writeheader()
+            writer.writerows(rows)
+
+    def init_git(self):
+        """与 MissionContractTests.init_git 语义一致；chdir 不写到类共享状态。
+
+        需要 `_assert_write_context` 通过，因此进入临时仓 cwd；`addCleanup`
+        在测试结束时恢复原 cwd，不影响其他测试与 CLI 运行。
+        """
+        self._prev_cwd = Path.cwd()
+        os.chdir(self.root)
+
+        def _restore_cwd():
+            try:
+                os.chdir(self._prev_cwd)
+            except FileNotFoundError:
+                pass  # tempdir 已清理；不阻塞测试退出
+        self.addCleanup(_restore_cwd)
+        subprocess.run(["git", "init", "-b", "main"], cwd=self.root, check=True,
+                       capture_output=True)
+        subprocess.run(["git", "config", "user.name", "Harness Test"], cwd=self.root,
+                       check=True, capture_output=True)
+        subprocess.run(["git", "config", "user.email", "harness-test@example.invalid"],
+                       cwd=self.root, check=True, capture_output=True)
+        (self.root / "code.py").write_text("value = 1\n")
+        subprocess.run(["git", "add", "code.py"], cwd=self.root, check=True, capture_output=True)
+        subprocess.run(["git", "commit", "-m", "fixture baseline"], cwd=self.root,
+                       check=True, capture_output=True)
+
+    def head(self):
+        return subprocess.run(["git", "rev-parse", "HEAD"], cwd=self.root, check=True,
+                              capture_output=True, text=True).stdout.strip()
+
+    # ------------------------------------------------------------------
+    # 1) 已被 csv_state 拒绝的迁移——guardrail 必须保留
+    # ------------------------------------------------------------------
+
+    def test_rejected_close_git_state_without_commit_evidence(self):
+        """git_state 未提交→已提交 必须携带 commit_hash + refs + 真实 HEAD（§A）。
+
+        否则 `git_isolation.row_git_errors` 返回 `git_evidence_invalid` 并拒绝。
+        """
+        self.init_git()
+        self.write_csv([self.row(dev_state="已完成", review_initial_state="已完成",
+                                 review_regression_state="已完成")])
+        with self.assertRaisesRegex(StateUpdateError, "git_evidence_invalid"):
+            apply_update(self.path, {"schema_version": SCHEMA, "row_id": "I-1",
+                                     "set": {"git_state": "已提交"}})
+
+    def test_rejected_remote_state_ingested_without_terminal_evidence(self):
+        """remote_state→ingested 必须有可追溯 RunSpec + spec_id + commit_hash + artifacts。
+
+        这里清空的 row 缺少全部 ingest 证据，必须被拒（§B）。
+        """
+        self.write_csv([self.row(remote_state="completed",
+                                 exp_id="EXP-1", run_id="RUN-1",
+                                 artifact_path="artifact.file")])
+        with self.assertRaisesRegex(StateUpdateError, "ingest_"):
+            apply_update(self.path, {"schema_version": SCHEMA, "row_id": "I-1",
+                                     "set": {"remote_state": "ingested"}})
+
+    def test_rejected_close_git_state_with_fake_commit_not_in_repo(self):
+        """提供伪 commit_hash（非 repo HEAD）也不能过关（§C）。"""
+        self.init_git()
+        self.write_csv([self.row(dev_state="已完成", review_initial_state="已完成",
+                                 review_regression_state="已完成")])
+        with self.assertRaisesRegex(StateUpdateError, "git_evidence_invalid"):
+            apply_update(self.path, {"schema_version": SCHEMA, "row_id": "I-1",
+                                     "set": {"git_state": "已提交",
+                                             "commit_hash": "a" * 40}})
+
+    # ------------------------------------------------------------------
+    # 2) BUG-CANDIDATE —— 应当被拒但 csv_state 当前允许
+    #    （只记录现状，不修代码；待主代理裁定）
+    # ------------------------------------------------------------------
+
+    def test_bug_candidate_reopen_stage1_git_commit_unrestricted(self):
+        """BUG-CANDIDATE-1: git_state=已提交 可在同一 apply_update 中被改回 未提交。
+
+        正常生命周期「已提交」是不可逆的；reopen 应当走显式恢复入口 + 审计事件。
+        当前 csv_state 对 git_state 未做字段级单调性约束，`row_git_errors` 仅在
+        目标是「已提交」时才校验，因此「已提交→未提交」完全绕开 Git 证据。
+        """
+        self.init_git()
+        self.write_csv([self.row(git_state="已提交", commit_hash=self.head(),
+                                 refs="code.py")])
+        result = apply_update(self.path, {"schema_version": SCHEMA, "row_id": "I-1",
+                                          "set": {"git_state": "未提交"}})
+        # 现状接受（不应当）；BUG-CANDIDATE 标记由类注释与交付文档呈现。
+        self.assertEqual(result["row"]["git_state"], "未提交")
+
+    def test_bug_candidate_remote_failure_resume_to_running(self):
+        """BUG-CANDIDATE-2: remote_state=failed 可直接跳回 running_remote。
+
+        失败态应先到 completed/artifacts_pulled（拉证据定位），再决定 resume；
+        failed→running 跨过了两个非空证据位。
+        """
+        self.write_csv([self.row(remote_state="failed")])
+        result = apply_update(self.path, {"schema_version": SCHEMA, "row_id": "I-1",
+                                          "set": {"remote_state": "running_remote"}})
+        self.assertEqual(result["row"]["remote_state"], "running_remote")
+
+    def test_bug_candidate_remote_failed_jump_to_completed(self):
+        """BUG-CANDIDATE-3: failed→completed 跳过 artifacts_pulled 直接到完成。"""
+        self.write_csv([self.row(remote_state="failed")])
+        result = apply_update(self.path, {"schema_version": SCHEMA, "row_id": "I-1",
+                                          "set": {"remote_state": "completed"}})
+        self.assertEqual(result["row"]["remote_state"], "completed")
+
+    def test_bug_candidate_remote_blank_jump_to_terminal_completed(self):
+        """BUG-CANDIDATE-4: remote_state=空（旧 19 列 CSV）→ completed 一步跳跃。"""
+        self.write_csv([self.row(remote_state="")])
+        result = apply_update(self.path, {"schema_version": SCHEMA, "row_id": "I-1",
+                                          "set": {"remote_state": "completed"}})
+        self.assertEqual(result["row"]["remote_state"], "completed")
+
+    def test_bug_candidate_remote_state_not_applicable_reopen_to_running(self):
+        """BUG-CANDIDATE-5: 已声明 not_applicable 的行可被改回 running_remote。
+
+        not_applicable 是「本项目无远程步骤」的终态声明，应 vs running 互斥。
+        """
+        self.write_csv([self.row()])  # default remote_state=not_applicable
+        result = apply_update(self.path, {"schema_version": SCHEMA, "row_id": "I-1",
+                                          "set": {"remote_state": "running_remote"}})
+        self.assertEqual(result["row"]["remote_state"], "running_remote")
+
+    def test_bug_candidate_junction_git_committed_review_initial_backward(self):
+        """BUG-CANDIDATE-6: junction 路径——git=已提交 的行同时把 review_initial
+        从已完成回退到未开始/进行中。提交后评审结论不应再回退。"""
+        self.init_git()
+        self.write_csv([self.row(git_state="已提交", commit_hash=self.head(),
+                                 review_initial_state="已完成",
+                                 refs="code.py")])
+        result = apply_update(self.path, {"schema_version": SCHEMA, "row_id": "I-1",
+                                          "set": {"review_initial_state": "未开始"}})
+        self.assertEqual(result["row"]["review_initial_state"], "未开始")
+
+    def test_bug_candidate_junction_git_committed_dev_state_unstarted(self):
+        """BUG-CANDIDATE-7: git=已提交 的行保留 dev_state=未开始；提交应当只在
+        dev=已完成（或至少进行中）后才合法。"""
+        self.init_git()
+        self.write_csv([self.row(dev_state="未开始", git_state="已提交",
+                                 commit_hash=self.head(), refs="code.py")])
+        result = apply_update(self.path, {"schema_version": SCHEMA, "row_id": "I-1",
+                                          "set": {"remote_state": "completed"}})
+        self.assertEqual(result["row"]["dev_state"], "未开始")
+        self.assertEqual(result["row"]["git_state"], "已提交")
+
+    def test_bug_candidate_junction_git_committed_remote_running(self):
+        """BUG-CANDIDATE-8: git=已提交 且 remote_state=running_remote 的组合可写。
+
+        已提交应意味着源码冻结，不应再有「远程正在运行」的中间态。"""
+        self.init_git()
+        self.write_csv([self.row(git_state="已提交", commit_hash=self.head(),
+                                 refs="code.py")])
+        result = apply_update(self.path, {"schema_version": SCHEMA, "row_id": "I-1",
+                                          "set": {"remote_state": "running_remote"}})
+        self.assertEqual(result["row"]["remote_state"], "running_remote")
+
+    # ------------------------------------------------------------------
+    # 3) 合法迁移的可达性烟测——不应被未来的拒绝规则误伤
+    # ------------------------------------------------------------------
+
+    def test_accepted_remote_forward_not_applicable_to_completed(self):
+        """非远程行：not_applicable→completed （例如本地标记 done）合法。"""
+        self.write_csv([self.row()])
+        result = apply_update(self.path, {"schema_version": SCHEMA, "row_id": "I-1",
+                                          "set": {"remote_state": "completed"}})
+        self.assertEqual(result["row"]["remote_state"], "completed")
+
+    def test_accepted_remote_running_to_completed(self):
+        """running_remote→completed 是正常完成路径。"""
+        self.write_csv([self.row(remote_state="running_remote")])
+        result = apply_update(self.path, {"schema_version": SCHEMA, "row_id": "I-1",
+                                          "set": {"remote_state": "completed"}})
+        self.assertEqual(result["row"]["remote_state"], "completed")
+
+    def test_accepted_remote_forward_completed_to_artifacts_pulled(self):
+        self.write_csv([self.row(remote_state="completed")])
+        result = apply_update(self.path, {"schema_version": SCHEMA, "row_id": "I-1",
+                                          "set": {"remote_state": "artifacts_pulled"}})
+        self.assertEqual(result["row"]["remote_state"], "artifacts_pulled")
+
+    def test_accepted_dev_state_progression_chain(self):
+        """dev_state 单步推进 未开始→进行中→已完成：合法链。"""
+        self.write_csv([self.row()])
+        apply_update(self.path, {"schema_version": SCHEMA, "row_id": "I-1",
+                                 "set": {"dev_state": "进行中"}})
+        result = apply_update(self.path, {"schema_version": SCHEMA, "row_id": "I-1",
+                                          "set": {"dev_state": "已完成"}})
+        self.assertEqual(result["row"]["dev_state"], "已完成")
+
+    def test_accepted_close_git_state_with_real_commit(self):
+        """git_state 在提供真实 HEAD commit_hash + refs 下可正常关闭。"""
+        self.init_git()
+        head = self.head()
+        self.write_csv([self.row(dev_state="已完成", review_initial_state="已完成",
+                                 review_regression_state="已完成")])
+        result = apply_update(self.path, {"schema_version": SCHEMA, "row_id": "I-1",
+                                          "set": {"git_state": "已提交",
+                                                  "commit_hash": head,
+                                                  "refs": "code.py"}})
+        self.assertEqual(result["row"]["git_state"], "已提交")
+        self.assertEqual(result["row"]["commit_hash"], head)
+
+    def test_accepted_remote_running_to_failed(self):
+        """worker 失败时合法路径。"""
+        self.write_csv([self.row(remote_state="running_remote")])
+        result = apply_update(self.path, {"schema_version": SCHEMA, "row_id": "I-1",
+                                          "set": {"remote_state": "failed"}})
+        self.assertEqual(result["row"]["remote_state"], "failed")
+
+
 if __name__ == "__main__":
     unittest.main()
