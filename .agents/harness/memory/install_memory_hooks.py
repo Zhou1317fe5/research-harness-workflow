@@ -38,6 +38,33 @@ def command(root, action, host):
                        str(script), action, str(root), host])
 
 
+def _tokens_look_like_install(parts):
+    """判断 token 序列是否为本 install() 生成的 hook 形式。
+
+    支持两种形态：
+    (a) install() 生成：['bash','-c', <shell字符串（内含 --binding MARKER）>, 'research-memory', ...]
+        shell 字符串里包含 '--binding <MARKER>'。
+    (b) 手工/旧版：包含 'research_memory.py' 作为脚本路径 token
+        且后面紧跟 '--binding' '<MARKER>' 两个连续 token（或嵌在 token 字符串中）。
+    """
+    # 形态 (a)：bash -c <shell> research-memory ...，其中 shell 里含 marker token
+    if len(parts) >= 4 and parts[0] == "bash" and parts[1] == "-c":
+        shell = parts[2]
+        if f"--binding {MARKER}" in shell:
+            return True
+    # 形态 (b)：找到 research_memory.py 作为路径 basename；
+    # 同一 token 含 marker，或后跟 --binding <MARKER>。
+    for index, part in enumerate(parts):
+        if Path(part).name == "research_memory.py":
+            if f"--binding {MARKER}" in part:
+                return True
+            for j in range(index + 1, len(parts) - 1):
+                if parts[j] == "--binding" and parts[j + 1] == MARKER:
+                    return True
+            break
+    return False
+
+
 def owned(handler):
     value = handler.get("command", "")
     if not isinstance(value, str):
@@ -46,11 +73,17 @@ def owned(handler):
         parts = shlex.split(value)
     except ValueError:
         return False
-    return (any(Path(part).name == "research_memory.py" for part in parts)
-            and any("--binding " + MARKER in part for part in parts))
+    return _tokens_look_like_install(parts)
+
+
+def _validate_hosts(hosts):
+    unknown = set(hosts) - {"codex", "claude"}
+    if unknown:
+        raise ValueError(f"unknown host(s): {', '.join(sorted(unknown))}; expected codex or claude")
 
 
 def install(root=ROOT, *, remove=False, hosts=("codex", "claude")):
+    _validate_hosts(hosts)
     root = Path(root).resolve()
     if not all((root / ".agents/harness/memory" / name).is_file()
                for name in ("research_memory.py", "memory_hooks.py")):

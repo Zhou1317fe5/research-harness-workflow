@@ -122,9 +122,9 @@ class InstallHooksTests(unittest.TestCase):
         remaining = [handler["command"] for group in session for handler in group["hooks"]]
         self.assertIn("echo foreign", remaining)
         self.assertIn("research_memory.py --binding other-marker", remaining)
-        # `--binding research-memory-v1 extra` 被 shlex 拆为三个 token，owned 检查子串
-        # `--binding research-memory-v1` 不命中，该 handler 被保留。见 BUG-CANDIDATE。
-        self.assertIn(f"research_memory.py --binding {installer.MARKER} extra", remaining)
+        # 修复后 owned() 按形状判定：`--binding research-memory-v1 extra` 是手工遗留
+        # marker，被识别为 ours 并随 remove 清除。见 F-016。
+        self.assertNotIn(f"research_memory.py --binding {installer.MARKER} extra", remaining)
         owned_after = [command for command in remaining if installer.owned({"command": command})]
         self.assertEqual(owned_after, [])
         self.assertTrue(any(group.get("matcher") == ".*" for group in session))
@@ -137,8 +137,9 @@ class InstallHooksTests(unittest.TestCase):
     def test_invalid_hosts_and_missing_harness_are_rejected(self):
         with self.assertRaises(ValueError):
             installer.install(self.root / "absent")
-        # host 未在白名单中命中：当前实现静默 0 变更（见 BUG-CANDIDATE）。
-        self.assertEqual(self.install(hosts=("pi",)), [])
+        # FIXED BC-13/F-016: 未知 host 现在显式拒绝（以前是静默 0 变更）。
+        with self.assertRaisesRegex(ValueError, "unknown host"):
+            self.install(hosts=("pi",))
 
     def test_symlinked_host_config_or_parent_is_rejected(self):
         target = self.root / "elsewhere.json"
