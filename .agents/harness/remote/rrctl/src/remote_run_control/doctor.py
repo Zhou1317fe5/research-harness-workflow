@@ -229,6 +229,7 @@ def connection_doctor(
                 name=conda_name,
                 conda_sh=conda_sh,
             ),
+            stage_root=None,
         )
         add("conda_environment", True, "conda_available", version=environment.get("version"))
         if environment.get("control_output"):

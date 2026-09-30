@@ -140,7 +140,9 @@ class Transport:
     def download(self, remote_path: str) -> bytes:
         raise NotImplementedError
 
-    def preflight(self, *, python: str, environment: EnvironmentSpec) -> dict:
+    def preflight(
+        self, *, python: str, environment: EnvironmentSpec, stage_root: str | None = None
+    ) -> dict:
         # 在内存中加载 canonical 探针及输出预算；不上传文件或创建运行目录。
         sources = {
             name: Path(__file__).with_name(name + ".py").read_text(encoding="utf-8")
@@ -161,9 +163,12 @@ class Transport:
             "print(json.dumps(answer,separators=(',',':')))\n"
             "sys.exit(0 if answer.get('ok') else 2)\n"
         )
+        request = dict(asdict(environment))
+        if stage_root is not None:
+            request["stage_root"] = stage_root
         result = self.run(
             [python, "-c", source],
-            input_data=json.dumps(asdict(environment)).encode(),
+            input_data=json.dumps(request).encode(),
         )
         if result.stdout_truncated:
             raise RRCError(

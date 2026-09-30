@@ -257,6 +257,7 @@ class Controller:
             output["remote_preflight"] = transport.preflight(
                 python=spec.remote.python,
                 environment=spec.environment,
+                stage_root=spec.remote.stage_root,
             )
             if transport.last_control_output:
                 output["control_output"] = transport.last_control_output
@@ -274,7 +275,11 @@ class Controller:
                 details=result.to_dict(),
             )
         transport = transport_for(result.profile)
-        transport.preflight(python=spec.remote.python, environment=spec.environment)
+        transport.preflight(
+            python=spec.remote.python,
+            environment=spec.environment,
+            stage_root=spec.remote.stage_root,
+        )
         return result, transport
 
     def _create_bundle(self, spec: RunSpec, destination: Path) -> str:
@@ -944,6 +949,20 @@ class Controller:
 
     def pull(self, run_id: str, *, diagnostic: bool = False) -> dict[str, Any]:
         ref, spec, transport = self._runtime(run_id)
+        binding_bytes = transport.download(f"{ref.control_root}/binding.json")
+        binding = json.loads(binding_bytes)
+        if (
+            not isinstance(binding, dict)
+            or binding.get("run_id") != run_id
+            or binding.get("run_spec_sha256") != spec.digest
+            or binding.get("control_root") != ref.control_root
+        ):
+            raise RRCError(
+                "pull_identity",
+                "remote binding does not match the locally registered RunSpec; pull refused",
+                "artifact",
+                details={"run_id": run_id},
+            )
         source_root = spec.remote.output_root
         manifest_root = ref.control_root
         destination = Path(spec.local_pull_root).expanduser() / run_id

@@ -51,6 +51,96 @@ def activation_argv(
     ]
 
 
+STAGING_WRITE_PROBE_NAME = ".rrctl-write-probe"
+
+# 通过控制通道在远程 stage 根执行真实 write/fsync 探针，避免只读 preflight 放行
+# 最终一定写不下的运行。探针以外来输入条件触发 ENOSPC，不替代磁盘配额检查。
+def staging_write_probe(settings: dict[str, Any]) -> dict[str, Any]:
+    import hashlib
+    import os
+    import tempfile
+    from pathlib import Path
+
+    stage_root = settings.get("stage_root") if isinstance(settings, dict) else None
+    if not isinstance(stage_root, str) or not stage_root:
+        return {"ok": False, "errors": [{"code": "staging_probe_invalid"}]}
+    stage_path = Path(stage_root)
+    if ".." in stage_path.parts:
+        return {"ok": False, "errors": [{"code": "staging_probe_invalid"}]}
+    path = stage_path / STAGING_WRITE_PROBE_NAME
+    # probe 直接在 stage_root 里写入；为了同时在“parent 不存在”的满盘 FS 上给出
+    # 可诊断的失败和真正的写探针，探针语义需要 stage parent 已存在或为可创建空链路。
+    probe_parent = stage_path
+    existed_before = probe_parent.exists()
+    parent_chain: list[Path] = []
+    if not existed_before:
+        walk = probe_parent
+        while not walk.exists() and walk != walk.parent:
+            parent_chain.append(walk)
+            walk = walk.parent
+        if not walk.is_dir():
+            return {"ok": False, "errors": [{"code": "staging_probe_invalid"}]}
+        anchor = walk
+        relative_parts = [candidate.name for candidate in reversed(parent_chain)]
+        # dirfd 方式逐个创建目录，在已存在 parent 上遇到 ENOSPC 时也能立即失败。
+
+    def _cleanup_created_parents() -> None:
+        for candidate in parent_chain:
+            try:
+                candidate.rmdir()
+            except OSError:
+                break
+
+    try:
+        payload = hashlib.sha256(stage_root.encode()).digest() * 32  # 1 KiB 占位
+        if parent_chain:
+            fd = os.open(anchor, os.O_RDONLY)
+            try:
+                for part in relative_parts:
+                    os.mkdir(part, dir_fd=fd)
+                    next_fd = os.open(part, os.O_RDONLY, dir_fd=fd)
+                    os.close(fd)
+                    fd = next_fd
+            finally:
+                os.close(fd)
+        try:
+            with tempfile.NamedTemporaryFile(
+                dir=stage_root, prefix=STAGING_WRITE_PROBE_NAME, delete=False
+            ) as handle:
+                probe_file = Path(handle.name)
+                handle.write(payload)
+                handle.flush()
+                os.fsync(handle.fileno())
+            probe_file.unlink()
+        finally:
+            _cleanup_created_parents()
+        return {"ok": True, "path": str(path)}
+    except OSError as exc:
+        _cleanup_created_parents()
+        for leftover in (stage_path.glob(STAGING_WRITE_PROBE_NAME + "*") if stage_path.is_dir() else []):
+            try:
+                leftover.unlink()
+            except OSError:
+                pass
+        _cleanup_created_parents()
+        return {
+            "ok": False,
+            "errors": [
+                {
+                    "code": "staging_write_probe_failed",
+                    "errno": getattr(exc, "errno", None),
+                    "type": type(exc).__name__,
+                }
+            ]
+        }
+    except Exception as exc:  # 系统性失败不能误装成磁盘满；直接失败更可恢复。
+        _cleanup_created_parents()
+        return {
+            "ok": False,
+            "errors": [{"code": "staging_write_probe_error", "type": type(exc).__name__}],
+        }
+
+
 IMPORT_PROBE = r"""
 import contextlib, importlib, json, os, sys
 request = json.load(sys.stdin)
@@ -75,6 +165,12 @@ raise SystemExit(0 if result["ok"] else 2)
 def preflight(settings: dict[str, Any]) -> dict[str, Any]:
     if sys.platform != "linux" or not os.path.isfile("/proc/sys/kernel/random/boot_id"):
         return {"ok": False, "errors": [{"code": "linux_process_identity_required"}]}
+    if isinstance(settings, dict) and settings.get("stage_root"):
+        # 只在 launch 传入 stage_root 时执行写探针；doctor 等调用方不提供
+        # stage，这里只保留只读环境探测。
+        stage_probe = staging_write_probe(settings)
+        if not stage_probe.get("ok"):
+            return stage_probe
     try:
         result = run_bounded(
             activation_argv(
