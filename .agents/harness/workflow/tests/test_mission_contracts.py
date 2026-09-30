@@ -1132,6 +1132,29 @@ class CsvStateTransitionMatrixTests(unittest.TestCase):
                                           "set": {"remote_state": "failed"}})
         self.assertEqual(result["row"]["remote_state"], "failed")
 
+    def test_rejected_direct_validate_rows_enum_invalid(self):
+        """F-019: _validate_rows 直接拒绝非法枚举值（不经过 apply_update）。"""
+        import sys
+        sys.path.insert(0, ".codex/skills/mission-csv-execute/scripts")
+        from csv_state import _validate_rows, StateUpdateError
+
+        def make_row(**over):
+            row = {"id": "I-1", "dev_state": "已完成", "review_initial_state": "已完成",
+                   "review_regression_state": "已完成", "git_state": "已提交",
+                   "remote_state": "not_applicable"}
+            row.update(over)
+            return row
+
+        # dev_state 非法值
+        with self.assertRaisesRegex(StateUpdateError, "enum_invalid"):
+            _validate_rows([make_row(dev_state="INVALID")])
+        # remote_state 非法值
+        with self.assertRaisesRegex(StateUpdateError, "enum_invalid"):
+            _validate_rows([make_row(remote_state="hallucinated")])
+        # 空 dev_state
+        with self.assertRaisesRegex(StateUpdateError, "enum_invalid"):
+            _validate_rows([make_row(dev_state="")])
+
 
 if __name__ == "__main__":
     unittest.main()

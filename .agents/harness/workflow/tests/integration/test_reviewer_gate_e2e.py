@@ -328,6 +328,19 @@ JSON
         self.assertEqual(verdict["model_evidence"], "session-metadata")
         self.assertEqual(verdict["observed_model"], reviewer_job.review_model.MODELS["pi"])
 
+    def test_verdict_unknown_model_rejected_by_gate(self):
+        """F-020: observed_model=unknown 的 verdict 应被 gate 拒绝。"""
+        # 先跑一个正常 review 得到 verdict，然后篡改 observed_model 为 unknown
+        self._run_review("pi", "scientifically_correct")
+        verdict_path = self.job_dir / "verdict.json"
+        verdict = json.loads(verdict_path.read_text())
+        verdict["observed_model"] = "unknown"
+        verdict_path.write_text(json.dumps(verdict))
+        # 用篡改后的 verdict 构建 RunSpec，应被拒
+        with self.assertRaises(RunSpecBuildError) as exc:
+            build_runspec(self._request(Path(os.path.relpath(verdict_path, self.root)), with_gate=True))
+        self.assertIn("verdict_artifact_model_unverifiable", str(exc.exception))
+
 
 if __name__ == "__main__":
     unittest.main()
