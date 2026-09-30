@@ -293,3 +293,42 @@ open:       2  (F-010 F-011 留批 4)
 - F-018 flake 测试（两个时序敏感用例）；
 - R1/R3/R4 过度防御审查（虽已嵌 plan，但批 6 需实际执行）；
 - L3 安全与故障注入的抽样矩阵。
+
+## 批 6 — L3 安全与故障注入（完成）
+
+日期：2026-09-29（收官）
+
+### 产出
+
+| 文件 | 内容 |
+|---|---|
+| `security-audit-batch-6.md` | security-auditor 主导的威胁建模与安全面审计：发现 H-1（verdict 路径凭据→哈希凭据）、M-1（SSHPASS env）、M-2（workflow_sync symlink 检查）、M-3（file_lock 重入）共 4 项，无 Critical |
+| `batch-6-addendum.md` | 主代理执行的 R1/R3/R4 过度防御审查 + F-018 flake 处置 |
+
+### 发现汇总
+
+**security-auditor（read-only）**：
+- H-1：build_rrctl_runspec.py verdict 文件做内容校验后只把路径写进 RunSpec，存在 IO-TOCTOU（建议升级为哈希凭据）
+- M-1：transport.py SSHPASS 通过 env 传给 sshpass 子进程，同 UID 进程可读（建议评估 ssh-agent 或补文档）
+- M-2：workflow_sync 落盘前未确认对 destination 做 is_symlink()/resolve() 检查（建议补检查 + 白名单）
+- M-3：file_lock 不防同进程嵌套重入（当前已知调用点安全，未来需 threading.local 或 OFD 锁）
+
+**主代理（R1/R3/R4）**：
+- R1：csv_state._validate_rows 两次调用是分层防御（原始 CSV vs 更新后 CSV），非冗余
+- R3-1：csv_state.enum_invalid 防御有效但测试覆盖不足（补 F-019）
+- R3-2：readiness.environment_kind 防御有效，测试直接覆盖
+- R3-3：build_rrctl_runspec.verdict_artifact_model_unverifiable 防御有效但测试覆盖有盲区（补 F-020）
+- R4：抽样引用均有代码接受者，F-007 已豁免 Ghost guard
+
+**F-018 flake**：非代码 bug，是测试设计对时序的过度敏感；保持现状，标记为已知 flake，不阻塞 CI。
+
+### findings 最终状态
+
+```
+fixed:      13  (F-001..F-016 及批 4 裁定)
+wontfix:     4  (F-002 F-003 F-006 F-007)
+deferred:    1  (F-018 flake)
+open:        2  (F-019 F-020 测试覆盖补充)
+```
+
+**open 仅剩 2 条测试覆盖补充建议，无生产代码缺陷。**
