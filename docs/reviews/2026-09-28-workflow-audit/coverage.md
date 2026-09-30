@@ -257,3 +257,39 @@ open:       2  (F-010 F-011 留批 4)
 
 - 本批次仅产出文档，未改任何代码或 SKILL.md。
 - 建议后续如需：`hindsight_memory.py` 的 `verify_source` docstring 补充 `unverified` 语义说明（轻量后续任务）。
+
+## 批 5 — L2 集成与生命周期（完成）
+
+日期：2026-09-29（补完）
+
+### 提交
+
+| 提交 | 范围 | 说明 |
+|---|---|---|
+| `4eb4a6e` | rrctl 生产代码 | launch 前 `staging_write_probe`（真实 write/fsync 探针）+ `pull` 前 `binding.json` 校验（pull_identity） |
+| `019f2b2` | 集成测试 5 文件 | mission_lifecycle(4)/recovery_matrix(6)/reviewer_gate(10)/workflow_sync(12)/rrctl_lifecycle(5) 共 37 个集成测试 |
+| `3e88d63` | 遗留 | integration/__init__.py |
+
+### 测试入口最终值
+
+| 入口 | 数量 |
+|---|---|
+| rrctl/tests | 236 OK（231→236，worker 3 新增 5） |
+| workflow/tests | 207 OK（175→207，worker 1/2/4 新增 32） |
+| remote/tests | 83 OK |
+| memory/tests | 103 OK |
+| .pi/tests | 35 pass |
+| prerun-parity | PASS |
+
+### 批 5 关键发现
+
+- **worker 3 发现 rrctl 两个真实缺口并最小补齐**：(1) launch 前无真实写探针，磁盘满要到 bundle 上传才暴露；(2) pull 不校验 binding.json，binding 被改时可能拉到错误 run 的工件。
+- **worker 1 的 mission 端到端**：7 行 CSV 全生命周期闭环，CSV hash/sidecar event/commit refs 三类证据一致。
+- **worker 2 的恢复矩阵**：6 个 kill -9 场景全部验证 mission-recovery 能正确 pinpoint 并 resume。
+- **worker 4 的 reviewer gate 矩阵**：verdict × backend × gate 全组合验证 + codex/pi 取证通道 + workflow_sync 全状态机 + symlink 回归。
+
+### 到批 6 的待办
+
+- F-018 flake 测试（两个时序敏感用例）；
+- R1/R3/R4 过度防御审查（虽已嵌 plan，但批 6 需实际执行）；
+- L3 安全与故障注入的抽样矩阵。
