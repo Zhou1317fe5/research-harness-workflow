@@ -215,3 +215,45 @@ open:       2  (F-010 F-011 留批 4)
 | memory/tests | 103 OK（含子代理环境） |
 | .pi/tests | 35 pass |
 | prerun-parity | PASS |
+
+## 批 4 — L4 文档契约与人机协议（完成）
+
+日期：2026-09-29
+
+### 产出文档
+
+| 文件 | 内容 |
+|---|---|
+| `rule-adjudications.md` | F-008 8 条核心规则 canonical 表述裁定书；每条指定 canonical 出处、canonical 表述、非 canonical 文档行为（改为指向）、并验证代码行为对齐 |
+| `rule-conflicts.md` | F-010/F-011/F-015/F-017 人机协议与约定裁定登记；goal 协议 vs skill 停止条件核对 |
+
+### 批 4 裁定结果
+
+**F-010**（独立 reviewer 触发时机与用户介入）
+- 裁定：**用户介入优先**，可延迟但**不能替代**；外部评估结论**不能作为结论输入污染独立性**
+
+**F-011**（独立分析时序 vs closing 冻结点）
+- 裁定：**允许并行**；独立分析产出后冻结，closing 不得回头修改其 validation_gaps
+
+**F-015**（mission_state 约定）
+- 裁定：paused 保留 `current_task`（语义=待恢复）；cancelled CSV 不可被新 task 抢占
+
+**F-017**（verify_source dirty→unverified）
+- 裁定：保持实现不变，docstring 应明示 `unverified` = 无法给出证据，包括 dirty
+
+**R6**：8 条规则的 canonical 出处统一为 `rule-adjudications.md`；其他文档禁止再展开
+新断言，只能引用 canonical 出处。
+
+**goal 协议 vs skill 停止条件**：一致；建议 skill 文档补加"遇远程 blocker 时应停在当前 row
+并通过 `goal_blocked` 上报用户"的说明文字（未做代码改动）。
+
+### findings 推 进
+
+- F-010/F-011/F-015/F-017：`status=fixed`, `decision=adjudicated-batch-4`
+  - canonical_doc 指向 rule-conflicts.md 对应节
+- 批 4 结束时 findings 状态：`fixed 13 | wontfix 4 | deferred 1 | open 0`
+
+### 代码或文档改动记录
+
+- 本批次仅产出文档，未改任何代码或 SKILL.md。
+- 建议后续如需：`hindsight_memory.py` 的 `verify_source` docstring 补充 `unverified` 语义说明（轻量后续任务）。
