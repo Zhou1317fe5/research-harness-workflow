@@ -174,7 +174,7 @@ class LifecycleTests(unittest.TestCase):
         self.memory.workspace.mkdir()
         (self.memory.workspace / "STATE.md").write_text("# STATE\n当前进度")
         self.memory.scan()
-        self.assertEqual(self.index()["jobs"], {})
+        self.assertNotIn("jobs", self.index())
         self.assertEqual(len(self.memory.search()), 2)
 
     def test_unchanged_document_commit_does_not_create_new_source(self):
@@ -218,7 +218,7 @@ class LifecycleTests(unittest.TestCase):
         outbox = self.memory.store / "outbox"
         before = sorted(outbox.glob("*.json"))
         self.decision("本地结论")
-        self.assertEqual(self.index()["jobs"], {})
+        self.assertNotIn("jobs", self.index())
         self.assertEqual(sorted(outbox.glob("*.json")), before)
 
     def test_legacy_remote_state_is_preserved_but_not_progressed(self):
@@ -227,7 +227,7 @@ class LifecycleTests(unittest.TestCase):
         legacy = outbox / "legacy.json"
         legacy.write_text('{"historical": true}\n')
         with self.memory.locked() as state:
-            state["jobs"]["legacy"] = {"state": "pending", "revision": "old", "updated_at": "2000-01-01"}
+            state.setdefault("jobs", {})["legacy"] = {"state": "pending", "revision": "old", "updated_at": "2000-01-01"}
         state_before = self.memory.state_path.read_bytes()
         outbox_before = legacy.read_bytes()
         self.memory.status()
@@ -235,6 +235,16 @@ class LifecycleTests(unittest.TestCase):
         self.assertEqual(self.memory.state_path.read_bytes(), state_before)
         self.assertEqual(legacy.read_bytes(), outbox_before)
         self.assertEqual(self.index()["jobs"]["legacy"]["state"], "pending")
+
+    def test_local_recall_filters_scope_protocol_status_and_superseded(self):
+        old, _ = self.decision("旧官方协议", protocol="official")
+        self.decision("新官方协议", at="2026-09-09T00:00:00Z", protocol="official", supersedes=old)
+        self.decision("修复协议", protocol="corrected")
+        records = self.memory.records("协议", scope="evaluation.metric", status="ACTIVE", protocol="official")
+        self.assertEqual(len(records), 1)
+        self.assertIn("新官方协议", records[0]["summary"])
+        self.assertNotIn("旧官方协议", records[0]["summary"])
+        self.assertEqual(self.memory.records("协议", protocol="corrected")[0]["protocol"], "corrected")
 
     def test_removed_remote_commands_and_hook_action_are_rejected(self):
         with self.assertRaises(MemoryError):

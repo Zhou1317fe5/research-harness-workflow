@@ -1,7 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { cp, mkdir, mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { registerResearchMemory } from "../extensions/research-memory.ts";
+import { registerResearchMemory, runMemoryHook } from "../extensions/research-memory.ts";
 
 const root = fileURLToPath(new URL("../../", import.meta.url));
 
@@ -23,6 +25,25 @@ function snapshot(revision, text) {
   return { hookSpecificOutput: { additionalContext: text, snapshotRevision: revision,
     generatedAt: "2026-09-10T12:00:00Z" } };
 }
+
+test("真实 Python 子进程 hook 可以返回本地快照", async () => {
+  const temp = await mkdtemp(`${tmpdir()}/research-memory-pi-`);
+  try {
+    await Promise.all(["memory", "workflow", "common"].map((name) =>
+      mkdir(`${temp}/.agents/harness/${name}`, { recursive: true })));
+    for (const relative of [
+      "memory/research_memory.py", "memory/memory_hooks.py",
+      "workflow/mission_state.py", "common/locking.py", "common/paths.py",
+    ]) {
+      await cp(`${root}/.agents/harness/${relative}`, `${temp}/.agents/harness/${relative}`);
+    }
+    const result = await runMemoryHook(temp, "context", { session_id: "smoke", memory_protocol: "2" });
+    assert.equal(typeof result.hookSpecificOutput?.snapshotRevision, "string");
+    assert.equal(typeof result.hookSpecificOutput?.additionalContext, "string");
+  } finally {
+    await rm(temp, { recursive: true, force: true });
+  }
+});
 
 test("内部 Historian 和普通子代理均不注册回调", () => {
   for (const key of ["MAGIC_CONTEXT_PI_SUBAGENT", "PI_SUB_AGENT_DEPTH"]) {

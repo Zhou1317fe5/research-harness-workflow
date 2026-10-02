@@ -193,7 +193,7 @@ class Memory:
         with (self.store / "index.lock").open("a") as lock:
             fcntl.flock(lock, fcntl.LOCK_EX)
             state = json.loads(self.state_path.read_text()) if self.state_path.exists() else {
-                "schema_version": 1, "events": {}, "documents": {}, "jobs": {}, "transactions": {},
+                "schema_version": 1, "events": {}, "documents": {}, "transactions": {},
             }
             if state.get("schema_version") != 1:
                 raise MemoryError("未知的本地记忆索引版本")
