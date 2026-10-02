@@ -234,20 +234,22 @@ class LedgerTests(unittest.TestCase):
         reset = json.loads(record_path.read_text())
         self.assertEqual(reset["outcome"], "pending")
 
-    def test_result_analysis_writeback_rejects_non_pending_or_duplicate_record_state(self):
+    def test_result_analysis_writeback_rejects_non_pending_and_allows_same_run_summaries(self):
         index = self.root / "issues/spec/reviews/result-analysis.json"
         index.parent.mkdir(parents=True)
         index.write_text(json.dumps({"entries": [{
             "exp_id": "E1", "run_id": "R1", "scientific_outcome": "inconclusive",
             "review_evidence_ref": "session:abc#tool:def", "review_output_sha256": "a" * 64,
         }]}))
-        for outcome, runs in ((False, [{"run_id": "R1"}]),
-                              ("pending", [{"run_id": "R1"}, {"run_id": "R1"}])):
-            with self.subTest(outcome=outcome, runs=runs):
-                self.record("E1", runs=runs, outcome=outcome)
-                with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
-                    self.assertEqual(records.apply_result_analysis_outcomes(index, repo_root=self.root), (0, 1))
-                self.assertEqual(json.loads((self.experiments / "E1/record.json").read_text())["outcome"], outcome)
+        self.record("E1", runs=[{"run_id": "R1"}], outcome=False)
+        with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+            self.assertEqual(records.apply_result_analysis_outcomes(index, repo_root=self.root), (0, 1))
+        self.assertEqual(json.loads((self.experiments / "E1/record.json").read_text())["outcome"], False)
+        self.record("E1", runs=[{"run_id": "R1", "summary_path": "a"},
+                                {"run_id": "R1", "summary_path": "b"}], outcome="pending")
+        with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+            self.assertEqual(records.apply_result_analysis_outcomes(index, repo_root=self.root), (1, 0))
+        self.assertEqual(json.loads((self.experiments / "E1/record.json").read_text())["outcome"], "inconclusive")
 
     def test_result_analysis_writeback_rejects_symlinked_record_directory(self):
         outside = Path(tempfile.mkdtemp(prefix="records-outside-"))

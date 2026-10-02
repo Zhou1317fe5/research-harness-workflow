@@ -1,4 +1,5 @@
 """Mission 状态事实与引用完整性回归；Git 操作仅发生在临时仓库。"""
+# ruff: noqa: E402 - 测试按运行时脚本路径导入工作流模块。
 import csv
 import argparse
 from contextlib import chdir
@@ -399,6 +400,34 @@ class MissionContractTests(unittest.TestCase):
         index_path.parent.mkdir(parents=True, exist_ok=True)
         index_path.write_text(json.dumps(index), encoding="utf-8")
         return rows, index_path
+
+    def test_result_analysis_validator_cli_writes_record_and_ledger(self):
+        rows, index_path = self.result_analysis_fixture()
+        agents_link = self.root / ".agents"
+        agents_link.symlink_to(ROOT / ".agents", target_is_directory=True)
+        record_path = self.root / "research_workspace/experiments/EXP-1/record.json"
+        record_path.parent.mkdir(parents=True, exist_ok=True)
+        record_path.write_text(json.dumps({
+            "exp_id": "EXP-1", "parent": None, "relation": None,
+            "source": {"spec_id": ["SPEC-1"], "branch": ["main"], "commit": ["a" * 40], "mission_csv": []},
+            "metrics": {"protocol": "official", "baseline_id": None, "baseline_run_id": None,
+                        "baseline_metric": 0.5, "ours_metric": 0.6, "delta_metric": 0.1},
+            "runs": [{"run_id": "RUN-1", "summary_path": "remote_artifacts/EXP-1/RUN-1/summary.json"}],
+            "outcome": "pending", "_pending": ["outcome"],
+            "_generated_by": ".agents/harness/records/experiment_records.py", "_projection_version": 2,
+        }, ensure_ascii=False, indent=2) + "\n")
+        validator = ROOT / ".codex/skills/post-run-result-analysis/scripts/validate_result_analysis.py"
+        result = subprocess.run(
+            [sys.executable, str(validator), "--csv", str(self.path), "--index", str(index_path),
+             "--workdir", str(self.root)],
+            cwd=ROOT, capture_output=True, text=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        updated = json.loads(record_path.read_text())
+        self.assertEqual(updated["outcome"], "inconclusive")
+        self.assertEqual(updated["outcome_meta"]["run_ids"], ["RUN-1"])
+        with (self.root / "research_workspace/EXPERIMENTS.csv").open(newline="") as stream:
+            self.assertEqual(next(csv.DictReader(stream))["Outcome"], "inconclusive")
 
     def test_result_analysis_allows_multiple_runs_per_exp(self):
         rows, index_path = self.result_analysis_fixture(run_ids=["RUN-1", "RUN-2"])

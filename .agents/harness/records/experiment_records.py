@@ -60,9 +60,17 @@ def _record_run_ids(record: dict) -> list[str] | None:
     values = [run.get("run_id") for run in runs]
     if any(not isinstance(run_id, str) or not run_id for run_id in values):
         return None
-    if len(values) != len(set(values)):
+    return sorted(set(values))
+
+
+def _runs_digest(record: dict) -> str | None:
+    runs = record.get("runs")
+    if not isinstance(runs, list) or any(not isinstance(run, dict) for run in runs):
         return None
-    return sorted(values)
+    ordered = sorted(runs, key=lambda run: json.dumps(run, ensure_ascii=False, sort_keys=True))
+    return hashlib.sha256(
+        json.dumps(ordered, ensure_ascii=False, sort_keys=True).encode("utf-8")
+    ).hexdigest()
 
 
 def identifier(value: str) -> str:
@@ -368,9 +376,12 @@ def _valid_outcome_metadata(previous: dict, current: dict, *, repo_root: Path | 
             or sorted(run_ids) != current_run_ids):
         return False
     if not all(isinstance(meta.get(key), str) and meta[key].strip()
-               for key in ("source", "entries_sha256", "review_evidence_ref", "review_output_sha256")):
+               for key in ("source", "entries_sha256", "runs_sha256", "review_evidence_ref", "review_output_sha256")):
         return False
-    if not _SHA256_RE.fullmatch(meta["entries_sha256"]) or not _SHA256_RE.fullmatch(meta["review_output_sha256"]):
+    if (not _SHA256_RE.fullmatch(meta["entries_sha256"])
+            or not _SHA256_RE.fullmatch(meta["runs_sha256"])
+            or not _SHA256_RE.fullmatch(meta["review_output_sha256"])
+            or meta["runs_sha256"] != _runs_digest(current)):
         return False
     root = (repo_root or REPO_ROOT).resolve()
     try:
@@ -629,7 +640,8 @@ def apply_result_analysis_outcomes(
             "schema_version": OUTCOME_META_SCHEMA,
             "source": index.relative_to(root).as_posix(),
             "entries_sha256": entries_sha256,
-            "run_ids": sorted(run_ids),
+            "runs_sha256": _runs_digest(record),
+            "run_ids": sorted(set(run_ids)),
             "review_evidence_ref": next(iter(review_refs)),
             "review_output_sha256": next(iter(review_hashes)),
             "applied_at": datetime.now(timezone.utc).isoformat(),

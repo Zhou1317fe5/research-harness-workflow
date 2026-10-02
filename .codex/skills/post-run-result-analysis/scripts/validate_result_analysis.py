@@ -707,8 +707,9 @@ def main() -> int:
         return 1
     try:
         repo_root = args.workdir.resolve()
-        if str(repo_root) not in sys.path:
-            sys.path.insert(0, str(repo_root))
+        agents_root = repo_root / ".agents"
+        if str(agents_root) not in sys.path:
+            sys.path.insert(0, str(agents_root))
         from harness.records.experiment_records import apply_result_analysis_outcomes
         apply_result_analysis_outcomes(
             args.index,
