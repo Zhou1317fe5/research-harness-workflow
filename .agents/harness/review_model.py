@@ -67,8 +67,8 @@ KNOWN_HOSTS = ("pi", "codex")
 # - "codex": `codex exec -m`, which resolves bare names through the Codex
 #            CLI's configured provider registry.
 DEFAULT_MODELS = {
-    "pi": "openai-codex/gpt-5.6-sol",
-    "codex": "gpt-5.6-sol",
+    "pi": "openai-codex/gpt-6.1-sol",
+    "codex": "gpt-6.1-sol",
 }
 DEFAULT_THINKING = "high"
 # Pi accepts `model:thinking`; the codex CLI takes a bare model name and

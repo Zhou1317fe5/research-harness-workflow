@@ -169,7 +169,7 @@ class ReviewerJobTests(unittest.TestCase):
     def test_observed_model_source_follows_the_backend(self):
         events = self.root / "events.jsonl"
         events.write_text(
-            json.dumps({"type": "thread.started", "model": "gpt-5.6-sol"}) + "\n",
+            json.dumps({"type": "thread.started", "model": "gpt-6.1-sol"}) + "\n",
             encoding="utf-8",
         )
         session = self.root / "pi-session.jsonl"
@@ -180,7 +180,7 @@ class ReviewerJobTests(unittest.TestCase):
         )
         self.assertEqual(
             reviewer_job.observed_model_for_backend("codex", events, session),
-            ("gpt-5.6-sol", "event-stream"),
+            ("gpt-6.1-sol", "event-stream"),
         )
         self.assertEqual(
             reviewer_job.observed_model_for_backend("pi", events, session),
@@ -215,7 +215,7 @@ class ReviewerJobTests(unittest.TestCase):
         # stdout 事件流已有可信身份时不读 rollout。
         events = self.root / "events.jsonl"
         events.write_text(
-            json.dumps({"type": "thread.started", "model": "gpt-5.6-sol"}) + "\n",
+            json.dumps({"type": "thread.started", "model": "gpt-6.1-sol"}) + "\n",
             encoding="utf-8",
         )
         with patch.dict("os.environ", {"CODEX_HOME": str(self.root / "codex-home")}):
@@ -223,7 +223,7 @@ class ReviewerJobTests(unittest.TestCase):
                 reviewer_job.observed_model_for_backend(
                     "codex", events, self.root / "missing.jsonl", thread_id,
                 ),
-                ("gpt-5.6-sol", "event-stream"),
+                ("gpt-6.1-sol", "event-stream"),
             )
         # rollout 中的 reviewer 消息文本不能伪造身份；未知 thread 返回 None。
         forged = sessions / f"rollout-2026-09-28T12-12-02-{thread_id}.jsonl"
