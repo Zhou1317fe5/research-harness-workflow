@@ -1,7 +1,5 @@
 """跨真实临时 Git、RunSpec、manifest 和 record 的接口回归；不调用远端。"""
 
-# Runtime sys.path bootstrap is intentional for the template's isolated harness imports.
-# ruff: noqa: E402
 from argparse import Namespace
 from contextlib import ExitStack
 import copy
@@ -18,13 +16,13 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[4]
 sys.path.insert(0, str(ROOT / ".agents"))
 sys.path.insert(0, str(ROOT / ".codex/skills/mission-csv-execute/scripts"))
-from mission_completion import EXPECTED_FIELDS, ingest_completion_errors
-from remote_route import decide_remote_route
-from harness.remote.build_rrctl_runspec import build_runspec, run_spec_digest
-from harness.remote.remote_run import validate_mission_launch, execute
-from harness.remote import remote_run
-from harness.records import experiment_records as records
-from harness.workflow.mission_state import update
+from mission_completion import EXPECTED_FIELDS, ingest_completion_errors  # noqa: E402
+from remote_route import decide_remote_route  # noqa: E402
+from harness.remote.build_rrctl_runspec import build_runspec, run_spec_digest  # noqa: E402
+from harness.remote.remote_run import validate_mission_launch, execute  # noqa: E402
+from harness.remote import remote_run  # noqa: E402
+from harness.records import experiment_records as records  # noqa: E402
+from harness.workflow.mission_state import update  # noqa: E402
 
 
 class ResearchBindingTests(unittest.TestCase):

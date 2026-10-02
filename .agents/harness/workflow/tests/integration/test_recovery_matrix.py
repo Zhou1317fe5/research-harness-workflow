@@ -10,8 +10,6 @@
    回退方向（重复 launch / remote 回退 / 无证据 ingest）被拒绝。
 """
 
-# Runtime sys.path bootstrap is intentional for the template's isolated harness imports.
-# ruff: noqa: E402
 import csv
 import json
 import os
@@ -30,9 +28,9 @@ for _path in (_AGENTS, _CODEX_SCRIPTS):
     if _path not in sys.path:
         sys.path.insert(0, _path)
 
-from csv_state import SCHEMA, StateUpdateError, apply_update
-from harness.workflow import mission_state
-from mission_completion import EXPECTED_FIELDS, parse_note_tags, read_mission_csv
+from csv_state import SCHEMA, StateUpdateError, apply_update  # noqa: E402
+from harness.workflow import mission_state  # noqa: E402
+from mission_completion import EXPECTED_FIELDS, parse_note_tags, read_mission_csv  # noqa: E402
 
 SCAN_SCRIPT = (
     ROOT / ".agents/skills/mission-recovery/scripts/scan_recovery.py"

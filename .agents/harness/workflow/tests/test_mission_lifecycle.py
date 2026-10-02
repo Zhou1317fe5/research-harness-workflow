@@ -6,9 +6,6 @@ completed 门禁现场 importlib 加载 mission_completion 为独立模块
 mission_state 收到一个本地假 completion 模块。
 """
 
-# Runtime sys.path bootstrap is intentional for the template's isolated harness imports.
-# ruff: noqa: E402
-
 import csv
 import json
 import os
@@ -22,10 +19,10 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[4]
 sys.path.insert(0, str(ROOT / ".agents"))
 sys.path.insert(0, str(ROOT / ".codex/skills/mission-csv-execute/scripts"))
-from harness.workflow.mission_state import (
+from harness.workflow.mission_state import (  # noqa: E402
     SCHEMA, assert_launchable, load_registry, state_path, task_for_csv, update,
 )
-from mission_completion import EXPECTED_FIELDS
+from mission_completion import EXPECTED_FIELDS  # noqa: E402
 
 
 class _FakeCompletion:
@@ -46,7 +43,7 @@ class _FakeSpec:
             return None
 
 
-import importlib.util as _ilu
+import importlib.util as _ilu  # noqa: E402 - patched runtime loader
 _real_spec_from_file = _ilu.spec_from_file_location
 _real_module_from_spec = _ilu.module_from_spec
 

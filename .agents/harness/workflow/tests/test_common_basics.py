@@ -1,7 +1,5 @@
 """common 子系统（locking / paths / project_config）的行为回归；全部使用隔离目录。"""
 
-# Runtime sys.path bootstrap is intentional for the template's isolated harness imports.
-# ruff: noqa: E402
 import multiprocessing
 from pathlib import Path
 import sys
@@ -11,9 +9,9 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[4]
 sys.path.insert(0, str(ROOT / ".agents"))
-from harness.common import paths
-from harness.common.locking import file_lock
-from harness.common.project_config import (
+from harness.common import paths  # noqa: E402
+from harness.common.locking import file_lock  # noqa: E402
+from harness.common.project_config import (  # noqa: E402
     DEFAULT_CONFIG, apply_project_config, list_pipelines, load_config, pipeline_digest,
     relative_path,
 )

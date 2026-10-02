@@ -1,8 +1,5 @@
 from __future__ import annotations
 
-# Runtime sys.path bootstrap is intentional for the template's isolated harness imports.
-# ruff: noqa: E402
-
 import contextlib
 import csv
 import hashlib
@@ -19,14 +16,14 @@ HARNESS = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(HARNESS.parent))
 sys.path.insert(0, str(HARNESS / "remote/rrctl/src"))
 
-from harness.common.project_config import apply_project_config, list_pipelines, load_config, pipeline_digest
-from harness.pipeline import run_pipeline as pipeline_module
-from harness.pipeline.run_pipeline import check_pipeline, run_pipeline
-from harness.records import experiment_records
-from harness.remote import remote_run
-from harness.remote.adapters.generic_json import evaluate
-from harness.remote.build_rrctl_runspec import RunSpecBuildError, build_runspec, run_spec_digest
-from remote_run_control.models import RunSpec
+from harness.common.project_config import apply_project_config, list_pipelines, load_config, pipeline_digest  # noqa: E402
+from harness.pipeline import run_pipeline as pipeline_module  # noqa: E402
+from harness.pipeline.run_pipeline import check_pipeline, run_pipeline  # noqa: E402
+from harness.records import experiment_records  # noqa: E402
+from harness.remote import remote_run  # noqa: E402
+from harness.remote.adapters.generic_json import evaluate  # noqa: E402
+from harness.remote.build_rrctl_runspec import RunSpecBuildError, build_runspec, run_spec_digest  # noqa: E402
+from remote_run_control.models import RunSpec  # noqa: E402
 
 
 class ProjectInterfaceTests(unittest.TestCase):

@@ -1,7 +1,5 @@
 """生命周期恢复与 CSV 并发回归，不调用远端或模型。"""
 
-# Runtime sys.path bootstrap is intentional for the template's isolated harness imports.
-# ruff: noqa: E402
 import csv
 import hashlib
 import importlib.util
@@ -15,10 +13,10 @@ import unittest
 ROOT = Path(__file__).resolve().parents[4]
 sys.path.insert(0, str(ROOT / ".agents"))
 sys.path.insert(0, str(ROOT / ".codex/skills/mission-csv-execute/scripts"))
-from harness.workflow.mission_state import assert_launchable, load_registry, update
-from csv_state import SCHEMA, StateUpdateError, apply_update
-from ensure_review_row import ensure_review_row
-from mission_completion import EXPECTED_FIELDS, read_mission_csv
+from harness.workflow.mission_state import assert_launchable, load_registry, update  # noqa: E402
+from csv_state import SCHEMA, StateUpdateError, apply_update  # noqa: E402
+from ensure_review_row import ensure_review_row  # noqa: E402
+from mission_completion import EXPECTED_FIELDS, read_mission_csv  # noqa: E402
 
 
 def load(path, name):

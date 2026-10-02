@@ -1,7 +1,5 @@
 """run_pipeline 的 stage 传播与预检分支；只在本仓库内执行 fixture 脚本。"""
 
-# Runtime sys.path bootstrap is intentional for the template's isolated harness imports.
-# ruff: noqa: E402
 import json
 import os
 from pathlib import Path
@@ -11,8 +9,8 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[4]
 sys.path.insert(0, str(ROOT / ".agents"))
-from harness.pipeline.run_pipeline import check_pipeline, confined, run_pipeline
-from harness.common.project_config import REPO_ROOT
+from harness.pipeline.run_pipeline import check_pipeline, confined, run_pipeline  # noqa: E402
+from harness.common.project_config import REPO_ROOT  # noqa: E402
 
 
 class PipelineStageTests(unittest.TestCase):
