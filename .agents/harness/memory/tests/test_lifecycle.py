@@ -223,18 +223,27 @@ class LifecycleTests(unittest.TestCase):
 
     def test_legacy_remote_state_is_preserved_but_not_progressed(self):
         outbox = self.memory.store / "outbox"
+        publications = self.memory.store / "publications"
         outbox.mkdir(parents=True, exist_ok=True)
+        publications.mkdir(parents=True, exist_ok=True)
         legacy = outbox / "legacy.json"
+        publication = publications / "legacy-batch.json"
         legacy.write_text('{"historical": true}\n')
+        publication.write_text('{"batch": "historical"}\n')
         with self.memory.locked() as state:
             state.setdefault("jobs", {})["legacy"] = {"state": "pending", "revision": "old", "updated_at": "2000-01-01"}
-        state_before = self.memory.state_path.read_bytes()
-        outbox_before = legacy.read_bytes()
+        jobs_before = self.index()["jobs"].copy()
+        outbox_before, publication_before = legacy.read_bytes(), publication.read_bytes()
+        event = self.memory.capture("assistant", "本地历史事件")
+        self.memory.scan()
         self.memory.status()
         self.memory.context()
-        self.assertEqual(self.memory.state_path.read_bytes(), state_before)
+        self.memory.recover()
+        self.memory.quarantine([event], "仅验证本地隔离不触碰历史远端队列")
+        self.assertEqual(self.index()["jobs"], jobs_before)
         self.assertEqual(legacy.read_bytes(), outbox_before)
-        self.assertEqual(self.index()["jobs"]["legacy"]["state"], "pending")
+        self.assertEqual(publication.read_bytes(), publication_before)
+        self.assertEqual(self.index()["events"][event]["disposition"], "quarantined")
 
     def test_local_recall_filters_scope_protocol_status_and_superseded(self):
         old, _ = self.decision("旧官方协议", protocol="official")
