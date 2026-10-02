@@ -705,6 +705,19 @@ def main() -> int:
     if errors:
         print("\n".join(errors), file=sys.stderr)
         return 1
+    try:
+        repo_root = args.workdir.resolve()
+        if str(repo_root) not in sys.path:
+            sys.path.insert(0, str(repo_root))
+        from harness.records.experiment_records import apply_result_analysis_outcomes
+        apply_result_analysis_outcomes(
+            args.index,
+            repo_root=repo_root,
+            allowed_outcomes=SCIENTIFIC_OUTCOMES,
+            stderr=sys.stderr,
+        )
+    except Exception as exc:  # 派生侧失败不改变验证结论
+        print(f"result_analysis_sync: warn (unexpected): {exc}", file=sys.stderr)
     print("post-run result analysis: valid")
     return 0
 

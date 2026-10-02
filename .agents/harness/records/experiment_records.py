@@ -19,6 +19,7 @@ import csv
 import hashlib
 import io
 import json
+from datetime import datetime, timezone
 import math
 import os
 import re
@@ -37,6 +38,31 @@ GENERATOR = ".agents/harness/records/experiment_records.py"
 
 # 默认待补字段；从机器事实明确投影后移除对应项。
 PENDING_FIELDS = ("parent", "metrics.protocol", "metrics.baseline_id", "outcome")
+RESULT_ANALYSIS_OUTCOMES = frozenset({
+    "hypothesis_supported",
+    "hypothesis_not_supported",
+    "gate_failed",
+    "inconclusive",
+    "not_applicable",
+})
+OUTCOME_META_SCHEMA = "research-result-analysis-outcome.v1"
+_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+
+
+def _is_pending_outcome(value: object) -> bool:
+    return value is None or (isinstance(value, str) and (not value.strip() or value == "pending"))
+
+
+def _record_run_ids(record: dict) -> list[str] | None:
+    runs = record.get("runs")
+    if not isinstance(runs, list) or any(not isinstance(run, dict) for run in runs):
+        return None
+    values = [run.get("run_id") for run in runs]
+    if any(not isinstance(run_id, str) or not run_id for run_id in values):
+        return None
+    if len(values) != len(set(values)):
+        return None
+    return sorted(values)
 
 
 def identifier(value: str) -> str:
@@ -327,6 +353,57 @@ def build_record(
     return record
 
 
+def _valid_outcome_metadata(previous: dict, current: dict, *, repo_root: Path | None = None) -> bool:
+    outcome = previous.get("outcome")
+    meta = previous.get("outcome_meta")
+    if outcome not in RESULT_ANALYSIS_OUTCOMES or not isinstance(meta, dict):
+        return False
+    if meta.get("schema_version") != OUTCOME_META_SCHEMA:
+        return False
+    run_ids = meta.get("run_ids")
+    current_run_ids = _record_run_ids(current)
+    if (current_run_ids is None or not isinstance(run_ids, list)
+            or any(not isinstance(run_id, str) or not run_id for run_id in run_ids)
+            or len(run_ids) != len(set(run_ids))
+            or sorted(run_ids) != current_run_ids):
+        return False
+    if not all(isinstance(meta.get(key), str) and meta[key].strip()
+               for key in ("source", "entries_sha256", "review_evidence_ref", "review_output_sha256")):
+        return False
+    if not _SHA256_RE.fullmatch(meta["entries_sha256"]) or not _SHA256_RE.fullmatch(meta["review_output_sha256"]):
+        return False
+    root = (repo_root or REPO_ROOT).resolve()
+    try:
+        source = (root / meta["source"]).resolve()
+        if not source.is_relative_to(root):
+            return False
+        payload = json.loads(source.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return False
+    entries = payload.get("entries") if isinstance(payload, dict) else None
+    if not isinstance(entries, list):
+        return False
+    relevant = [entry for entry in entries
+                if isinstance(entry, dict) and entry.get("exp_id") == current.get("exp_id")]
+    relevant_run_ids = [entry.get("run_id") for entry in relevant]
+    if (any(not isinstance(run_id, str) or not run_id for run_id in relevant_run_ids)
+            or sorted(relevant_run_ids) != current_run_ids
+            or len(relevant_run_ids) != len(set(relevant_run_ids))):
+        return False
+    if {entry.get("scientific_outcome") for entry in relevant} != {outcome}:
+        return False
+    review_refs = {entry.get("review_evidence_ref") for entry in relevant}
+    review_hashes = {entry.get("review_output_sha256") for entry in relevant}
+    if (len(review_refs) != 1 or meta["review_evidence_ref"] not in review_refs
+            or len(review_hashes) != 1 or meta["review_output_sha256"] not in review_hashes):
+        return False
+    ordered = sorted(relevant, key=lambda entry: entry["run_id"])
+    digest = hashlib.sha256(
+        json.dumps(ordered, ensure_ascii=False, sort_keys=True).encode("utf-8")
+    ).hexdigest()
+    return digest == meta["entries_sha256"]
+
+
 def _write_if_changed(path: Path, content: bytes) -> bool:
     if path.is_file() and path.read_bytes() == content:
         return False
@@ -343,21 +420,27 @@ def _write_if_changed(path: Path, content: bytes) -> bool:
     return True
 
 
-def cmd_build(args) -> int:
-    proj = csv_projection()
-    config_path = getattr(args, "config", DEFAULT_CONFIG)
+def cmd_build(args, *, repo_root: Path | None = None) -> int:
+    project_root = (repo_root or REPO_ROOT).resolve()
+    artifacts_root = project_root / "remote_artifacts"
+    experiments_root = project_root / "research_workspace" / "experiments"
+    proj = csv_projection(project_root)
+    config_path = Path(getattr(args, "config", DEFAULT_CONFIG))
+    if not config_path.is_absolute():
+        config_path = project_root / config_path
     settings = load_config(config_path).get("records", {}) if config_path.is_file() else {}
-    known = {p.name for p in ARTIFACTS.iterdir() if p.is_dir() and not p.name.startswith(".")} if ARTIFACTS.is_dir() else set()
+    known = {p.name for p in artifacts_root.iterdir() if p.is_dir() and not p.name.startswith(".")} if artifacts_root.is_dir() else set()
     targets = sorted(known | set(proj)) \
         if not args.exp else [args.exp]
     written = skipped = 0
     for exp_id in targets:
-        out = EXPERIMENTS / identifier(exp_id) / "record.json"
+        out = experiments_root / identifier(exp_id) / "record.json"
         # 无参模式保持只补建；显式选择实验才自动刷新，--force 保留批量兼容。
         if out.exists() and not args.exp and not args.force:
             skipped += 1
             continue
-        record = build_record(exp_id, proj.get(exp_id), settings)
+        record = build_record(exp_id, proj.get(exp_id), settings,
+                              repo_root=project_root, artifacts=artifacts_root)
         if not record["runs"] and not record["artifact_path"] and not out.exists():
             skipped += 1
             continue
@@ -365,6 +448,8 @@ def cmd_build(args) -> int:
             previous = json.loads(out.read_text(encoding="utf-8"))
             if not isinstance(previous, dict) or previous.get("_generated_by") != GENERATOR or previous.get("exp_id") != exp_id or previous.get("_projection_version", 1) not in (1, 2):
                 raise ValueError(f"record requires explicit migration: {out}")
+            if "outcome_meta" in previous:
+                record["outcome_meta"] = None
             for old, new in ((previous, record), (previous.get("source", {}), record["source"]), (previous.get("metrics", {}), record["metrics"])):
                 if not isinstance(old, dict) or set(old) - set(new):
                     raise ValueError(f"record contains unknown fields; preserve before migration: {out}")
@@ -379,6 +464,10 @@ def cmd_build(args) -> int:
                         or not isinstance(run.get("dimensions", {}), dict)
                         or set(run.get("dimensions", {})) - dimensions):
                     raise ValueError(f"record contains unknown run fields; preserve before migration: {out}")
+            if _valid_outcome_metadata(previous, record, repo_root=project_root):
+                record["outcome"] = previous["outcome"]
+                record["outcome_meta"] = previous["outcome_meta"]
+                record["_pending"] = [field for field in record["_pending"] if field != "outcome"]
             if previous == record:
                 skipped += 1
                 continue
@@ -407,9 +496,17 @@ def record_index_row(r: dict) -> dict:
     }
 
 
-def cmd_derive(args) -> int:
+def cmd_derive(args, *, repo_root: Path | None = None) -> int:
+    project_root = (repo_root or REPO_ROOT).resolve()
+    experiments_root = project_root / "research_workspace" / "experiments"
+    ledger_path = project_root / "research_workspace" / "EXPERIMENTS.csv"
+    if (not experiments_root.resolve().is_relative_to(project_root)
+            or not ledger_path.resolve().is_relative_to(project_root)):
+        raise ValueError("records paths outside project root")
     rows = []
-    for rec_path in sorted(EXPERIMENTS.glob("*/record.json")):
+    for rec_path in sorted(experiments_root.glob("*/record.json")):
+        if not rec_path.resolve().is_relative_to(project_root):
+            raise ValueError(f"record path outside project root: {rec_path}")
         r = json.loads(rec_path.read_text(encoding="utf-8"))
         rows.append(record_index_row(r))
     if not rows:
@@ -419,9 +516,144 @@ def cmd_derive(args) -> int:
     w = csv.DictWriter(output, fieldnames=list(rows[0]), lineterminator="\n")
     w.writeheader()
     w.writerows(rows)
-    _write_if_changed(LEDGER, output.getvalue().encode("utf-8"))
-    print(f"EXPERIMENTS.csv 派生 {len(rows)} 行 -> {LEDGER.relative_to(REPO_ROOT)}")
+    _write_if_changed(ledger_path, output.getvalue().encode("utf-8"))
+    print(f"EXPERIMENTS.csv 派生 {len(rows)} 行 -> {ledger_path.relative_to(project_root)}")
     return 0
+
+
+def apply_result_analysis_outcomes(
+    index_path: Path,
+    *,
+    repo_root: Path,
+    allowed_outcomes: set[str] | frozenset[str] | None = None,
+    stderr=None,
+) -> tuple[int, int]:
+    """将已通过验证的 RESULT-ANALYSIS 按 ExpID 原子回写并派生 ledger。
+
+    只有同一 ExpID 的全部 RunID 都被覆盖且 scientific_outcome 一致时才写入；
+    已有非 pending 判定不覆盖。派生始终执行，以便重试此前失败的 ledger 写入。
+    """
+    import sys as _sys
+    stream = stderr or _sys.stderr
+    root = Path(repo_root).resolve()
+    index = Path(index_path).resolve()
+    if not index.is_relative_to(root):
+        print(f"result_analysis_sync: skip (index outside repo: {index})", file=stream)
+        return (0, 0)
+    try:
+        payload = json.loads(index.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        print(f"result_analysis_sync: skip (cannot read index): {exc}", file=stream)
+        return (0, 0)
+    entries = payload.get("entries") if isinstance(payload, dict) else None
+    if not isinstance(entries, list):
+        print("result_analysis_sync: skip (entries missing)", file=stream)
+        return (0, 0)
+    valid_outcomes = allowed_outcomes or RESULT_ANALYSIS_OUTCOMES
+    grouped: dict[str, list[dict]] = {}
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        exp_id = entry.get("exp_id")
+        if not isinstance(exp_id, str) or not exp_id.strip():
+            continue
+        try:
+            exp_id = identifier(exp_id.strip())
+        except ValueError:
+            print(f"result_analysis_sync: skip ({exp_id!r} invalid ExpID)", file=stream)
+            continue
+        grouped.setdefault(exp_id, []).append(entry)
+
+    experiments_root = root / "research_workspace" / "experiments"
+    patched = skipped = 0
+    for exp_id, exp_entries in sorted(grouped.items()):
+        run_ids = [entry.get("run_id") for entry in exp_entries]
+        if (any(not isinstance(run_id, str) or not run_id.strip() for run_id in run_ids)
+                or len(run_ids) != len(set(run_ids))):
+            print(f"result_analysis_sync: skip ({exp_id} duplicate or invalid RunID)", file=stream)
+            skipped += 1
+            continue
+        outcomes = {entry.get("scientific_outcome") for entry in exp_entries}
+        if len(outcomes) != 1 or next(iter(outcomes), None) not in valid_outcomes:
+            print(f"result_analysis_sync: skip ({exp_id} inconsistent outcome)", file=stream)
+            skipped += 1
+            continue
+        record_dir = experiments_root / exp_id
+        record_path = record_dir / "record.json"
+        try:
+            if (not record_dir.resolve().is_relative_to(root)
+                    or not record_path.resolve().is_relative_to(root)):
+                print(f"result_analysis_sync: skip ({exp_id} record path outside repo)", file=stream)
+                skipped += 1
+                continue
+            record = json.loads(record_path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            print(f"result_analysis_sync: skip ({exp_id} record.json not found)", file=stream)
+            skipped += 1
+            continue
+        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+            print(f"result_analysis_sync: skip ({exp_id} record.json unreadable): {exc}", file=stream)
+            skipped += 1
+            continue
+        if not isinstance(record, dict):
+            print(f"result_analysis_sync: skip ({exp_id} record.json not a dict)", file=stream)
+            skipped += 1
+            continue
+        record_run_ids = _record_run_ids(record)
+        if record_run_ids is None:
+            print(f"result_analysis_sync: skip ({exp_id} record RunID invalid or duplicated)", file=stream)
+            skipped += 1
+            continue
+        if sorted(run_ids) != record_run_ids:
+            print(f"result_analysis_sync: skip ({exp_id} RunID coverage mismatch)", file=stream)
+            skipped += 1
+            continue
+        current = record.get("outcome")
+        if not _is_pending_outcome(current):
+            print(f"result_analysis_sync: skip ({exp_id} outcome already {current!r}; not overwriting)", file=stream)
+            skipped += 1
+            continue
+        ordered_entries = sorted(exp_entries, key=lambda entry: entry["run_id"])
+        entries_sha256 = hashlib.sha256(
+            json.dumps(ordered_entries, ensure_ascii=False, sort_keys=True).encode("utf-8")
+        ).hexdigest()
+        review_refs = {entry.get("review_evidence_ref") for entry in ordered_entries}
+        review_hashes = {entry.get("review_output_sha256") for entry in ordered_entries}
+        if (len(review_refs) != 1 or not next(iter(review_refs), None)
+                or len(review_hashes) != 1 or not next(iter(review_hashes), None)):
+            print(f"result_analysis_sync: skip ({exp_id} review evidence mismatch)", file=stream)
+            skipped += 1
+            continue
+        record["outcome"] = next(iter(outcomes))
+        record["outcome_meta"] = {
+            "schema_version": OUTCOME_META_SCHEMA,
+            "source": index.relative_to(root).as_posix(),
+            "entries_sha256": entries_sha256,
+            "run_ids": sorted(run_ids),
+            "review_evidence_ref": next(iter(review_refs)),
+            "review_output_sha256": next(iter(review_hashes)),
+            "applied_at": datetime.now(timezone.utc).isoformat(),
+            "applied_by": "validate_result_analysis",
+        }
+        pending = record.get("_pending")
+        if isinstance(pending, list):
+            record["_pending"] = [field for field in pending if field != "outcome"]
+        try:
+            _write_if_changed(record_path, (json.dumps(record, ensure_ascii=False, indent=2) + "\n").encode("utf-8"))
+        except OSError as exc:
+            print(f"result_analysis_sync: warn (cannot patch {exp_id}): {exc}", file=stream)
+            skipped += 1
+            continue
+        patched += 1
+
+    try:
+        derive_status = cmd_derive(None, repo_root=root)
+        if derive_status != 0:
+            print(f"result_analysis_sync: warn (derive exit={derive_status})", file=stream)
+    except Exception as exc:
+        print(f"result_analysis_sync: warn (derive failed): {exc}", file=stream)
+    print(f"result_analysis_sync: patched={patched} skipped={skipped}", file=stream)
+    return patched, skipped
 
 
 def main() -> int:

@@ -4,15 +4,16 @@ import csv
 import io
 import json
 from pathlib import Path
+import shutil
 import sys
 import tempfile
 import unittest
 from unittest.mock import patch
-from contextlib import ExitStack, redirect_stdout
+from contextlib import ExitStack, redirect_stderr, redirect_stdout
 
 ROOT = Path(__file__).resolve().parents[4]
 sys.path.insert(0, str(ROOT / ".agents"))
-from harness.records import experiment_records as records
+from harness.records import experiment_records as records  # noqa: E402
 
 
 class LedgerTests(unittest.TestCase):
@@ -120,6 +121,164 @@ class LedgerTests(unittest.TestCase):
             failing(target, b"x")
         self.assertFalse(target.exists())
         self.assertEqual(list(self.root.iterdir()), [])
+
+    def test_result_analysis_outcome_writeback_groups_runs_and_is_idempotent(self):
+        self.record("E1", runs=[{"run_id": "R1"}, {"run_id": "R2"}], outcome="pending")
+        index = self.root / "issues/spec/reviews/result-analysis.json"
+        index.parent.mkdir(parents=True)
+        entries = [{
+            "exp_id": "E1", "run_id": run_id,
+            "scientific_outcome": "hypothesis_supported",
+            "review_evidence_ref": "exec:reviews/result-analysis-E1/verdict.json#verdict",
+            "review_output_sha256": "f" * 64,
+        } for run_id in ("R1", "R2")]
+        index.write_text(json.dumps({"entries": entries}, ensure_ascii=False))
+        with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+            self.assertEqual(records.apply_result_analysis_outcomes(index, repo_root=self.root), (1, 0))
+        record_path = self.experiments / "E1/record.json"
+        record = json.loads(record_path.read_text())
+        self.assertEqual(record["outcome"], "hypothesis_supported")
+        self.assertEqual(record["outcome_meta"]["run_ids"], ["R1", "R2"])
+        self.assertNotIn("outcome", record.get("_pending", []))
+        self.assertEqual(self.read_ledger()[0]["Outcome"], "hypothesis_supported")
+        record_before = record_path.read_bytes()
+        ledger_before = self.ledger.read_bytes()
+        with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+            self.assertEqual(records.apply_result_analysis_outcomes(index, repo_root=self.root), (0, 1))
+        self.assertEqual(record_path.read_bytes(), record_before)
+        self.assertEqual(self.ledger.read_bytes(), ledger_before)
+
+    def test_result_analysis_writeback_retries_failed_ledger_derivation(self):
+        self.record("E1", runs=[{"run_id": "R1"}], outcome="pending")
+        index = self.root / "issues/spec/reviews/result-analysis.json"
+        index.parent.mkdir(parents=True)
+        index.write_text(json.dumps({"entries": [{
+            "exp_id": "E1", "run_id": "R1", "scientific_outcome": "inconclusive",
+            "review_evidence_ref": "session:abc#tool:def", "review_output_sha256": "a" * 64,
+        }]}))
+        real_write = records._write_if_changed
+        failed = [True]
+        def fail_once(path, content):
+            if path == self.ledger and failed[0]:
+                failed[0] = False
+                raise OSError("ledger unavailable")
+            return real_write(path, content)
+        with patch.object(records, "_write_if_changed", side_effect=fail_once), redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+            self.assertEqual(records.apply_result_analysis_outcomes(index, repo_root=self.root), (1, 0))
+        self.assertFalse(self.ledger.exists())
+        with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+            self.assertEqual(records.apply_result_analysis_outcomes(index, repo_root=self.root), (0, 1))
+        self.assertEqual(self.read_ledger()[0]["Outcome"], "inconclusive")
+
+    def test_result_analysis_writeback_rejects_incomplete_or_conflicting_runs(self):
+        self.record("E1", runs=[{"run_id": "R1"}, {"run_id": "R2"}], outcome="pending")
+        index = self.root / "issues/spec/reviews/result-analysis.json"
+        index.parent.mkdir(parents=True)
+        entry = {
+            "exp_id": "E1", "run_id": "R1",
+            "scientific_outcome": "hypothesis_supported",
+            "review_evidence_ref": "session:abc#tool:def",
+            "review_output_sha256": "a" * 64,
+        }
+        index.write_text(json.dumps({"entries": [entry]}))
+        with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+            self.assertEqual(records.apply_result_analysis_outcomes(index, repo_root=self.root), (0, 1))
+        self.assertEqual(json.loads((self.experiments / "E1/record.json").read_text())["outcome"], "pending")
+        entry["run_id"] = "R2"
+        entry["scientific_outcome"] = "hypothesis_not_supported"
+        index.write_text(json.dumps({"entries": [entry, {**entry, "run_id": "R1", "scientific_outcome": "hypothesis_supported"}]}))
+        with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+            self.assertEqual(records.apply_result_analysis_outcomes(index, repo_root=self.root), (0, 1))
+        self.assertEqual(json.loads((self.experiments / "E1/record.json").read_text())["outcome"], "pending")
+
+    def test_build_preserves_only_still_validated_outcome(self):
+        self.record("E1", runs=[{"run_id": "R1"}], outcome="pending")
+        record_path = self.experiments / "E1/record.json"
+        previous = json.loads(record_path.read_text())
+        previous.update({"_generated_by": records.GENERATOR, "_projection_version": 2, "_pending": ["outcome"]})
+        record_path.write_text(json.dumps(previous, ensure_ascii=False, indent=2) + "\n")
+        index = self.root / "issues/spec/reviews/result-analysis.json"
+        index.parent.mkdir(parents=True)
+        entry = {
+            "exp_id": "E1", "run_id": "R1", "scientific_outcome": "inconclusive",
+            "review_evidence_ref": "session:abc#tool:def", "review_output_sha256": "a" * 64,
+        }
+        index.write_text(json.dumps({"entries": [entry]}))
+        with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+            self.assertEqual(records.apply_result_analysis_outcomes(index, repo_root=self.root), (1, 0))
+        generated = json.loads(record_path.read_text())
+        generated["outcome"] = "pending"
+        generated["_pending"] = ["outcome"]
+        generated.pop("outcome_meta")
+        with patch.object(records, "build_record", return_value=generated), redirect_stdout(io.StringIO()):
+            self.assertEqual(records.cmd_build(Namespace(exp="E1", force=False, config=self.root / "missing.toml"), repo_root=self.root), 0)
+        preserved = json.loads(record_path.read_text())
+        self.assertEqual(preserved["outcome"], "inconclusive")
+        self.assertNotIn("outcome", preserved["_pending"])
+        preserved["outcome_meta"]["run_ids"] = [1]
+        record_path.write_text(json.dumps(preserved, ensure_ascii=False, indent=2) + "\n")
+        generated["outcome"] = "pending"
+        generated["_pending"] = ["outcome"]
+        generated.pop("outcome_meta", None)
+        with patch.object(records, "build_record", return_value=generated), redirect_stdout(io.StringIO()):
+            self.assertEqual(records.cmd_build(Namespace(exp="E1", force=False, config=self.root / "missing.toml"), repo_root=self.root), 0)
+        malformed_reset = json.loads(record_path.read_text())
+        self.assertEqual(malformed_reset["outcome"], "pending")
+        entry["scientific_outcome"] = "hypothesis_supported"
+        index.write_text(json.dumps({"entries": [entry]}))
+        generated["outcome"] = "pending"
+        generated["_pending"] = ["outcome"]
+        generated.pop("outcome_meta", None)
+        with patch.object(records, "build_record", return_value=generated), redirect_stdout(io.StringIO()):
+            self.assertEqual(records.cmd_build(Namespace(exp="E1", force=False, config=self.root / "missing.toml"), repo_root=self.root), 0)
+        reset = json.loads(record_path.read_text())
+        self.assertEqual(reset["outcome"], "pending")
+
+    def test_result_analysis_writeback_rejects_non_pending_or_duplicate_record_state(self):
+        index = self.root / "issues/spec/reviews/result-analysis.json"
+        index.parent.mkdir(parents=True)
+        index.write_text(json.dumps({"entries": [{
+            "exp_id": "E1", "run_id": "R1", "scientific_outcome": "inconclusive",
+            "review_evidence_ref": "session:abc#tool:def", "review_output_sha256": "a" * 64,
+        }]}))
+        for outcome, runs in ((False, [{"run_id": "R1"}]),
+                              ("pending", [{"run_id": "R1"}, {"run_id": "R1"}])):
+            with self.subTest(outcome=outcome, runs=runs):
+                self.record("E1", runs=runs, outcome=outcome)
+                with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+                    self.assertEqual(records.apply_result_analysis_outcomes(index, repo_root=self.root), (0, 1))
+                self.assertEqual(json.loads((self.experiments / "E1/record.json").read_text())["outcome"], outcome)
+
+    def test_result_analysis_writeback_rejects_symlinked_record_directory(self):
+        outside = Path(tempfile.mkdtemp(prefix="records-outside-"))
+        self.addCleanup(lambda: shutil.rmtree(outside, ignore_errors=True))
+        outside_record = outside / "E1/record.json"
+        outside_record.parent.mkdir(parents=True)
+        outside_record.write_text(json.dumps({"outcome": "pending"}))
+        experiments = self.root / "research_workspace/experiments"
+        experiments.mkdir(parents=True, exist_ok=True)
+        (experiments / "E1").symlink_to(outside / "E1", target_is_directory=True)
+        index = self.root / "issues/spec/reviews/result-analysis.json"
+        index.parent.mkdir(parents=True)
+        index.write_text(json.dumps({"entries": [{
+            "exp_id": "E1", "run_id": "R1", "scientific_outcome": "inconclusive",
+            "review_evidence_ref": "session:abc#tool:def", "review_output_sha256": "a" * 64,
+        }]}))
+        with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+            self.assertEqual(records.apply_result_analysis_outcomes(index, repo_root=self.root), (0, 1))
+        self.assertEqual(json.loads(outside_record.read_text())["outcome"], "pending")
+
+    def test_result_analysis_writeback_does_not_overwrite_existing_outcome(self):
+        self.record("E1", runs=[{"run_id": "R1"}], outcome="manual_review")
+        index = self.root / "issues/spec/reviews/result-analysis.json"
+        index.parent.mkdir(parents=True)
+        index.write_text(json.dumps({"entries": [{
+            "exp_id": "E1", "run_id": "R1", "scientific_outcome": "inconclusive",
+            "review_evidence_ref": "session:abc#tool:def", "review_output_sha256": "a" * 64,
+        }]}))
+        with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+            self.assertEqual(records.apply_result_analysis_outcomes(index, repo_root=self.root), (0, 1))
+        self.assertEqual(json.loads((self.experiments / "E1/record.json").read_text())["outcome"], "manual_review")
 
     def test_identifier_rejects_malformed_exp_ids(self):
         self.assertEqual(records.identifier("EXP.2024-01_a"), "EXP.2024-01_a")
