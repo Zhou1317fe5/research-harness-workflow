@@ -607,6 +607,12 @@ def main() -> int:
         required=True,
         help="审查模型：用当前会话（执行）模型。脚本不再固定为契约值，验证器只要求记录值来自可确证的运行时通道。",
     )
+    parser.add_argument(
+        "--backend",
+        choices=("pi", "codex"),
+        default="pi",
+        help="审查执行的后端；Pi 会话用 `pi`（正确），Codex/Claude 会话用 `codex`。",
+    )
     parser.add_argument("--output", help="Write final JSON to this file.")
     parser.add_argument("--handoff", help="Write handoff_markdown to this .md file.")
     args = parser.parse_args()
@@ -679,7 +685,7 @@ def main() -> int:
     rj_args = Namespace(
         packet=str(packet_path),
         task=str(task_path),
-        backend="pi",
+        backend=args.backend,
         job_dir=str(job_dir),
         cwd=None,
         model=args.model,

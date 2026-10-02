@@ -68,6 +68,7 @@ closing review 的审查模型固定为**当前会话（执行）模型**：不�
 脚本用法（路径相对本 skill 目录）：
 
 ```bash
+<!-- reviewer-launcher:BEGIN -->
 python scripts/run_vision_review.py \
   --csv <csv-path> \
   --source-doc <source-doc-path> \
@@ -78,7 +79,9 @@ python scripts/run_vision_review.py \
   --output reviews/review-01.json \
   --handoff <csv-path-without-.csv>.handoff.md \
   --workdir <repo-root> \
+  --backend codex \
   --model <当前会话模型>
+<!-- reviewer-launcher:END -->
 ```
 
 兼容 CSV 没有 source doc 时省略 `--source-doc`。脚本成功时输出 review JSON；把 JSON 摘要写入 review log，并把 `review_json:<path>`、mode、independence、requested/observed model、model evidence、coverage、result 和必要的 `validation_limited` 写入 CSV `notes`。脚本失败不等于 review 完成：记录失败原因后进入 self-review。失败原因必须显式分类（`quota_error` / `transport_error` / `timeout`——脚本 stderr 会输出 `review_service_failure:<kind>`），不得笼统写"调用失败"，便于事后区分服务故障类型。
