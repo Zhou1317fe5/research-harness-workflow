@@ -234,6 +234,10 @@ class LifecycleTests(unittest.TestCase):
             state.setdefault("jobs", {})["legacy"] = {"state": "pending", "revision": "old", "updated_at": "2000-01-01"}
         jobs_before = self.index()["jobs"].copy()
         outbox_before, publication_before = legacy.read_bytes(), publication.read_bytes()
+        processed = self.memory.capture("user", "本地过程记录")
+        self.memory.process({"event_id": processed, "disposition": "recorded", "records": [{
+            "kind": "finding", "status": "OPEN", "scope": "fixture", "summary": "保留本地过程记录",
+        }]})
         event = self.memory.capture("assistant", "本地历史事件")
         self.memory.scan()
         self.memory.status()
