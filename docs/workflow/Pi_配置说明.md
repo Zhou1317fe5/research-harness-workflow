@@ -56,8 +56,6 @@ pi
 
 如果 Codex 已经配好了 fast-context，可在 setup 中导入现有 Codex 配置；不需要重新填写一份凭据。新环境按 [fast-context 官方仓库](https://github.com/SammySnake-d/fast-context-mcp)安装服务并填写启动参数。用 `/mcp` 查看服务，再让 Pi 调用 fast-context 查找一个项目文件，确认实际可用。
 
-Hindsight 的正式接入由项目 Research Memory 管理，不需要通过这里新增全局 Hindsight 工具。已有的全局 Hindsight MCP 可以保留作手动诊断，但不作为科研记忆的正式写入入口。
-
 `rpiv-ask-user-question` 无需单独配置模型、服务或 API Key，重启后即可使用 `ask_user_question`。默认快捷键是 `Ctrl+]`，用于收起或展开问题窗口。如果键盘布局不方便使用，可在 `~/.config/rpiv-ask-user-question/config.json` 中设置：
 
 ```json
@@ -243,9 +241,9 @@ npx @cortexkit/magic-context@latest doctor --harness pi
 | Dreamer | 关闭 |
 | Sidekick | 关闭 |
 
-长期科研记忆继续按[项目接入与配置](installation.md)启用 Research Memory 和 Hindsight。项目身份、bank、来源范围和凭据仍由项目配置管理。关闭 Magic Context 的 memory 不会代替或关闭这条科研记忆链。
+长期科研记忆继续按[项目接入与配置](installation.md)启用本地 Research Memory。来源范围由项目配置管理；不需要额外的 bank 或远端凭据。关闭 Magic Context 的 memory 不会代替或关闭这条科研记忆链。
 
-项目 Research Memory 同时识别 `PI_SUB_AGENT_DEPTH` 和 `MAGIC_CONTEXT_PI_SUBAGENT`，后台 Historian 与 Reviewer 的提示词不会作为用户来源采集。历史快照放在真实会话之前；工具完成后按版本刷新，同一批工具只扫描一次。Hindsight 默认手工同步精选内容，普通消息不全量上传。
+项目 Research Memory 同时识别 `PI_SUB_AGENT_DEPTH` 和 `MAGIC_CONTEXT_PI_SUBAGENT`，后台 Historian 与 Reviewer 的提示词不会作为用户来源采集。历史快照放在真实会话之前；工具完成后按版本刷新，同一批工具只扫描一次。所有记录留在本地，普通消息不会上传到远端记忆服务。
 
 更新项目扩展后，在现有 Pi 会话中执行 `/reload`，或开启新会话，使新的 TS 注入逻辑生效。Python 会先清除旧版扩展的危险注入，保留本地采集；新版扩展握手后恢复历史快照展示。身份隔离和停用设置在下次回调就生效，不需要终止正在运行的实验。
 
@@ -256,7 +254,7 @@ npx @cortexkit/magic-context@latest doctor --harness pi
 → Magic Context
 
 长期科研方向 / 决策 / 结论
-→ Research Memory + Hindsight
+→ 本地 Research Memory
 ```
 
 smart-search 按[官方仓库](https://github.com/blxzer77/smart-search)安装成 CLI，在启动 Pi 的同一环境确认 `smart-search --version` 可执行即可。本工作流不要求为它再安装 Pi skill、Codex skill 或 Extension。

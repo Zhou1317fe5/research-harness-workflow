@@ -175,7 +175,7 @@ STATE.md → CONCLUSIONS.md → EXPERIMENTS.csv → record.json → analysis/ana
 
 历史记录不完整时，优先整理当前主线、关键实验和重要失败。旧实验在被重新引用、用于对照或支撑论文结论时，再补齐必要依据，逐步整理即可。
 
-Hindsight 是可选的辅助检索服务，可以帮助寻找相关历史材料。找到内容后，仍要核对它的来源、状态和适用条件；本地科研记录也可以独立使用。官方安装仓库和配置见[接入教程](installation.md#可选-hindsight)。
+本工作流使用本地结构化科研记录和精确召回。语义相似只能作为线索，正式判断仍须核对来源、scope、protocol 和 status。
 
 ## 七、配套工具各用在什么地方
 

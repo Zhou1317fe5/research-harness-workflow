@@ -175,36 +175,19 @@ RunSpec 中要求拉取的必需文件和目录也会复核是否齐全、是否
 
 方案改变时，旧记录仍然可查，并说明它被什么决定取代。失败的尝试、没有提升的实验，也能帮助下一轮缩小范围。
 
-Hindsight 可以辅助寻找较远的历史材料，但检索到相似内容后，仍要核对来源和适用条件。它的[官方安装仓库与接入方法](installation.md#可选-hindsight)在配置教程里，本地记录功能也能独立使用。
+正式记录以本地 `STATE.md`、`CONCLUSIONS.md`、Mission CSV 和实验记录为准。讨论时先按 scope、protocol、status 精确召回，再沿来源核对原始证据；相似文本只能作为线索，不能替代结构化状态。
 
-Hindsight 启用后，远端只接收已整理的精简记录和明确发布的完成版分析；普通对话保留本地，后台 Historian 提示词不采集。`hindsight_auto_sync` 默认关闭，文件保存和实验退出不会直接触发上传。
+日常整理可以在对话中完成：先读取当前状态和待处理来源，确认哪些内容是决定、发现、假设或执行事实，再使用本地 `research_memory.py process` 写入正式记录。没有形成结论的内容保留为 `waiting` 或 `discarded`，不自动升级为正式结论。
 
-日常可以在对话中完成入账，无需每次打开终端。Agent 交付本轮定稿分析时，会准备本轮实验的预览；多个实验可以放进同一批。你看过清单后回复“确认这一批入账”，Agent 就会上传、等待并核验结果。需要补录历史时，可以说：
-
-```text
-请预览 EXP_A 和 EXP_B 的主分析入账清单。
-```
-
-预览只生成本地清单，不联网、不入队。Agent 会展示选中的实验、排除项和完整内容链接；没有新增内容时不重复请求确认。分析内容或来源身份变了，会重新准备预览。服务暂时不可用时，科研结果照常交付，已确认批次留待继续；之后说“继续刚才那批入账”即可。
-
-需要手工操作时，使用项目根的短入口：
+需要手工查询时，使用项目根的本地入口：
 
 ```bash
-./scripts/memory publish-batch --exp-id EXP_A --exp-id EXP_B
-./scripts/memory publish-batch --confirm <BATCH_ID> --sync --wait
+python .agents/harness/memory/research_memory.py context --query "当前研究方案"
+python .agents/harness/memory/research_memory.py recall "当前研究方案" --kind finding --status SUPPORTED
 ```
 
-两条命令之间先审阅返回的 `preview_path`，确认其中的固定清单。程序检查敏感信息、草稿、原始对话/日志、四段分析结构和文件大小，并跳过内容及来源身份未变的已同步版本。附件、原始会话、日志和草稿不进入本批。省略 `--exp-id` 仍可手动预览全部实验主分析；交付时只预览本轮范围。
+本地召回不访问远端服务；文件保存、实验退出和 Git 提交也不会自动改变科学结论。若状态文件被恢复到旧版本，记忆程序会报告投影冲突。用 `research_memory.py recover --repair-projections` 核对并修复受管理区域，不用 `git restore` 撤销新的用户决定。
 
-`--wait` 在默认 120 秒预算内等待远端处理，超过 20 份会自动分轮；只有 `complete: true` 且没有错误或 blocked 才表示全部完成。`submitted` 仍是处理中，预算耗尽可继续同批：
-
-```bash
-./scripts/memory sync --batch <BATCH_ID> --wait --seconds 120
-```
-
-续传沿用原确认与已有远端操作，不需要逐篇重新发布。报错时先处理原因，不把入队当成上传成功。旧 Python 长命令继续兼容；省略 `--wait` 保留原先单轮检查行为。预览与确认沿用本地控制目录，不新增科研台账状态。短入口不自动加载凭据，Agent 或手工操作均按 [Hindsight 配置](installation.md#可选-hindsight)加载环境。
-
-若状态文件被恢复到旧版本，记忆程序会报告投影冲突。用 `research_memory.py recover --repair-projections` 核对并修复受管理区域，不用 `git restore` 撤销新的用户决定。
 
 ## 只是整理已有结果时
 

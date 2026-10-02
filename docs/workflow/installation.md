@@ -11,7 +11,7 @@
 3. 填写远程连接，让工作流认识进度和结果。
 4. 启用科研记录，再用一次小任务检查整条链。
 
-Hindsight 可以在本地流程跑顺后再接。已有项目的升级和科研记录迁移放在文末。
+已有项目的升级和科研记录迁移放在文末。
 
 ## 先准备好这些东西
 
@@ -37,7 +37,6 @@ Hindsight 可以在本地流程跑顺后再接。已有项目的升级和科研�
 | fast-context-mcp | 可选 MCP | 找相关模块、理解已有实现与调用链 | [SammySnake-d/fast-context-mcp](https://github.com/SammySnake-d/fast-context-mcp) |
 | smart-search | 可选 CLI | 搜索论文、工具文档并获取来源 | [blxzer77/smart-search](https://github.com/blxzer77/smart-search) |
 | lite-arch / lite-arch-recall | 可选 skill | 记录架构取舍，修改设计前召回已有决定 | [flowing-water1/lite-arch](https://github.com/flowing-water1/lite-arch) |
-| Hindsight | 可选服务 | 辅助检索历史科研材料 | [vectorize-io/hindsight](https://github.com/vectorize-io/hindsight) |
 
 选用的外部工具按各自 README 安装，确认当前 agent 能发现对应的 skill 或 MCP。只使用一种 agent 时，安装到它能读取的位置；两种都用时，分别检查可用性。
 
@@ -65,7 +64,6 @@ smart-search doctor --format json
 
 lite-arch 是可选项。按[仓库说明](https://github.com/flowing-water1/lite-arch)安装 `lite-arch` 和 `lite-arch-recall` 两个技能目录，重启 agent 后检查是否可用。还没有架构记录的新项目，首次召回没有结果是正常的；后续有明确的架构决定时再记录。
 
-Hindsight 需要先启动服务，再填写项目的连接信息，步骤见[可选 Hindsight](#可选-hindsight)。这些外部工具的凭据都留在各自的本地配置中。
 
 权限拦截用 [cc-safety-net](https://ccsafetynet.com)：全局安装、按命令**语义**判定，命中即阻止，从不弹窗。
 
@@ -137,7 +135,7 @@ rrctl --json doctor
 AGENTS.md / CLAUDE.md    项目规则和研究背景
 scripts/train.sh        项目训练命令与参数；已有脚本可沿用原路径
 scripts/eval.sh         项目评估命令与参数；也可合并为一个 train_eval.sh
-scripts/memory          科研记忆与 Hindsight 入账的短入口
+scripts/memory          本地科研记忆与召回的短入口
 .agents/harness/config/ 项目的运行与连接配置
 docs/specs/             讨论形成的实验方案
 issues/                 任务 CSV 和交付说明
@@ -423,117 +421,23 @@ python .agents/harness/memory/research_memory.py status
 cp -n .agents/harness/config/research-memory.example.json .agents/harness/config/research-memory.json
 ```
 
-先给 `project_id` 填一个稳定的项目名称。`sources` 默认包含研究状态、结论和实验分析，有其他需要记录的分析文件再补。`context_chars` 和 `max_items` 控制每次提供的上下文量，初次接入可以沿用 6500 字符和 8 条。
+`sources` 默认包含研究状态、结论和实验分析，有其他需要记录的分析文件再补。`context_chars` 和 `max_items` 控制每次提供的上下文量，初次接入可以沿用 6500 字符和 8 条。
 
-`hooks_enabled` 默认是 true，改为 false 可以暂停自动收集并清除已注入的缓存。Pi 的 Historian 和 Reviewer 子进程在入口处排除。`hindsight_enabled` 默认是 false；启用后仍默认手工同步，`hindsight_auto_sync` 为 false。
+`hooks_enabled` 默认是 true，改为 false 可以暂停自动收集并清除已注入的缓存。Pi 的 Historian 和 Reviewer 子进程在入口处排除。
 
 | 记忆配置参数 | 填写方式 |
 |---|---|
-| `project_id` | 稳定且独立的项目名称 |
 | `sources` | 要纳入的研究文件，先沿用模板，再补充项目自己的分析文件 |
 | `context_chars / max_items` | 每次提供的上下文上限，默认 6500 字符和 8 条 |
 | `hooks_enabled` | 是否自动收集，默认 true |
-| `hindsight_enabled` | 是否使用 Hindsight，默认 false |
-| `hindsight_auto_sync` | 是否在宿主回调中启动精选内容同步，默认 false；通常保持手工同步即可 |
+
+### 从旧版本迁移
+
+如果项目以前接入过 Hindsight，删除 `research-memory.json` 中的 `project_id`、`hindsight_enabled` 和 `hindsight_auto_sync`，并从 `.env`、`.mcp.json`、Codex/Claude 的 MCP 配置中删除 Hindsight 地址、bank 和凭据变量。不要删除 `research_workspace`、`.memory/events`、`STATE.md`、`CONCLUSIONS.md` 或实验记录；旧的 `outbox/`、`publications/` 和索引中的 jobs 只作为历史保留，不会再被推进或上传。
+
+清理配置后重新运行本地 hooks 安装命令，并重启或 reload Pi/宿主，使旧回调失效。迁移后只使用本地 `context`、`process` 和按 scope/protocol/status 精确筛选的 `recall`。仓库中被忽略的 `research-memory.json` 属于本机运行态；若其中 `hooks_enabled` 为 false，只表示该机器暂时停用自动采集，不改变模板示例的默认值。
 
 这些记录怎样帮助下一轮研究，见[使用指南](usage.md#科研记录与召回)。
-
-## 可选 Hindsight
-
-按下面四步启用当前项目的 Hindsight 同步与召回。
-
-### 第一步：准备运行中的 Hindsight 服务
-
-**官方安装仓库：[vectorize-io/hindsight](https://github.com/vectorize-io/hindsight)**
-
-已经有可用服务时，可以沿用它。还没有时，按仓库的 [Quick Start](https://github.com/vectorize-io/hindsight#quick-start) 或[官方部署教程](https://hindsight.vectorize.io/developer/installation)选择 Docker 等方式安装并启动，完成服务端要求的模型和存储配置。
-
-服务启动后，为当前项目准备 memory bank，取得 API/MCP 地址和访问凭据。
-
-### 第二步：开启当前项目的连接
-
-从项目根复制本地配置；已有文件时保留原值：
-
-```bash
-cp -n .agents/harness/config/research-memory.example.json .agents/harness/config/research-memory.json
-cp -n .agents/harness/config/.env.example .agents/harness/config/.env
-chmod 600 .agents/harness/config/.env
-```
-
-在 `research-memory.json` 中设置以下字段，其他已经填写的来源和预算配置保留：
-
-```json
-{
-  "project_id": "your-project",
-  "hooks_enabled": true,
-  "hindsight_enabled": true,
-  "hindsight_auto_sync": false
-}
-```
-
-将 `your-project` 换成稳定的项目名称。`hooks_enabled` 控制本地自动收集，`hindsight_enabled` 控制项目是否使用 Hindsight。`hindsight_auto_sync: false` 保留按需召回和手工同步，不会因每条对话启动远端处理。
-
-连接信息仍填在本地 `.env`：
-
-| 变量 | 填什么 |
-|---|---|
-| HINDSIGHT_API_KEY | 用于访问 Hindsight 服务的凭据 |
-| HINDSIGHT_MCP_URL | 对应 memory bank 的 HTTP MCP 地址，通常包含 `/mcp/<bank-id>/` |
-| HINDSIGHT_API_URL、HINDSIGHT_BANK_ID | 不使用 MCP_URL 时，填写服务基础地址和 bank ID |
-
-两种地址写法选一种。当前客户端允许本机 localhost/127.0.0.1 的 HTTP 地址，远程服务使用 HTTPS。访问 Hindsight 的凭据与服务端调用模型所用的凭据用途不同，按部署方式分别配置。
-
-不同项目使用不同的 `project_id`；需要隔离时使用不同 memory bank。使用项目自带客户端连接，无需新增全局 MCP 配置。
-
-### 第三步：生成并启用本机 hooks
-
-如果前面的科研记录步骤还没有做，在这个项目中运行：
-
-```bash
-python .agents/harness/memory/install_memory_hooks.py
-```
-
-命令会生成 `.codex/hooks.json` 和 `.claude/settings.local.json`。只使用 Codex 时可加 `--host codex`，只使用 Claude Code 时可加 `--host claude`。
-
-重启所用工具，完成项目及 hooks 的信任设置；Codex 在 `/hooks` 中检查新定义。已经完成前面的自动记录配置时，可沿用现有 hooks。
-
-### 第四步：检查启用结果
-
-先查看本地状态：
-
-```bash
-python .agents/harness/memory/research_memory.py status
-```
-
-确认 `hooks_enabled`、`hindsight_enabled` 都为 true，再检查实际收集与连接。
-
-在启用 hooks 的会话中产生一条正常科研消息后，先核对本地来源。普通对话不自动上传；按 research-memory skill 把有价值的内容整理为条目。完成版分析可直接在对话中请求入账，Agent 会准备本轮预览，用户一次确认后负责上传并核验；这不需要开启 `hindsight_auto_sync`。手工检查时，先加载凭据变量，再预览选定实验：
-
-```bash
-set -a
-source .agents/harness/config/.env
-set +a
-./scripts/memory publish-batch --exp-id <ExpID>
-```
-
-预览只检查各实验的 `analysis/analysis.md`，不联网、不入队；凭据变量可用于检查分析是否包含其值，不能打印这些变量或 `.env` 内容。查看 `preview_path` 中的完整副本、文件数量和排除原因，用户一次确认后运行：
-
-```bash
-./scripts/memory publish-batch --confirm <BATCH_ID> --sync --wait
-```
-
-只同步该清单中的固定版本，分析变化需重新预览。`--wait` 在预算内等待已有远端操作；超出预算时，使用 `./scripts/memory sync --batch <BATCH_ID> --wait` 继续。`complete: true` 且无错误、无 blocked 才表示整批完成；服务失败不阻塞科研交付。选择范围与检查规则见[使用教程](usage.md#科研记录与召回)。
-
-STATE、CONCLUSIONS 整篇投影、record.json、原始对话、日志、草稿和内部提示词不作为远端全量输入。要同步整个已发布精选队列并查询时运行：
-
-```bash
-python .agents/harness/memory/research_memory.py sync --limit 4
-python .agents/harness/memory/research_memory.py recall "当前研究方案"
-```
-
-手工命令及 Agent 调用都需要先加载 `.env`，`scripts/memory` 只转发命令；生成的 hooks 会在执行时自行加载这个文件。旧的 Python 长命令继续可用。查看查询返回的 `hindsight` 部分：应当启用，且没有 `error_type`。刚接入或没有相关记忆时，`results` 为空是正常情况。
-
-最后用项目里已有的一条已整理记录核对同步和召回。仅“来源已采集”不代表已经上传，也不代表获得新的运行授权。旧版原文同步队列不会自动重发。
 
 ## 6. 用一次小任务检查接入结果
 
