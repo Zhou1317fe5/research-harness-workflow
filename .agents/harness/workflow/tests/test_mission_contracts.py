@@ -419,11 +419,13 @@ class MissionContractTests(unittest.TestCase):
             "_generated_by": ".agents/harness/records/experiment_records.py", "_projection_version": 2,
         }, ensure_ascii=False, indent=2) + "\n")
         validator = ROOT / ".codex/skills/post-run-result-analysis/scripts/validate_result_analysis.py"
-        result = subprocess.run(
-            [sys.executable, str(validator), "--csv", str(self.path), "--index", str(index_path),
-             "--workdir", str(self.root)],
-            cwd=ROOT, capture_output=True, text=True,
-        )
+        def run_validator():
+            return subprocess.run(
+                [sys.executable, str(validator), "--csv", str(self.path), "--index", str(index_path),
+                 "--workdir", str(self.root)],
+                cwd=ROOT, capture_output=True, text=True,
+            )
+        result = run_validator()
         self.assertEqual(result.returncode, 0, result.stderr)
         updated = json.loads(record_path.read_text())
         self.assertEqual(updated["outcome"], "inconclusive")
@@ -440,6 +442,61 @@ class MissionContractTests(unittest.TestCase):
         rebuilt = json.loads(record_path.read_text())
         self.assertEqual(rebuilt["outcome"], "inconclusive")
         self.assertNotIn("outcome", rebuilt["_pending"])
+        analysis_path = self.root / "research_workspace/experiments/EXP-1/analysis/analysis.md"
+        analysis_before = analysis_path.read_text()
+        analysis_path.write_text(analysis_before.replace("uncertain", "changed"))
+        generated = json.loads(record_path.read_text())
+        generated["outcome"] = "pending"
+        generated["_pending"] = ["outcome"]
+        generated.pop("outcome_meta")
+        with patch.object(records, "build_record", return_value=generated), chdir(self.root):
+            self.assertEqual(records.cmd_build(argparse.Namespace(
+                exp="EXP-1", force=False, config=self.root / "missing.toml"), repo_root=self.root), 0)
+        self.assertEqual(json.loads(record_path.read_text())["outcome"], "pending")
+        analysis_path.write_text(analysis_before)
+        self.assertEqual(run_validator().returncode, 0)
+        session_path = self.root / ".pi/agent/sessions/fixture_00000000-0000-0000-0000-000000000001.jsonl"
+        session_before = session_path.read_bytes()
+        session_path.unlink()
+        generated = json.loads(record_path.read_text())
+        generated["outcome"] = "pending"
+        generated["_pending"] = ["outcome"]
+        generated.pop("outcome_meta")
+        with patch.object(records, "build_record", return_value=generated), chdir(self.root):
+            self.assertEqual(records.cmd_build(argparse.Namespace(
+                exp="EXP-1", force=False, config=self.root / "missing.toml"), repo_root=self.root), 0)
+        self.assertEqual(json.loads(record_path.read_text())["outcome"], "pending")
+        session_path.write_bytes(session_before)
+        self.assertEqual(run_validator().returncode, 0)
+        generated = json.loads(record_path.read_text())
+        generated["outcome"] = "pending"
+        generated["_pending"] = ["outcome"]
+        generated["runs"][0]["summary_path"] = "remote_artifacts/EXP-1/RUN-1/changed.json"
+        generated.pop("outcome_meta")
+        with patch.object(records, "build_record", return_value=generated), chdir(self.root):
+            self.assertEqual(records.cmd_build(argparse.Namespace(
+                exp="EXP-1", force=False, config=self.root / "missing.toml"), repo_root=self.root), 0)
+        self.assertEqual(json.loads(record_path.read_text())["outcome"], "pending")
+
+    def test_result_analysis_validator_cli_allows_same_run_multiple_summaries(self):
+        _, index_path = self.result_analysis_fixture()
+        (self.root / ".agents").symlink_to(ROOT / ".agents", target_is_directory=True)
+        record_path = self.root / "research_workspace/experiments/EXP-1/record.json"
+        record_path.parent.mkdir(parents=True, exist_ok=True)
+        record_path.write_text(json.dumps({
+            "exp_id": "EXP-1", "source": {"spec_id": [], "branch": [], "commit": [], "mission_csv": []},
+            "metrics": {"protocol": None, "baseline_id": None},
+            "runs": [{"run_id": "RUN-1", "summary_path": "a.json"},
+                     {"run_id": "RUN-1", "summary_path": "b.json"}],
+            "outcome": "pending", "_pending": ["outcome"],
+        }) + "\n")
+        result = subprocess.run(
+            [sys.executable, str(ROOT / ".codex/skills/post-run-result-analysis/scripts/validate_result_analysis.py"),
+             "--csv", str(self.path), "--index", str(index_path), "--workdir", str(self.root)],
+            cwd=ROOT, capture_output=True, text=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(record_path.read_text())["outcome"], "inconclusive")
 
     def test_result_analysis_validator_cli_rejects_invalid_index_without_writes(self):
         _, index_path = self.result_analysis_fixture()

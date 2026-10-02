@@ -416,6 +416,12 @@ def _valid_outcome_metadata(previous: dict, current: dict, *, repo_root: Path | 
             or sorted(relevant_run_ids) != current_run_ids
             or len(relevant_run_ids) != len(set(relevant_run_ids))):
         return False
+    formal_run_ids = set(csv_projection(root).get(current.get("exp_id"), {}).get("run_id", set()))
+    pending = current.get("_pending")
+    if formal_run_ids and set(current_run_ids) != formal_run_ids:
+        return False
+    if isinstance(pending, list) and any(isinstance(item, str) and item.startswith("runs.") for item in pending):
+        return False
     if {entry.get("scientific_outcome") for entry in relevant} != {outcome}:
         return False
     review_refs = {entry.get("review_evidence_ref") for entry in relevant}
@@ -631,12 +637,23 @@ def apply_result_analysis_outcomes(
             print(f"result_analysis_sync: skip ({exp_id} record.json not a dict)", file=stream)
             skipped += 1
             continue
+        if record.get("exp_id") != exp_id:
+            print(f"result_analysis_sync: skip ({exp_id} record identity mismatch)", file=stream)
+            skipped += 1
+            continue
+        formal_run_ids = set(csv_projection(root).get(exp_id, {}).get("run_id", set()))
+        pending = record.get("_pending")
+        if formal_run_ids and isinstance(pending, list) and any(
+                isinstance(item, str) and item.startswith("runs.") for item in pending):
+            print(f"result_analysis_sync: skip ({exp_id} formal Run evidence incomplete)", file=stream)
+            skipped += 1
+            continue
         record_run_ids = _record_run_ids(record)
         if record_run_ids is None:
             print(f"result_analysis_sync: skip ({exp_id} record RunID invalid or duplicated)", file=stream)
             skipped += 1
             continue
-        if sorted(run_ids) != record_run_ids:
+        if sorted(run_ids) != record_run_ids or (formal_run_ids and set(record_run_ids) != formal_run_ids):
             print(f"result_analysis_sync: skip ({exp_id} RunID coverage mismatch)", file=stream)
             skipped += 1
             continue

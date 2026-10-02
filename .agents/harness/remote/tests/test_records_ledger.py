@@ -170,6 +170,27 @@ class LedgerTests(unittest.TestCase):
             self.assertEqual(records.apply_result_analysis_outcomes(index, repo_root=self.root), (0, 1))
         self.assertEqual(self.read_ledger()[0]["Outcome"], "inconclusive")
 
+    def test_result_analysis_writeback_rejects_formal_run_gap_and_identity_mismatch(self):
+        self.record("E1", runs=[{"run_id": "R1"}], outcome="pending")
+        issues = self.root / "issues"
+        issues.mkdir(parents=True)
+        (issues / "mission.csv").write_text("exp_id,run_id\nE1,R1\nE1,R2\n")
+        index = issues / "result-analysis.json"
+        index.write_text(json.dumps({"entries": [{
+            "exp_id": "E1", "run_id": "R1", "scientific_outcome": "inconclusive",
+            "review_evidence_ref": "session:abc#tool:def", "review_output_sha256": "a" * 64,
+        }]}))
+        with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+            self.assertEqual(records.apply_result_analysis_outcomes(index, repo_root=self.root), (0, 1))
+        record_path = self.experiments / "E1/record.json"
+        record = json.loads(record_path.read_text())
+        record["exp_id"] = "E2"
+        record_path.write_text(json.dumps(record))
+        (issues / "mission.csv").write_text("exp_id,run_id\nE1,R1\n")
+        with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+            self.assertEqual(records.apply_result_analysis_outcomes(index, repo_root=self.root), (0, 1))
+        self.assertEqual(json.loads(record_path.read_text())["outcome"], "pending")
+
     def test_result_analysis_writeback_rejects_incomplete_or_conflicting_runs(self):
         self.record("E1", runs=[{"run_id": "R1"}, {"run_id": "R2"}], outcome="pending")
         index = self.root / "issues/spec/reviews/result-analysis.json"
