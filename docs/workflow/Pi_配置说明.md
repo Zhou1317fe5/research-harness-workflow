@@ -79,25 +79,17 @@ pi
 
 普通软件项目使用包原始策略；本科研工作流会自动使用科研专用触发策略。因此不要把科研 guidance 写到全局 `advisor.json`。Advisor 用于方案、冲突、困难 Debug 和实验解释等决策，Scientific Reviewer 仍通过独立子代理执行。
 
-配置 Scientific Reviewer 时，直接编辑 `.pi/agents/scientific-reviewer.md` 的 YAML frontmatter，填写所需的模型和 thinking level。未填写时分别继承主 Pi 会话的模型和 thinking level。例如：
+科研审查的执行体：PRERUN、post-run 分析、closing review 都改由
+`.agents/harness/reviewer_job.py` 执行。reviewer_job 与主会话架构对齐：
+启动 fresh 只读 Pi/Codex 会话，prompt 由主会话现场写入 task 文件，落盘 packet /
+task / raw / verdict 与其 SHA 链，主会话不直接参与 review。Scientific Reviewer 不再有
+`.pi/agents/` 注册项，也无任何回填 frontmatter 的需求。
 
-```yaml
----
-name: scientific-reviewer
-description: Read-only isolated execution of the supplied review task
-tools: read, grep, find, ls
-# 可选：不填写则继承主 Pi 会话配置
-# model: provider/model-id
-# thinking: high
----
-```
-
-项目已经提供只读 profile 和 Reviewer task 的传递规则，不需要另写一份科研审查 prompt。
-
-**关于审查模型。** 审查会话与交互会话共用同一套 Pi 模型注册表，所以 `/model` 里能选的模型都能直接
-作为审查模型（包括由扩展注册的 provider），不需要额外声明。**closing review（`REVIEW-*`）用的就是
-当前会话（执行）模型**：不要求另换一个高级模型，独立性来自 fresh 只读会话与不含主代理结论的 prompt，
-requested/observed 会如实记录。PRERUN 与 post-run 分析仍用下述契约里的模型。获批值与 thinking 级别记录在
+**关于审查模型。** 审查会话与交互会话共用同一套 Pi/Codex 模型注册表，可用模型由
+`/model` 决定。**closing review（`REVIEW-*`）使用当前会话（执行）模型**：主会话用
+`--model` 把当前模型字符串显式交给 reviewer_job；独立性不是来自换模型，而是来自
+fresh 只读会话与不含主代理结论的 prompt。requested/observed 会如实记录。
+PRERUN 与 post-run 分析仍用契约里的模型。获批值与 thinking 级别记录在
 `.agents/harness/config/review_contract.toml`（缺失时用 `.agents/harness/review_model.py`
 的内置默认值）；改模型只需改这一个文件。
 

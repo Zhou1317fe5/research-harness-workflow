@@ -60,7 +60,7 @@ except ModuleNotFoundError:  # Python 3.10
 KNOWN_HOSTS = ("pi", "codex")
 
 # Built-in defaults, used when no project contract file is present.
-# - "pi":    Pi-launched sessions (the `scientific-reviewer` sub-agent and
+# - "pi":    Pi-launched sessions (reviewer_job with the Pi backend and
 #            `pi --model`). Pi registry names are provider-prefixed; a Pi user
 #            reaches OpenAI Codex login models via the `openai-codex/...`
 #            prefix, or any other provider it registers (e.g. newapi/kimi-k3).
@@ -247,11 +247,10 @@ def is_accepted_model_identity(value: str, host: str | None = None) -> bool:
 
 # Host/channel labels used by the gates, mapped to the MODELS key.
 CHANNEL_HOST = {
-    # post-run analysis channels
-    "scientific-reviewer-subagent": "pi",
-    "codex-exec-independent": "codex",
+    # post-run analysis channels (reviewer_job only; legacy modes removed)
+    "result-analysis-reviewer-job": "pi",
     # closing review modes
-    "reviewer-subagent": "pi",
+    "closing-reviewer-job": "pi",
     # reviewer_job backends
     "pi": "pi",
     "codex": "codex",
@@ -263,3 +262,15 @@ def host_for_channel(channel: str) -> str:
         return CHANNEL_HOST[channel]
     except KeyError:
         raise ValueError(f"unknown review channel: {channel}") from None
+
+
+# Channels whose requested/observed model comes from the invoker (the calling
+# session's own model) rather than from review_contract.toml. For these modes
+# validators cannot re-derive the expected value from the contract, they only
+# require the identity to be a known host-approved form.
+INVOKER_MODEL_CHANNELS = frozenset({"closing-reviewer-job"})
+
+
+def model_source_for_channel(channel: str) -> str:
+    """``"contract"`` or ``"invoker"``: where the channel's requested model comes from."""
+    return "invoker" if channel in INVOKER_MODEL_CHANNELS else "contract"

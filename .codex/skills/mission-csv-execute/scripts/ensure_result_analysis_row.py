@@ -78,7 +78,7 @@ def _make_row(fieldnames: list[str], rows: list[dict[str, str]]) -> dict[str, st
             "phase": "analysis",
             "area": "research",
             "title": "Analyze ingested experiment results with an independent strong model",
-            "description": "After all formal remote results are ingested, obtain an independent scientific-reviewer analysis and bind every ExpID/RunID to the canonical analysis artifact.",
+            "description": "After all formal remote results are ingested, run the reviewer_job post-run analysis (result-analysis-reviewer-job) and bind every ExpID/RunID to the canonical analysis artifact.",
             "acceptance_criteria": "Every ingested ExpID/RunID is covered by reviews/result-analysis.json; each analysis.md has Change/Result/Finding/Next, evidence refs, SHA-256, per-entry reviewer evidence and output SHA-256, and a verifiable scientific outcome; strong reviewer identity is recorded from parent session/tool evidence (Pi sub-agent channel) or a codex-exec verdict with event-stream model evidence; no Executor self-review fallback.",
             "test_mcp": "contract",
             "required_skills": "post-run-result-analysis",

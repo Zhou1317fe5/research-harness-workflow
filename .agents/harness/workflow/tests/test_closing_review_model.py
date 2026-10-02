@@ -17,7 +17,7 @@ from run_vision_review import RUNTIME_MODEL_EVIDENCE, validate_review_result  # 
 
 def base_result(**overrides) -> dict:
     result = {
-        "review_agent_mode": "reviewer-subagent",
+        "review_agent_mode": "closing-reviewer-job",
         "review_independence": True,
         "review_requested_model": "xiaojimao/gpt-6-astra:high",
         "review_observed_model": "xiaojimao/gpt-6-astra",

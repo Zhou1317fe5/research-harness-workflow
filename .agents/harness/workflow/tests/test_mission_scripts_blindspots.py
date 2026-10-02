@@ -743,7 +743,7 @@ class EnsureRowIdempotencyTests(unittest.TestCase):
 
 def _vision_result(**overrides):
     result = {
-        "review_agent_mode": "reviewer-subagent",
+        "review_agent_mode": "closing-reviewer-job",
         "review_independence": True,
         "review_requested_model": "xiaojimao/gpt-6-astra:high",
         "review_observed_model": "xiaojimao/gpt-6-astra",

@@ -70,8 +70,7 @@ OUTCOME_CONFIDENCE = {"high", "moderate", "low", "unknown"}
 def normalize_review_mode(mode: str) -> tuple[str, bool | str, bool]:
     """Return the canonical mode, independence, and supplemental flag."""
     mapping: dict[str, tuple[str, bool | str, bool]] = {
-        "reviewer-subagent": ("reviewer-subagent", True, False),
-        "codex-exec-independent": ("codex-exec-independent", True, False),
+        "closing-reviewer-job": ("closing-reviewer-job", True, False),
         "self-review": ("self-review", False, False),
         "evidence-close": ("evidence-close", False, False),
         "pending": ("pending", "pending", False),
@@ -79,57 +78,6 @@ def normalize_review_mode(mode: str) -> tuple[str, bool | str, bool]:
     if mode not in mapping:
         raise ValueError(f"unknown review mode: {mode}")
     return mapping[mode]
-
-
-def resolve_codex_executable(which=shutil.which) -> str | None:
-    """Resolve the platform launcher, including codex.CMD on Windows."""
-    return which("codex")
-
-
-def build_exec_command(executable: str, workdir: str, model: str) -> list[str]:
-    return [
-        executable,
-        "exec",
-        "--ephemeral",
-        "--json",
-        "--skip-git-repo-check",
-        "-m",
-        model,
-        "-C",
-        workdir,
-        "--sandbox",
-        "read-only",
-        "-",
-    ]
-
-
-def classify_service_failure(*texts: str) -> str:
-    """Distinguish quota failures from generic transport failures for the log."""
-    joined = "\n".join(texts).lower()
-    if any(marker in joined for marker in _QUOTA_ERROR_MARKERS):
-        return "quota_error"
-    return "transport_error"
-
-
-def run_codex_exec(
-    cmd: list[str],
-    prompt: str,
-    timeout_seconds: float = DEFAULT_EXEC_TIMEOUT_SECONDS,
-) -> subprocess.CompletedProcess[str]:
-    try:
-        return subprocess.run(
-            cmd,
-            input=prompt,
-            text=True,
-            encoding="utf-8",
-            capture_output=True,
-            check=False,
-            timeout=timeout_seconds,
-        )
-    except subprocess.TimeoutExpired:
-        return subprocess.CompletedProcess(
-            cmd, 124, "", f"codex exec timed out after {timeout_seconds}s"
-        )
 
 
 def existing_file(value: str, workdir: Path) -> str:
@@ -300,15 +248,14 @@ def validate_review_result(result: dict, contract: dict | None) -> list[str]:
     mode = result.get("review_agent_mode")
     independence = result.get("review_independence")
     if mode not in {
-        "reviewer-subagent",
-        "codex-exec-independent",
+        "closing-reviewer-job",
         "self-review",
         "evidence-close",
     }:
         errors.append(f"invalid review_agent_mode: {result.get('review_agent_mode')}")
     if not isinstance(independence, bool):
         errors.append(f"invalid review_independence: {result.get('review_independence')}")
-    elif mode in {"reviewer-subagent", "codex-exec-independent"} and not independence:
+    elif mode == "closing-reviewer-job" and not independence:
         errors.append(f"{mode} requires review_independence=true")
     elif mode in {"self-review", "evidence-close"} and independence:
         errors.append(f"{mode} requires review_independence=false")
@@ -550,7 +497,7 @@ Required structure when an Outcome Contract is provided:
 
 # <task topic> -- 施工交工单
 
-> 独立性: true | mode=codex-exec-independent | requested_model={args.model}
+> 独立性: true | mode=closing-reviewer-job | requested_model={args.model}
 > 日期: <date>
 
 ## 先看结论
@@ -645,81 +592,6 @@ Legacy fallback: when no Outcome Contract is provided, keep the existing summary
 """
 
 
-def _extract_model_from_containers(containers) -> str | None:
-    for container in containers:
-        if not isinstance(container, dict):
-            continue
-        for key in ("model", "model_id"):
-            value = container.get(key)
-            if isinstance(value, str) and value.strip():
-                return value.strip()
-    return None
-
-def _trusted_event_model(event: dict) -> str | None:
-    event_type = event.get("type")
-    payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
-    payload_type = payload.get("type")
-    trusted_types = {
-        "thread.started",
-        "session_meta",
-        "session_metadata",
-        "turn.started",
-        "response.started",
-        # codex CLI (0.155.x) records the effective model in these events;
-        # confirmed from local session logs.
-        "thread_settings_applied",
-        "turn_context",
-    }
-    if event_type not in trusted_types and payload_type not in trusted_types:
-        return None
-    containers = [event, payload]
-    settings = payload.get("thread_settings")
-    if isinstance(settings, dict):
-        containers.append(settings)
-    return _extract_model_from_containers(containers)
-
-
-def parse_json_events(stdout: str) -> tuple[str | None, str | None]:
-    final_message = None
-    observed_model = None
-    for line in stdout.splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            event = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        observed_model = _trusted_event_model(event) or observed_model
-        item = event.get("item") if isinstance(event.get("item"), dict) else {}
-        payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
-        if item.get("type") == "agent_message":
-            final_message = item.get("text")
-        if item.get("type") == "message" and item.get("role") == "assistant":
-            parts = []
-            for content in item.get("content") or []:
-                if isinstance(content, dict):
-                    text = content.get("text") or content.get("output_text")
-                    if text:
-                        parts.append(text)
-            if parts:
-                final_message = "\n".join(parts)
-        if event.get("type") == "agent_message":
-            final_message = event.get("message") or event.get("text") or payload.get("message")
-        if event.get("type") == "event_msg" and payload.get("type") == "agent_message":
-            final_message = payload.get("message")
-        if event.get("type") == "response_item" and payload.get("type") == "message" and payload.get("role") == "assistant":
-            parts = []
-            for content in payload.get("content") or []:
-                if isinstance(content, dict):
-                    text = content.get("text") or content.get("output_text")
-                    if text:
-                        parts.append(text)
-            if parts:
-                final_message = "\n".join(parts)
-    return final_message, observed_model
-
-
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--csv", required=True)
@@ -768,50 +640,127 @@ def main() -> int:
     args.review_log = optional_file(args.review_log, workdir_path, csv_dir)
     output_path = output_file(args.output, workdir_path, csv_dir) if args.output else None
     handoff_path = output_file(args.handoff, workdir_path, csv_dir) if args.handoff else None
-    workdir = str(workdir_path)
     prompt = build_prompt(args)
-    executable = resolve_codex_executable()
-    if not executable:
-        sys.stderr.write("codex executable not found; continue with self-review fallback\n")
-        return 127
-    cmd = build_exec_command(executable, workdir, args.model)
-    proc = run_codex_exec(cmd, prompt)
-    if proc.returncode != 0:
-        sys.stderr.write(proc.stderr)
-        sys.stderr.write(proc.stdout)
-        kind = classify_service_failure(proc.stderr or "", proc.stdout or "")
-        sys.stderr.write(f"review_service_failure:{kind}; continue with self-review fallback\n")
-        return proc.returncode
 
-    final_message, observed_model = parse_json_events(proc.stdout)
-    if not final_message:
-        sys.stderr.write("codex exec produced no final agent message\n")
+    # closing review 由 reviewer_job 承载。reviewer_job 与主会话架构对齐：
+    # fresh read-only session、message 与 verdict 都落盘、packet/task/raw sha 验证。
+    # --model 直接来自当前会话主模型（invoker），不是 review_contract。
+    repo_root = workdir_path
+    sys.path.insert(0, str(repo_root / ".agents"))
+    sys.path.insert(0, str(repo_root / ".agents" / "harness"))
+    from harness import reviewer_job  # noqa: E402
+
+    job_dir = csv_dir / "reviews" / f"closing-reviewer-job-{Path(args.csv).stem}"
+    job_dir.mkdir(parents=True, exist_ok=True)
+
+    packet_payload = {
+        "schema_version": "closing.vision-review.v1",
+        "repo_root": str(repo_root),
+        "csv": str(Path(args.csv).relative_to(repo_root)),
+    }
+    if args.source_doc:
+        packet_payload["source_doc"] = str(Path(args.source_doc).relative_to(repo_root))
+    if args.claim_ledger:
+        packet_payload["claim_ledger"] = str(Path(args.claim_ledger).relative_to(repo_root))
+    if args.outcome_contract:
+        packet_payload["outcome_contract"] = str(Path(args.outcome_contract).relative_to(repo_root))
+    if args.deferred_ledger:
+        packet_payload["deferred_ledger"] = str(Path(args.deferred_ledger).relative_to(repo_root))
+    if args.review_log:
+        packet_payload["review_log"] = str(Path(args.review_log).relative_to(repo_root))
+    if args.extra:
+        packet_payload["extra"] = args.extra
+
+    packet_path = job_dir / "packet.json"
+    packet_path.write_text(json.dumps(packet_payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    task_path = job_dir / "task.md"
+    task_path.write_text(prompt, encoding="utf-8")
+
+    rj_args = Namespace(
+        packet=str(packet_path),
+        task=str(task_path),
+        backend="pi",
+        job_dir=str(job_dir),
+        cwd=None,
+        model=args.model,
+        max_resumes=0,
+        max_replacements=0,
+        attempt_timeout_seconds=DEFAULT_EXEC_TIMEOUT_SECONDS,
+        review_kind="closing",
+        model_source="invoker",
+        # legacy compat knobs (unused by closing kind)
+        netns=None,
+        netns_keepalive=False,
+        unshare_pid=False,
+        acquire_run_lock=True,
+        expected_tools=None,
+        expected_model=None,
+        session_id=None,
+        skip_patch_validation=False,
+    )
+    code = reviewer_job.execute(rj_args)
+    if code != 0:
+        return code
+
+    verdict_path = job_dir / "verdict.json"
+    if not verdict_path.is_file():
+        sys.stderr.write(f"verdict not written: {verdict_path}\n")
+        return 2
+    verdict = json.loads(verdict_path.read_text(encoding="utf-8"))
+    review_output_text = verdict.get("review_output") or ""
+    if not review_output_text.strip():
+        sys.stderr.write("verdict has empty review_output\n")
         return 2
     try:
-        result = json.loads(final_message)
+        closing_result = json.loads(review_output_text.strip())
     except json.JSONDecodeError:
-        sys.stderr.write("final agent message was not valid JSON\n")
-        sys.stderr.write(final_message + "\n")
+        sys.stderr.write("closing review output was not valid JSON\n")
+        sys.stderr.write(review_output_text + "\n")
         return 3
 
-    for untrusted_key in (
-        "actual_model",
-        "review_agent_mode",
-        "review_independence",
-        "review_requested_model",
-        "review_observed_model",
-        "review_model_evidence",
-    ):
-        result.pop(untrusted_key, None)
-    result.update(
-        {
-            "review_agent_mode": "codex-exec-independent",
-            "review_independence": True,
-            "review_requested_model": args.model,
-            "review_observed_model": observed_model or "unknown",
-            "review_model_evidence": "event-stream" if observed_model else "unknown",
-        }
-    )
+    # Schema check: closing.vision-review.v1 has reviewer_id, result, report_markdown, gaps[].
+    # Validate before releasing to callers (downstream verify_report relies on these keys).
+    if not isinstance(closing_result, dict):
+        sys.stderr.write(f"closing review output is not an object\n")
+        return 4
+    if closing_result.get("result") not in {"pass", "issues_found", "not_evaluable"}:
+        sys.stderr.write(f"closing review result is not one of pass|issues_found|not_evaluable: {closing_result.get('result')}\n")
+        return 5
+    if not isinstance(closing_result.get("report_markdown"), str):
+        sys.stderr.write("closing review missing report_markdown\n")
+        return 5
+    gaps = closing_result.get("gaps")
+    if gaps is not None and not isinstance(gaps, list):
+        sys.stderr.write("closing review gaps must be a list\n")
+        return 5
+
+    observed_model = verdict.get("observed_model") or "unknown"
+    model_evidence = verdict.get("model_evidence") or "unknown"
+    result = {
+        "review_agent_mode": "closing-reviewer-job",
+        "review_independence": True,
+        "review_requested_model": verdict.get("requested_model") or args.model,
+        "review_observed_model": observed_model,
+        "review_model_evidence": model_evidence,
+        # Schema-compatible top-level keys for downstream verify_report / csv checks.
+        "result": closing_result.get("result"),
+        "report_markdown": closing_result.get("report_markdown"),
+        "gaps": closing_result.get("gaps") or [],
+        "closing_reason": closing_result.get("closing_reason"),
+        "reviewer_id": closing_result.get("reviewer_id") or "reviewer_job",
+        # Keep legacy aliases for the older reviewers and human reviewers.
+        "vision_met": closing_result.get("vision_met"),
+        "blocking_issues": closing_result.get("blocking_issues") or [],
+        "review_notes": closing_result.get("review_notes"),
+        "summary": closing_result.get("summary"),
+        "validation_limited": closing_result.get("validation_limited"),
+        "assumptions": closing_result.get("assumptions") or [],
+        "decision_debt": closing_result.get("decision_debt") or [],
+        "deferred_findings": closing_result.get("deferred_findings") or [],
+        "human_required_blockers": closing_result.get("human_required_blockers") or [],
+        "outcome_answers": closing_result.get("outcome_answers") or [],
+        "handoff_markdown": closing_result.get("handoff_markdown"),
+    }
     review_errors = validate_review_result(result, outcome_contract_data)
     if review_errors:
         for error in review_errors:

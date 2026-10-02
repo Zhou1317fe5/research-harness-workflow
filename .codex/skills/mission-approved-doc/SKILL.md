@@ -162,7 +162,7 @@ claim_ledger:<stem>.claims.json; claims:CLAIM-001,CLAIM-002; claim_coverage:X/Y;
 `RESULT-ANALYSIS-01` 是正式结果入账后的科学分析门禁，不是 closing review，也不由主 Executor 自审：
 
 - 只为 canonical 28 列科研 CSV 生成；显式 19 列 compatibility CSV 不迁移
-- 所有 `remote_state=ingested` 的非空 `(exp_id, run_id)` 必须由全新的 `scientific-reviewer` sub-agent 分析，并在索引中逐一覆盖
+- 所有 `remote_state=ingested` 的非空 `(exp_id, run_id)` 必须由 reviewer_job 独立分析（`run_result_analysis.py` 调用，模式 `result-analysis-reviewer-job`），并在索引中逐一覆盖
 - `notes` 至少包含 `analysis_kind:post_run; result_analysis:reviews/result-analysis.json; analysis_agent_mode:pending; analysis_independence:pending; analysis_requested_model:<review_contract.toml 的 Pi 当前值>; analysis_observed_model:pending; analysis_model_evidence:pending; analysis_model_evidence_ref:pending`
 - 分析输出必须原样落入 `research_workspace/experiments/<ExpID>/analysis/analysis.md`，严格包含 `Change / Result / Finding / Next` 四段；`reviews/result-analysis.json` 必须记录 hash、证据引用、固定 scientific outcome、逐条 `review_evidence_ref` 和 `review_output_sha256`，并绑定可核验模型证据
 - `final_ready.py` 与 `csv_completion_errors()` 都会在进入 `REVIEW-*` 前 fail-closed 检查；advisor、closing review 或 self-review 不能替代该行
@@ -190,7 +190,7 @@ claim_ledger:<stem>.claims.json; claims:CLAIM-001,CLAIM-002; claim_coverage:X/Y;
 | `area` | `review` |
 | `title` | `Review documented vision against delivered work` |
 | `description` | `Compare approved-spec claims with delivered behavior, evidence level, CSV state, validation evidence, and review log; use evidence-close unless closing risk requires an independent reviewer.` |
-| `acceptance_criteria` | `WHEN all non-review issues before this row are closed THEN run mechanical readiness and choose evidence-close for L0-L2 or an unchanged commit already covered by independent scientific PRERUN; WHEN unresolved L3/L4 risk, evidence conflict or a suspected current-scope gap exists THEN try reviewer-subagent, codex-exec-independent, then self-review; WHEN a current-scope gap or overstated claim is found THEN append follow-up issues and REVIEW-02; WHEN no current-scope gaps remain THEN close the CSV while recording Mission result separately from scientific outcome.` |
+| `acceptance_criteria` | `WHEN all non-review issues before this row are closed THEN run mechanical readiness and choose evidence-close for L0-L2 or an unchanged commit already covered by independent scientific PRERUN; WHEN unresolved L3/L4 risk, evidence conflict or a suspected current-scope gap exists THEN try closing-reviewer-job, then self-review; WHEN a current-scope gap or overstated claim is found THEN append follow-up issues and REVIEW-02; WHEN no current-scope gaps remain THEN close the CSV while recording Mission result separately from scientific outcome.` |
 | `test_mcp` | `manual` |
 | `required_skills` | 留空 |
 | `required_mcp` | Legacy 兼容列，固定留空 |

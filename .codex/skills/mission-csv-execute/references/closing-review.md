@@ -8,7 +8,7 @@
 ## Review 前置条件
 
 - 先用 `final_ready.py` v2 对 28 列状态、remote terminal state、实验身份、metrics token、provenance、claim 终态、post-run result-analysis 和 scoped git status 做机械检查，并传入 `closing_context`：`risk_level`、`independent_prerun_covered`、`scientific_contract_changed_since_prerun`、`evidence_conflict`、`current_scope_gap_suspected`。失败时修当前 REVIEW 行，不创建等待型 REVIEW。
-- 对 canonical CSV，所有 `remote_state=ingested` 行必须先由 `RESULT-ANALYSIS-01` 完成；若缺少该行，先运行 `scripts/ensure_result_analysis_row.py`。它必须引用 `reviews/result-analysis.json`，并由独立 `scientific-reviewer` sub-agent 生成四段 `analysis.md`。closing review 只能消费该索引，不能用 advisor、evidence-close 或 self-review 替代。
+- 对 canonical CSV，所有 `remote_state=ingested` 行必须先由 `RESULT-ANALYSIS-01` 完成；若缺少该行，先运行 `scripts/ensure_result_analysis_row.py`。它必须引用 `reviews/result-analysis.json`，并由独立 reviewer_job 分析生成四段 `analysis.md`。closing review 只能消费该索引，不能用 advisor、evidence-close 或 self-review 替代。
 - 科研 `review.md` 继续承载 remote session、artifact pull/ingest、指标、SpecID/ExpID/RunID 与结果归属；closing reviewer 只消费这些证据，不改写 scientific PRERUN 结论。
 
 - 当前 review 行之前的所有非 review 行必须闭环完成；其中 `RESULT-ANALYSIS-01` 必须位于首个 `REVIEW-*` 之前
@@ -51,8 +51,8 @@ closing review 必须基于以下材料：
 
 | 优先级 | 模式 | 记录值 | 独立性 | 要求 |
 |--------|------|--------|--------|------|
-| 1 | 当前会话派发注册的 `scientific-reviewer` 子代理（**用当前会话（执行）模型**、fresh 只读会话） | `review_agent_mode:reviewer-subagent` | `review_independence:true` | 只读；prompt 不含主代理结论；禁止再委派 |
-| 2 | `codex exec --ephemeral --json --sandbox read-only`（模型用当前会话（执行）模型） | `review_agent_mode:codex-exec-independent` | `review_independence:true` | 用 `shutil.which("codex")` 解析平台 launcher；由独立 exec 会话完成完整 vision review |
+| 1 | `python .agents/skills/mission-csv-execute/scripts/run_vision_review.py —— 当前会话启动 reviewer_job 执行 fresh 只读 closing review（**模型为当前会话主模型**） | `review_agent_mode:closing-reviewer-job` | `review_independence:true` | 只读；prompt 不含主代理结论；结构独立通过 reviewer_job fresh session 完成 |
+| 2 | 主会话按同一 prompt 自审 | `review_agent_mode:self-review` | `review_independence:false` | 只在 reviewer_job 失败时使用；如实记录 capability failure，但完成的 self-review 可以闭环 |
 | 3 | 主会话按同一 prompt 自审 | `review_agent_mode:self-review` | `review_independence:false` | 只在前两项失败时使用；如实记录 capability failure，但完成的 self-review 可以闭环 |
 
 closing review 的审查模型固定为**当前会话（执行）模型**：不要求改成另一个“高级”模型，因此这里的
@@ -87,7 +87,7 @@ python scripts/run_vision_review.py \
 
 reviewer prompt 必须明确写入：
 
-- 独立路径的请求模型 = 当前会话（执行）模型（`reviewer-subagent` 用 `provider/model` 调用名，`codex exec -m` 用可解析的裸名）；requested model 与 observed model 分开记录，observed 必须来自运行时可确证的通道
+- 独立路径的请求模型 = 当前会话（执行）模型，由主会话显式 `--model` 传入 reviewer_job；requested model 与 observed model 分开记录，observed 必须来自运行时可确证的通道
 - observed model 只能来自 host/session metadata 或 CLI JSON event stream。reviewer 文本和 review JSON 自报的模型不算证据
 - 只基于批准文档或原始请求、CSV、claim/evidence ledger、diff/commit、测试/MCP 证据、交付物声明和 review log
 - 不信任主 agent 的结论性总结
@@ -366,7 +366,7 @@ REVIEW-02
 ```markdown
 ## REVIEW-N
 - Source doc: <path>
-- Review agent: reviewer-subagent | codex-exec-independent | self-review
+- Review agent: closing-reviewer-job | self-review
 - Review independence: true | false
 - Review requested model: <当前会话（执行）模型>
 - Review observed model: <catalog model id | unknown>

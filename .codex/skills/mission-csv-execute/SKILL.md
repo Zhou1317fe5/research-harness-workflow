@@ -69,7 +69,7 @@ CSV 更新统一使用 `scripts/csv_state.py`，它锁住整段读改写和 even
 
 `csv_completion_errors()` 是唯一最终闭环判断，核验实际 Git、ingest、claim、post-run result analysis 和 handoff；恢复与生命周期 completed 共用它。`final_ready.py` 只检查 closing 前置条件，通过不代表 Mission 已完成。用户要求不提交时，保留真实未提交状态和剩余项。
 
-Canonical CSV 中，所有正式结果进入 `remote_state=ingested` 后，必须先完成唯一的 `RESULT-ANALYSIS-01` 行：由全新的 `scientific-reviewer` sub-agent 独立读取原始证据，写入 `research_workspace/experiments/<ExpID>/analysis/analysis.md` 和 `reviews/result-analysis.json`。主 Executor、advisor、closing `evidence-close` 或 self-review 都不能替代该分析；`final_ready.py` 与 `csv_completion_errors()` 都会 fail-closed 校验覆盖范围、四段标题、SHA-256、证据引用及可核验模型身份。分析完成后才进入 `REVIEW-*`。
+Canonical CSV 中，所有正式结果进入 `remote_state=ingested` 后，必须先完成唯一的 `RESULT-ANALYSIS-01` 行：由 reviewer_job 独立 fresh 会话读取原始证据（`run_result_analysis.py` 调用），写入 `research_workspace/experiments/<ExpID>/analysis/analysis.md` 和 `reviews/result-analysis.json`。主 Executor、advisor、closing `evidence-close` 或 self-review 都不能替代该分析；`final_ready.py` 与 `csv_completion_errors()` 都会 fail-closed 校验覆盖范围、四段标题、SHA-256、证据引用及可核验模型身份。分析完成后才进入 `REVIEW-*`。
 
 以下四项是必要状态；完成检查还核验实际 Git、适用的远程产物和合同，不能仅凭四个字符串宣布闭环：
 
@@ -91,7 +91,7 @@ Canonical CSV 中，所有正式结果进入 `remote_state=ingested` 后，必�
 `REVIEW-*` 行还必须满足：
 
 - 已根据 closing risk 选择 `evidence-close` 或独立 capability ladder；不得仅因存在 REVIEW 行就调用 reviewer
-- review log 和 CSV `notes` 已记录 `review_agent_mode:<evidence-close|reviewer-subagent|codex-exec-independent|self-review>`、`review_independence:<true|false>`、适用的模型字段、实际存在的 ledger、coverage、`review_result` 与 `scientific_outcome`
+- review log 和 CSV `notes` 已记录 `review_agent_mode:<evidence-close|closing-reviewer-job|self-review>`、`review_independence:<true|false>`、适用的模型字段、实际存在的 ledger、coverage、`review_result` 与 `scientific_outcome`
 - review 结论已经写入 review log
 - 已产出 human handoff（`<csv-path-without-.csv>.handoff.md`），CSV `notes` 已记 `handoff:<path>`，并已记录 `handoff_contract:passed` 或 `handoff_contract:failed <reason>`；若 `review_result:vision_met`，必须是 `handoff_contract:passed`
 - 若发现当前 scope/acceptance gap，已追加 follow-up issue 和下一轮 `REVIEW-(N+1)`

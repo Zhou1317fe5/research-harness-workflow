@@ -9,7 +9,7 @@
 schema_version = 1
 
 # 每个宿主获批的审查模型。键只能是 review_model.py 已知的宿主。
-#   pi    —— Pi 启动的会话（scientific-reviewer 子代理与 `pi --model`）；
+#   pi    —— Pi 启动的会话（reviewer_job 的 Pi 后端 / `pi --model`）；
 #            provider 前缀名。
 #   codex —— `codex exec -m`，解析裸模型名。
 [models]
