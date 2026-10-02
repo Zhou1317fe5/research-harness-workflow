@@ -42,7 +42,7 @@ from mission_completion import (  # noqa: E402
     read_mission_csv,
 )
 
-REF = "session:e2e#mission-lifecycle"
+REF = "job:e2e#mission-lifecycle"
 STEM = "mission-e2e"
 TASK = "mission-e2e-task"
 EXP_ID = "EXP-E2E-1"
@@ -74,7 +74,7 @@ class MissionLifecycleE2ETests(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
         self.csv_path = self.root / CSV_REL
-        # HOME 指向临时目录 → session-metadata 夹具 ~/.pi 隔离。
+        # HOME 指向临时目录 → ~/.pi 隔离（不再被 reviewer 使用，仅为遗留夹具）。
         self._home = patch.dict(os.environ, {"HOME": str(self.root / "home")})
         self._home.start()
         self.addCleanup(self._home.stop)
@@ -222,7 +222,7 @@ class MissionLifecycleE2ETests(unittest.TestCase):
         _write(self.csv_path.parent / "closing.handoff.md", _HANDOFF)
 
     def _write_result_analysis(self, run_ids, digest):
-        """reviews/result-analysis.json + 假 HOME 下 session-metadata 夹具。"""
+        """reviews/result-analysis.json + reviewer_job verdict 夹具。"""
         analysis_md = self.root / (
             f"research_workspace/experiments/{EXP_ID}/analysis/analysis.md")
         analysis_text = ("## Change\ncode\n\n## Result\nmetric=0.5\n\n"
@@ -237,45 +237,65 @@ class MissionLifecycleE2ETests(unittest.TestCase):
             "limitations": [],
             "validation_gaps": [],
         }, ensure_ascii=False, sort_keys=True)
-        session_id = "e2e00000-0000-4000-8000-000000000001"
-        tool_id = "call-e2e"
-        evidence_ref = f"session:{session_id}#tool:{tool_id}"
-        session_dir = Path(os.environ["HOME"]) / ".pi/agent/sessions"
-        session_dir.mkdir(parents=True, exist_ok=True)
-        session_path = session_dir / f"fixture_{session_id}.jsonl"
-        records = [
-            {"type": "message", "message": {"role": "assistant", "content": [{
-                "type": "toolCall", "name": "subagent", "id": tool_id,
-                "arguments": json.dumps({
-                    "agent": "scientific-reviewer", "agentScope": "project",
-                    "cwd": str(self.root),
-                    "task": "Analyze. result_analysis_targets: "
-                            + json.dumps({"exp_id": EXP_ID, "run_ids": run_ids}),
-                }),
-            }]}},
-            {"type": "message", "message": {
-                "role": "toolResult", "toolName": "subagent",
-                "toolCallId": tool_id,
-                "details": {"results": [{
-                    "agent": "scientific-reviewer", "model": f"{MODEL}:max",
-                    "exitCode": 0,
-                    "messages": [{"role": "assistant",
-                                  "content": [{"type": "text",
-                                               "text": review_output}]}],
-                }]},
-            }},
-        ]
-        _write(session_path,
-               "\n".join(json.dumps(r, ensure_ascii=False) for r in records) + "\n")
-        output_sha = hashlib.sha256(review_output.strip().encode()).hexdigest()
+        job_rel = f"reviews/result-analysis-{EXP_ID}"
+        job_dir = self.csv_path.parent / job_rel
+        job_dir.mkdir(parents=True, exist_ok=True)
+        packet_path = job_dir / "packet.json"
+        packet_text = json.dumps({
+            "exp_id": EXP_ID, "run_ids": list(run_ids), "repo_root": str(self.root),
+        }, ensure_ascii=False, indent=2)
+        packet_path.write_text(packet_text, encoding="utf-8")
+        task_path = job_dir / "task.md"
+        task_text = f"Analyze {EXP_ID} {sorted(run_ids)}\n"
+        task_path.write_text(task_text, encoding="utf-8")
+        raw_path = job_dir / "raw-response.json"
+        raw_text = json.dumps({"raw": review_output}, ensure_ascii=False, indent=2)
+        raw_path.write_text(raw_text, encoding="utf-8")
+        packet_sha = hashlib.sha256(packet_path.read_bytes()).hexdigest()
+        task_sha = hashlib.sha256(task_path.read_bytes()).hexdigest()
+        raw_sha = hashlib.sha256(raw_path.read_bytes()).hexdigest()
+        review_sha = hashlib.sha256(review_output.strip().encode()).hexdigest()
+        evidence_ref = f"job:{job_rel}/verdict.json#verdict"
+        verdict = {
+            "schema_version": "post-run.result-analysis-verdict.v1",
+            "status": "completed",
+            "review_mode": "implementation_review",
+            "review_kind": "result-analysis",
+            "job_id": job_rel,
+            "backend": "pi",
+            "reviewer_session_id": f"e2e00000-0000-4000-8000-000000000001",
+            "requested_model": f"{MODEL}:max",
+            "observed_model": f"{MODEL}:max",
+            "model_evidence": "job-verdict",
+            "model_source": "contract",
+            "packet_path": str(packet_path),
+            "packet_sha256": packet_sha,
+            "task_path": str(task_path),
+            "task_sha256": task_sha,
+            "raw_response_path": str(raw_path),
+            "raw_response_sha256": raw_sha,
+            "response_path": str(raw_path),
+            "response_sha256": raw_sha,
+            "replacement_count": 0,
+            "resume_count": 0,
+            "transport_exit_code": 0,
+            "completed_at": "2026-01-01T00:00:00Z",
+            "exp_id": EXP_ID,
+            "run_ids": list(run_ids),
+            "review_output": review_output,
+            "review_output_sha256": review_sha,
+        }
+        _write(job_dir / "verdict.json",
+               json.dumps(verdict, ensure_ascii=False, indent=2, sort_keys=True) + "\n")
+        output_sha = review_sha
         index = {
             "schema_version": "post-run.result-analysis.v1",
             "status": "complete",
-            "analysis_agent_mode": "scientific-reviewer-subagent",
+            "analysis_agent_mode": "result-analysis-reviewer-job",
             "analysis_independence": True,
-            "requested_model": MODEL,
-            "observed_model": MODEL,
-            "model_evidence": "session-metadata",
+            "requested_model": f"{MODEL}:max",
+            "observed_model": f"{MODEL}:max",
+            "model_evidence": "job-verdict",
             "model_evidence_ref": evidence_ref,
             "entries": [{
                 "exp_id": EXP_ID, "run_id": r,
@@ -507,15 +527,15 @@ class MissionLifecycleE2ETests(unittest.TestCase):
             "set_note_tags": _set_tags(
                 analysis_kind="post_run",
                 result_analysis=f"{REVIEWS_REL}/result-analysis.json",
-                analysis_agent_mode="scientific-reviewer-subagent",
+                analysis_agent_mode="result-analysis-reviewer-job",
                 analysis_independence="true",
-                analysis_requested_model=MODEL,
-                analysis_observed_model=MODEL,
-                analysis_model_evidence="session-metadata",
-                analysis_model_evidence_ref=(
-                    "session:e2e00000-0000-4000-8000-000000000001#tool:call-e2e"),
-            ),
+                analysis_requested_model=f"{MODEL}:max",
+                analysis_observed_model=f"{MODEL}:max",
+                analysis_model_evidence="job-verdict",
+                analysis_model_evidence_ref=f"job:reviews/result-analysis-{EXP_ID}/verdict.json#verdict"),
+            "event": {"phase": "analysis", "row": "RESULT-ANALYSIS-01"},
         })
+
         self.close_git("RESULT-ANALYSIS-01",
                        refs=[f"{REVIEWS_REL}/result-analysis.json"],
                        commit=commit_d)

@@ -32,17 +32,17 @@ def _load_review_model():
 review_model = _load_review_model()
 
 # requested/observed models are validated per-channel via
-# _expected_model_for_mode/_accepted_for_mode against review_model.
+# _accepted_for_mode plus the reviewer_job verdict (the only source of truth
+# for a job's requested model).
 
 
 SCHEMA_VERSION = "post-run.result-analysis.v1"
-ANALYSIS_AGENT_MODE = "scientific-reviewer-subagent"
+ANALYSIS_AGENT_MODE = "result-analysis-reviewer-job"
 ANALYSIS_AGENT_MODES = {
-    "scientific-reviewer-subagent",
-    "codex-exec-independent",
+    "result-analysis-reviewer-job",
 }
-MODEL_EVIDENCE = {"session-metadata", "event-stream", "parent-runtime"}
-# The codex-exec channel persists the reviewer job verdict under the mission's
+MODEL_EVIDENCE = {"job-verdict"}
+# The reviewer-job channel persists the reviewer job verdict under the mission's
 # own reviews directory; the validator recomputes its digest from disk.
 VERDICT_SCHEMA = "post-run.result-analysis-verdict.v1"
 SCIENTIFIC_OUTCOMES = {
@@ -63,16 +63,8 @@ CANONICAL_FIELDS = [
     "branch", "commit_hash", "next_action", "updated_at",
 ]
 COMPAT_FIELDS = CANONICAL_FIELDS[:19]
-_EXPLICIT_REF_PREFIXES = ("command:", "manual:", "session:", "exec:")
-_SESSION_REF_RE = re.compile(
-    r"^session:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}#tool:\S+$"
-)
-# 运行时模型身份：项目 reviewer agent 配置 thinking high（skill 亦要求 high），
-# 测试夹具使用 :max；两者都必须匹配 review_model.py 中该宿主的获批身份，不接受其它模型。
-
-_EVENT_REF_RE = re.compile(r"^event:\S+$")
-_EXEC_REF_RE = re.compile(r"^exec:[^#\s]+#verdict$")
-_RUNTIME_REF_RE = re.compile(r"^runtime:\S+$")
+_EXPLICIT_REF_PREFIXES = ("command:", "manual:", "job:")
+_JOB_REF_RE = re.compile(r"^job:[^#\s]+#verdict$")
 _REVIEW_OUTPUT_KEYS = {
     "exp_id", "run_ids", "analysis_markdown", "scientific_outcome",
     "limitations", "validation_gaps",
@@ -103,9 +95,9 @@ def _load_csv(csv_path: Path) -> tuple[list[str], list[dict[str, str]]]:
 def _resolve(value: str, *, base: Path, workdir: Path) -> Path | None:
     if not isinstance(value, str) or not value.strip():
         return None
+    candidate = Path(value.strip().strip("\"'")).expanduser()
+    candidates = [candidate] if candidate.is_absolute() else [base / candidate, workdir / candidate]
     try:
-        candidate = Path(value.strip().strip("\"'")).expanduser()
-        candidates = [candidate] if candidate.is_absolute() else [base / candidate, workdir / candidate]
         existing = {item.resolve() for item in candidates if item.exists()}
         if len(existing) > 1:
             raise ValueError(f"reference_ambiguous:{value}")
@@ -145,19 +137,16 @@ def _valid_analysis_document(path: Path, errors: list[str], label: str) -> None:
             _error(errors, "analysis_section_empty", f"{label}:{match.group(1)}")
 
 
-def _expected_model_for_mode(mode: Any) -> str:
-    """Recorded requested/observed model approved for a channel's host."""
-    if isinstance(mode, str) and mode in ANALYSIS_AGENT_MODES:
-        return review_model.accepted_model_for_host(review_model.host_for_channel(mode))
-    return review_model.RECORDED_MODEL
+def _accepted_for_mode(value: str, mode: Any, *, host: str | None = None) -> bool:
+    """Whether ``value`` is an accepted runtime identity for ``mode``'s host.
 
-
-def _accepted_for_mode(value: str, mode: Any) -> bool:
-    if isinstance(mode, str) and mode in ANALYSIS_AGENT_MODES:
-        return review_model.is_accepted_model_identity(
-            value, review_model.host_for_channel(mode)
-        )
-    return review_model.is_accepted_model_identity(value)
+    ``host`` is the channel-specific backend (pi/codex). When omitted the
+    check accepts any approved identity, letting host-precise binding happen
+    per-entry via the reviewer_job verdict.
+    """
+    if not isinstance(mode, str) or mode not in ANALYSIS_AGENT_MODES:
+        return review_model.is_accepted_model_identity(value)
+    return review_model.is_accepted_model_identity(value, host)
 
 
 def _validate_model_metadata(data: dict[str, Any], errors: list[str]) -> None:
@@ -166,12 +155,10 @@ def _validate_model_metadata(data: dict[str, Any], errors: list[str]) -> None:
     if data.get("analysis_independence") is not True:
         _error(errors, "analysis_independence_invalid", str(data.get("analysis_independence")))
     mode = data.get("analysis_agent_mode")
-    expected_model = _expected_model_for_mode(mode)
-    if data.get("requested_model") != expected_model:
-        _error(errors, "analysis_requested_model_invalid", str(data.get("requested_model")))
     observed = data.get("observed_model")
     if not isinstance(observed, str) or not observed.strip() or observed in {"unknown", "pending", "not_applicable"}:
         _error(errors, "analysis_observed_model_invalid", str(observed))
+        return
     elif not _accepted_for_mode(observed, mode):
         _error(errors, "analysis_observed_model_not_expected", observed)
     evidence = data.get("model_evidence")
@@ -180,48 +167,18 @@ def _validate_model_metadata(data: dict[str, Any], errors: list[str]) -> None:
     ref = data.get("model_evidence_ref")
     if not isinstance(ref, str) or not ref.strip() or ref.strip() in {"unknown", "pending"}:
         _error(errors, "analysis_model_evidence_ref_invalid", str(ref))
-    elif evidence == "session-metadata" and not _SESSION_REF_RE.fullmatch(ref.strip()):
+    elif not _JOB_REF_RE.fullmatch(ref.strip()):
         _error(errors, "analysis_model_evidence_ref_invalid", str(ref))
-    elif evidence == "event-stream" and not (
-        _EVENT_REF_RE.fullmatch(ref.strip()) or _EXEC_REF_RE.fullmatch(ref.strip())
-    ):
-        _error(errors, "analysis_model_evidence_ref_invalid", str(ref))
-    elif evidence == "parent-runtime" and not _RUNTIME_REF_RE.fullmatch(ref.strip()):
-        _error(errors, "analysis_model_evidence_ref_invalid", str(ref))
-    if mode == "scientific-reviewer-subagent":
-        if evidence != "session-metadata":
-            _error(errors, "analysis_model_evidence_unverifiable", str(evidence))
-    elif mode == "codex-exec-independent":
-        if evidence != "event-stream":
-            _error(errors, "analysis_model_evidence_unverifiable", str(evidence))
-        if not isinstance(ref, str) or not _EXEC_REF_RE.fullmatch(ref.strip()):
-            _error(errors, "analysis_model_evidence_ref_invalid", str(ref))
-
-
-def _assistant_text(message: dict[str, Any]) -> str:
-    content = message.get("content")
-    if isinstance(content, str):
-        return content
-    if not isinstance(content, list):
-        return ""
-    parts: list[str] = []
-    for item in content:
-        if not isinstance(item, dict):
-            continue
-        if item.get("type") not in {"text", "output_text"}:
-            continue
-        value = item.get("text") or item.get("output_text")
-        if isinstance(value, str) and value:
-            parts.append(value)
-    return "\n".join(parts)
-
-
-def _normalized_newlines(value: str) -> str:
-    return value.replace("\r\n", "\n").replace("\r", "\n")
-
-
-def _normalized_text(value: str) -> str:
-    return _normalized_newlines(value).strip()
+    # requested_model must equal the reviewer_job verdict's requested_model;
+    # cross-checked in the entry-level evidence validation where the verdict
+    # file is loaded. Here we only require it to normalize to the host's
+    # approved base identity so a different approved model cannot be silently
+    # substituted.
+    requested = data.get("requested_model")
+    if not isinstance(requested, str) or not requested.strip():
+        _error(errors, "analysis_requested_model_invalid", str(requested))
+    elif not _accepted_for_mode(requested, mode):
+        _error(errors, "analysis_requested_model_not_expected", requested)
 
 
 def _strict_json_loads(value: str) -> Any:
@@ -243,144 +200,62 @@ def _strict_json_loads(value: str) -> Any:
     )
 
 
-def _tool_call_arguments(item: dict[str, Any]) -> dict[str, Any] | None:
-    arguments = item.get("arguments")
-    if isinstance(arguments, dict):
-        return arguments
-    if isinstance(arguments, str):
-        try:
-            parsed = _strict_json_loads(arguments)
-        except (json.JSONDecodeError, ValueError):
-            return None
-        return parsed if isinstance(parsed, dict) else None
-    return None
+def _normalized_newlines(value: str) -> str:
+    return value.replace("\r\n", "\n").replace("\r", "\n")
 
 
-def _session_tool_result(
-    ref: str,
-    *,
-    workdir: Path,
-    expected_exp_id: str,
-    expected_run_ids: set[str],
-) -> tuple[dict[str, Any] | None, str | None]:
-    match = _SESSION_REF_RE.fullmatch(ref.strip())
-    if not match:
-        return None, "invalid_session_tool_reference"
-    session_id, tool_id = ref[len("session:"):].split("#tool:", 1)
-    session_root = Path.home() / ".pi" / "agent" / "sessions"
-    candidates = sorted(session_root.glob(f"**/*_{session_id}.jsonl"))
-    if len(candidates) != 1:
-        return None, f"session_file_count:{len(candidates)}"
-    tool_calls: list[dict[str, Any]] = []
-    tool_results: list[dict[str, Any]] = []
-    try:
-        with candidates[0].open(encoding="utf-8") as stream:
-            for line in stream:
-                try:
-                    record = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                message = record.get("message") if isinstance(record, dict) else None
-                if not isinstance(message, dict):
-                    continue
-                if message.get("role") == "assistant":
-                    content = message.get("content")
-                    if isinstance(content, list):
-                        for item in content:
-                            if (
-                                isinstance(item, dict)
-                                and item.get("type") == "toolCall"
-                                and item.get("name") == "subagent"
-                                and item.get("id") == tool_id
-                            ):
-                                tool_calls.append(item)
-                if (
-                    message.get("role") == "toolResult"
-                    and message.get("toolName") == "subagent"
-                    and message.get("toolCallId") == tool_id
-                ):
-                    tool_results.append(message)
-    except (OSError, UnicodeError) as exc:
-        return None, f"session_read_failed:{exc}"
-    if len(tool_calls) != 1 or len(tool_results) != 1:
-        return None, f"tool_call_result_pair:{len(tool_calls)}:{len(tool_results)}"
-    arguments = _tool_call_arguments(tool_calls[0])
-    if arguments is None:
-        return None, "subagent_arguments_invalid"
-    if arguments.get("agent") != "scientific-reviewer":
-        return None, f"subagent_agent_invalid:{arguments.get('agent')}"
-    if arguments.get("agentScope") not in {"project", "both"}:
-        return None, f"subagent_scope_invalid:{arguments.get('agentScope')}"
-    task = arguments.get("task")
-    if not isinstance(task, str) or not task.strip():
-        return None, "subagent_task_missing"
-    target_marker = "result_analysis_targets:"
-    if task.count(target_marker) != 1:
-        return None, "subagent_targets_invalid"
-    target_start = task.find(target_marker)
-    target_text = task[target_start + len(target_marker):].lstrip().splitlines()[0]
-    try:
-        targets = _strict_json_loads(target_text)
-    except (json.JSONDecodeError, ValueError):
-        return None, "subagent_targets_invalid"
-    if not isinstance(targets, dict):
-        return None, "subagent_targets_invalid"
-    target_exp = targets.get("exp_id")
-    target_runs = targets.get("run_ids")
-    if (
-        target_exp != expected_exp_id
-        or not isinstance(target_runs, list)
-        or any(not isinstance(item, str) or not item.strip() for item in target_runs)
-        or set(target_runs) != expected_run_ids
-        or len(target_runs) != len(set(target_runs))
-    ):
-        return None, "subagent_targets_mismatch"
-    cwd = arguments.get("cwd")
-    if not isinstance(cwd, str) or not cwd.strip():
-        return None, "subagent_cwd_missing"
-    try:
-        if Path(cwd).expanduser().resolve() != workdir.resolve():
-            return None, f"subagent_cwd_invalid:{cwd}"
-    except (OSError, RuntimeError) as exc:
-        return None, f"subagent_cwd_unresolvable:{exc}"
-    details = tool_results[0].get("details")
-    if not isinstance(details, dict):
-        return None, "subagent_details_missing"
-    results = details.get("results")
-    if not isinstance(results, list):
-        return None, "subagent_results_missing"
-    matching = [
-        item for item in results
-        if isinstance(item, dict) and item.get("agent") == "scientific-reviewer"
-    ]
-    if len(matching) != 1:
-        return None, f"scientific_reviewer_result_count:{len(matching)}"
-    return matching[0], None
+def _normalized_text(value: str) -> str:
+    return _normalized_newlines(value).strip()
 
 
-def _resolve_exec_verdict(
+def _resolve_job_verdict(
     ref: str,
     *,
     csv_path: Path,
     workdir: Path,
 ) -> tuple[dict[str, Any] | None, str | None]:
-    verdict_value = ref[len("exec:"):][: -len("#verdict")].strip()
+    verdict_value = ref[len("job:"):][: -len("#verdict")].strip()
     if not verdict_value:
-        return None, "exec_ref_empty"
+        return None, "job_ref_empty"
     try:
         verdict_path = _resolve(verdict_value, base=csv_path.parent, workdir=workdir)
     except ValueError as exc:
         return None, str(exc)
     if not verdict_path.is_file():
-        return None, f"exec_verdict_missing:{verdict_value}"
+        return None, f"job_verdict_missing:{verdict_value}"
     try:
         verdict = _strict_json_loads(verdict_path.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as exc:
-        return None, f"exec_verdict_invalid:{exc}"
+        return None, f"job_verdict_invalid:{exc}"
     if not isinstance(verdict, dict):
-        return None, "exec_verdict_invalid:expected_object"
+        return None, "job_verdict_invalid:expected_object"
     if verdict.get("schema_version") != VERDICT_SCHEMA:
-        return None, f"exec_verdict_schema_invalid:{verdict.get('schema_version')}"
+        return None, f"job_verdict_schema_invalid:{verdict.get('schema_version')}"
+    if verdict.get("review_kind") != "result-analysis":
+        return None, f"job_verdict_review_kind_invalid:{verdict.get('review_kind')}"
+    if verdict.get("status") != "completed":
+        return None, f"job_verdict_status_invalid:{verdict.get('status')}"
+    for label, sha_field, path_field in (
+        ("packet", "packet_sha256", "packet_path"),
+        ("task", "task_sha256", "task_path"),
+        ("raw_response", "raw_response_sha256", "raw_response_path"),
+        ("response", "response_sha256", "response_path"),
+    ):
+        sha_val = verdict.get(sha_field)
+        path_val = verdict.get(path_field)
+        if not isinstance(sha_val, str) or not sha_val.strip():
+            return None, f"verdict_{label}_sha_missing"
+        if not isinstance(path_val, str) or not path_val.strip():
+            return None, f"verdict_{label}_path_missing"
+        # Verify the recorded artifact hash matches the on-disk file bytes so
+        # a swapped packet/task cannot silently pass validation.
+        try:
+            actual = _sha256(_resolve(path_val, base=workdir, workdir=workdir))
+        except (OSError, ValueError) as exc:
+            return None, f"verdict_{label}_unreadable:{exc}"
+        if actual != sha_val:
+            return None, f"verdict_{label}_hash_mismatch"
+
     return verdict, None
 
 
@@ -398,50 +273,50 @@ def _validate_reviewer_evidence(
     expected_outcome: Any,
     expected_limitations: Any,
     expected_gaps: Any,
+    expected_requested_model: Any,
 ) -> None:
-    ref_is_session = isinstance(ref, str) and _SESSION_REF_RE.fullmatch(ref.strip())
-    ref_is_exec = isinstance(ref, str) and _EXEC_REF_RE.fullmatch(ref.strip())
-    if not ref_is_session and not ref_is_exec:
+    if not isinstance(ref, str) or not _JOB_REF_RE.fullmatch(ref.strip()):
         _error(errors, "review_evidence_ref_invalid", str(ref))
         return
     if not isinstance(output_hash, str) or not re.fullmatch(r"[0-9a-f]{64}", output_hash):
         _error(errors, "review_output_hash_invalid", str(output_hash))
         return
-    if ref_is_session:
-        result, failure = _session_tool_result(
-            ref,
-            workdir=workdir,
-            expected_exp_id=exp_id,
-            expected_run_ids=expected_run_ids,
-        )
-        if failure:
-            _error(errors, "review_evidence_unverifiable", f"{ref}:{failure}")
-            return
-        assert result is not None
-        if result.get("exitCode") != 0:
-            _error(errors, "review_subagent_failed", f"{ref}:{result.get('exitCode')}")
-        runtime_model = result.get("model")
-        if not isinstance(runtime_model, str) or not review_model.is_accepted_model_identity(runtime_model, "pi"):
-            _error(errors, "review_runtime_model_invalid", f"{ref}:{runtime_model}")
-        messages = result.get("messages")
-        final_text = ""
-        if isinstance(messages, list):
-            for message in messages:
-                if isinstance(message, dict) and message.get("role") == "assistant":
-                    candidate = _assistant_text(message)
-                    if candidate:
-                        final_text = candidate
+    verdict, failure = _resolve_job_verdict(ref, csv_path=csv_path, workdir=workdir)
+    if failure:
+        _error(errors, "review_evidence_unverifiable", f"{ref}:{failure}")
+        return
+    assert verdict is not None
+    backend = verdict.get("backend")
+    if backend not in {"pi", "codex"}:
+        _error(errors, "review_backend_invalid", f"{ref}:{backend}")
     else:
-        verdict, failure = _resolve_exec_verdict(ref, csv_path=csv_path, workdir=workdir)
-        if failure:
-            _error(errors, "review_evidence_unverifiable", f"{ref}:{failure}")
-            return
-        assert verdict is not None
         runtime_model = verdict.get("observed_model")
-        if not isinstance(runtime_model, str) or not review_model.is_accepted_model_identity(runtime_model, "codex"):
+        if not isinstance(runtime_model, str) or not review_model.is_accepted_model_identity(runtime_model, backend):
             _error(errors, "review_runtime_model_invalid", f"{ref}:{runtime_model}")
-        output_text = verdict.get("review_output")
-        final_text = output_text if isinstance(output_text, str) else ""
+        # requested_model recorded in the verdict is the invocation identity the
+        # launcher actually passed; the index-level requested_model must match
+        # it exactly, otherwise someone could claim a different reviewer model
+        # than the one that actually ran. Host-precise matching is delegated to
+        # _accepted_for_mode with the verdict's backend.
+        job_requested = verdict.get("requested_model")
+        if not isinstance(job_requested, str) or not job_requested.strip():
+            _error(errors, "review_requested_model_invalid", f"{ref}:{job_requested}")
+        elif job_requested.strip() != expected_requested_model:
+            _error(errors, "review_requested_model_mismatch", f"{ref}:{job_requested}")
+        elif not _accepted_for_mode(job_requested, "result-analysis-reviewer-job", host=backend):
+            _error(errors, "review_requested_model_not_expected", f"{ref}:{job_requested}")
+    if verdict.get("exp_id") != exp_id:
+        _error(errors, "job_verdict_exp_id_mismatch", f"{ref}:{verdict.get('exp_id')}")
+    verdict_runs = verdict.get("run_ids")
+    if (
+        not isinstance(verdict_runs, list)
+        or any(not isinstance(item, str) or not item.strip() for item in verdict_runs)
+        or len(verdict_runs) != len(set(verdict_runs))
+        or set(verdict_runs) != expected_run_ids
+    ):
+        _error(errors, "job_verdict_run_ids_mismatch", f"{ref}:{verdict_runs!r}")
+    output_text = verdict.get("review_output")
+    final_text = output_text if isinstance(output_text, str) else ""
     if not final_text:
         _error(errors, "review_output_missing", ref)
         return
@@ -636,6 +511,7 @@ def validate_index(index_path: Path, csv_path: Path, *, workdir: Path) -> list[s
             expected_outcome=entry.get("scientific_outcome"),
             expected_limitations=entry.get("limitations"),
             expected_gaps=entry.get("validation_gaps"),
+            expected_requested_model=data.get("requested_model"),
         )
         evidence_refs = entry.get("evidence_refs")
         if not isinstance(evidence_refs, list) or not evidence_refs or any(not isinstance(ref, str) or not ref.strip() for ref in evidence_refs):
@@ -647,9 +523,7 @@ def validate_index(index_path: Path, csv_path: Path, *, workdir: Path) -> list[s
                     payload = ref[len(explicit_prefix):].strip()
                     if not payload or any(char in payload for char in "\0\n\r"):
                         _error(errors, "analysis_evidence_ref_invalid", f"{label}[{ref_index}]:{ref}")
-                    elif explicit_prefix == "session:" and not _SESSION_REF_RE.fullmatch(ref):
-                        _error(errors, "analysis_evidence_ref_invalid", f"{label}[{ref_index}]:{ref}")
-                    elif explicit_prefix == "exec:" and not _EXEC_REF_RE.fullmatch(ref):
+                    elif explicit_prefix == "job:" and not _JOB_REF_RE.fullmatch(ref):
                         _error(errors, "analysis_evidence_ref_invalid", f"{label}[{ref_index}]:{ref}")
                     continue
                 try:

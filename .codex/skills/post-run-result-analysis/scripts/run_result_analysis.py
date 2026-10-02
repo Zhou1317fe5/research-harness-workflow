@@ -1,20 +1,19 @@
 #!/usr/bin/env python3
-"""Run the codex-exec channel for post-run scientific result analysis.
+"""Run independent post-run scientific result analysis via reviewer_job.
 
-Pi harnesses dispatch the registered `scientific-reviewer` sub-agent and bind
-parent session metadata; that channel does not exist outside Pi. This runner
-drives the same independent analysis through a fresh, ephemeral, read-only
-`codex exec` session so Codex/CLI harnesses produce verifiable evidence of
-the same strength as the Pi parent-session channel:
+The single supported channel is ``result-analysis-reviewer-job``: a fresh,
+read-only Reviewer Job session whose model comes from the per-host entry in
+``.agents/harness/config/review_contract.toml``. Both Pi and Codex users go
+through the same code path by choosing ``--backend {pi,codex}``.
 
-- a fresh ephemeral session per invocation, sandboxed read-only;
+- a fresh session per invocation with the read-only tool whitelist enforced
+  by ``reviewer_job.py``;
 - the reviewer receives only the task prompt built from the mission CSV and
   the raw artifact locations, never the main conversation or its conclusions;
-- the observed model is taken from the trusted CLI JSON event stream
-  (`thread.started`/`session_meta` style events), never from reviewer text;
-- the verdict artifact binds task SHA-256, the raw event stream and the
-  normalized reviewer output SHA-256; the `post-run-result-analysis`
-  validator recomputes the output digest from disk.
+- the verdict artifact binds packet SHA-256, task SHA-256, raw response
+  SHA-256 and the normalized reviewer output SHA-256; the
+  ``post-run-result-analysis`` validator recomputes the output digest from
+  disk.
 
 Usage (run from the repository root):
 
@@ -28,9 +27,9 @@ python3 .agents/skills/post-run-result-analysis/scripts/run_result_analysis.py \
 
 The verdict lands at `issues/<stem>/reviews/result-analysis-<ExpID>/verdict.json`.
 Reference it from the analysis index as
-`exec:reviews/result-analysis-<ExpID>/verdict.json#verdict` (CSV-relative),
-with `analysis_agent_mode:codex-exec-independent` and
-`analysis_model_evidence:event-stream`. A failed invocation leaves no verdict;
+`job:reviews/result-analysis-<ExpID>/verdict.json#verdict` (CSV-relative),
+with `analysis_agent_mode:result-analysis-reviewer-job` and
+`analysis_model_evidence:job-verdict`. A failed invocation leaves no verdict;
 rerun the same command after the service recovers. Quota and launcher failures
 are review-service failures, not a completed analysis.
 """
@@ -40,52 +39,15 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
-import os
-import shutil
 import subprocess
 import sys
-import tempfile
 from pathlib import Path
 from typing import Any
 
 
 SCHEMA_VERSION = "post-run.result-analysis.v1"
+PACKET_SCHEMA = "post-run.result-analysis.v1"
 VERDICT_SCHEMA = "post-run.result-analysis-verdict.v1"
-
-
-def _load_review_model():
-    """Load the canonical review-model constants (searched upward for .agents)."""
-    import importlib.util
-
-    for ancestor in Path(__file__).resolve().parents:
-        module_path = ancestor / ".agents" / "harness" / "review_model.py"
-        if module_path.is_file():
-            spec = importlib.util.spec_from_file_location("review_model", module_path)
-            if spec is None or spec.loader is None:
-                raise RuntimeError(f"cannot load review_model: {module_path}")
-            module = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(module)
-            return module
-    raise RuntimeError("cannot locate .agents/harness/review_model.py")
-
-
-review_model = _load_review_model()
-
-# codex-exec channel: both the exec invocation name and the recorded
-# requested model are the codex host identity.
-EXEC_MODEL = review_model.model_for_host("codex")
-REQUESTED_MODEL = review_model.accepted_model_for_host("codex")
-# Bounded wait matches reviewer_job's attempt timeout so a stuck exec session
-# fails closed instead of blocking the analysis row indefinitely.
-EXEC_TIMEOUT_SECONDS = 1800
-_QUOTA_ERROR_MARKERS = (
-    "insufficient_quota", "quota exceeded", "rate_limit", "rate limit",
-    "429", "usage limit", "credits", "billing", "too many requests",
-)
-_REVIEW_OUTPUT_KEYS = {
-    "exp_id", "run_ids", "analysis_markdown", "scientific_outcome",
-    "limitations", "validation_gaps",
-}
 
 TASK_TEMPLATE = """You are the independent scientific reviewer for post-run experiment \
 result analysis. Work read-only: do not modify files, do not run training or \
@@ -126,6 +88,11 @@ def sha256_bytes(value: bytes) -> str:
     return hashlib.sha256(value).hexdigest()
 
 
+def canonical_json(value: Any) -> bytes:
+    """Match reviewer_job.canonical_json so packet hashes agree."""
+    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+
+
 def load_csv_targets(csv_path: Path) -> dict[str, set[str]]:
     import csv
 
@@ -141,119 +108,35 @@ def load_csv_targets(csv_path: Path) -> dict[str, set[str]]:
             run_id = (row.get("run_id") or "").strip()
             if exp_id and run_id:
                 targets.setdefault(exp_id, set()).add(run_id)
-    return targets
+        return targets
 
 
-def write_atomic(path: Path, content: str, mode: int = 0o600) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    descriptor, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+def _write_if_changed(path: Path, content: bytes) -> None:
     try:
-        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
-            handle.write(content)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.chmod(temporary, mode)
-        os.replace(temporary, path)
-    finally:
-        if os.path.exists(temporary):
-            os.unlink(temporary)
+        if path.read_bytes() == content:
+            return
+    except FileNotFoundError:
+        pass
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_bytes(content)
+    tmp.replace(path)
 
 
-def resolve_codex_executable(which=shutil.which) -> str | None:
-    """Resolve the platform launcher, including codex.CMD on Windows."""
-    return which("codex")
+def _reviewer_job_script(workdir: Path) -> Path:
+    candidate = workdir / ".agents" / "harness" / "reviewer_job.py"
+    if not candidate.is_file():
+        raise RuntimeError(f"reviewer_job_missing:{candidate}")
+    return candidate
 
 
-def build_exec_command(executable: str, workdir: str, model: str) -> list[str]:
-    return [
-        executable,
-        "exec",
-        "--ephemeral",
-        "--json",
-        "--skip-git-repo-check",
-        "-m",
-        model,
-        "-C",
-        workdir,
-        "--sandbox",
-        "read-only",
-        "-",
-    ]
-
-
-def _extract_model_from_containers(containers) -> str | None:
-    for container in containers:
-        if not isinstance(container, dict):
-            continue
-        for key in ("model", "model_id"):
-            value = container.get(key)
-            if isinstance(value, str) and value.strip():
-                return value.strip()
-    return None
-
-def trusted_event_model(event: dict[str, Any]) -> str | None:
-    event_type = event.get("type")
-    payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
-    payload_type = payload.get("type")
-    trusted_types = {
-        "thread.started",
-        "session_meta",
-        "session_metadata",
-        "turn.started",
-        "response.started",
-        # codex CLI (0.155.x) records the effective model in these events;
-        # confirmed from local session logs.
-        "thread_settings_applied",
-        "turn_context",
+def build_reviewer_packet(args: argparse.Namespace, workdir: Path) -> dict[str, Any]:
+    return {
+        "schema_version": PACKET_SCHEMA,
+        "exp_id": args.exp_id,
+        "run_ids": sorted(set(args.run_ids)),
+        "csv_path": str(args.csv.expanduser().resolve()),
+        "repo_root": str(workdir),
     }
-    if event_type not in trusted_types and payload_type not in trusted_types:
-        return None
-    containers = [event, payload]
-    settings = payload.get("thread_settings")
-    if isinstance(settings, dict):
-        containers.append(settings)
-    return _extract_model_from_containers(containers)
-
-
-def parse_json_events(stdout: str) -> tuple[str | None, str | None]:
-    final_message = None
-    observed_model = None
-    for line in stdout.splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            event = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        observed_model = trusted_event_model(event) or observed_model
-        item = event.get("item") if isinstance(event.get("item"), dict) else {}
-        payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
-        if item.get("type") == "agent_message":
-            final_message = item.get("text")
-        if item.get("type") == "message" and item.get("role") == "assistant":
-            parts = []
-            for content in item.get("content") or []:
-                if isinstance(content, dict):
-                    text = content.get("text") or content.get("output_text")
-                    if text:
-                        parts.append(text)
-            if parts:
-                final_message = "\n".join(parts)
-        if event.get("type") == "agent_message":
-            final_message = event.get("message") or event.get("text") or payload.get("message")
-        if event.get("type") == "event_msg" and payload.get("type") == "agent_message":
-            final_message = payload.get("message")
-        if event.get("type") == "response_item" and payload.get("type") == "message" and payload.get("role") == "assistant":
-            parts = []
-            for content in payload.get("content") or []:
-                if isinstance(content, dict):
-                    text = content.get("text") or content.get("output_text")
-                    if text:
-                        parts.append(text)
-            if parts:
-                final_message = "\n".join(parts)
-    return final_message, observed_model
 
 
 def run(args: argparse.Namespace) -> int:
@@ -275,7 +158,7 @@ def run(args: argparse.Namespace) -> int:
     job_dir = csv_path.parent / "reviews" / f"result-analysis-{args.exp_id}"
     job_dir.mkdir(parents=True, exist_ok=True)
     task_path = job_dir / "task.md"
-    events_path = job_dir / "events.jsonl"
+    packet_path = job_dir / "packet.json"
     verdict_path = job_dir / "verdict.json"
 
     targets_json = json.dumps(
@@ -287,7 +170,9 @@ def run(args: argparse.Namespace) -> int:
         exp_id=args.exp_id,
         run_ids=json.dumps(run_ids, ensure_ascii=False),
     )
+    packet = build_reviewer_packet(args, workdir)
     task_bytes = task_text.encode("utf-8")
+    packet_bytes = canonical_json(packet)
 
     if verdict_path.is_file():
         try:
@@ -300,83 +185,77 @@ def run(args: argparse.Namespace) -> int:
             and verdict.get("exp_id") == args.exp_id
             and verdict.get("run_ids") == run_ids
             and verdict.get("task_sha256") == sha256_bytes(task_bytes)
+            and verdict.get("packet_sha256") == sha256_bytes(packet_bytes)
         ):
             print(json.dumps({"status": "completed", "verdict": str(verdict_path)}, ensure_ascii=False))
             return 0
         raise ValueError("existing_verdict_belongs_to_different_inputs")
 
-    write_atomic(task_path, task_text)
+    _write_if_changed(task_path, task_bytes)
+    _write_if_changed(packet_path, packet_bytes + b"\n")
 
-    executable = resolve_codex_executable()
-    if not executable:
-        sys.stderr.write("codex executable not found; result-analysis review service unavailable\n")
-        return 127
-    cmd = build_exec_command(executable, str(workdir), EXEC_MODEL)
+    executable = _reviewer_job_script(workdir)
+    cmd = [
+        sys.executable,
+        str(executable),
+        "--backend",
+        args.backend,
+        "--packet",
+        str(packet_path),
+        "--task",
+        str(task_path),
+        "--job-dir",
+        str(job_dir),
+        "--review-kind",
+        "result-analysis",
+        "--cwd",
+        str(workdir),
+    ]
     try:
         proc = subprocess.run(
             cmd,
-            input=task_text,
             text=True,
             encoding="utf-8",
             capture_output=True,
             check=False,
-            timeout=EXEC_TIMEOUT_SECONDS,
+            timeout=args.attempt_timeout_seconds + 60,
         )
     except subprocess.TimeoutExpired:
         sys.stderr.write(
-            f"codex exec timed out after {EXEC_TIMEOUT_SECONDS}s; "
+            f"reviewer_job timed out; "
             "review_service_failure:timeout; rerun the same command after the review service recovers\n"
         )
         return 124
-    write_atomic(events_path, proc.stdout or "")
+
+    stderr = (proc.stderr or "").strip()
+    if stderr:
+        sys.stderr.write(stderr + "\n")
     if proc.returncode != 0:
-        sys.stderr.write(proc.stderr)
-        sys.stderr.write(proc.stdout)
-        joined = f"{proc.stderr or ''}\n{proc.stdout or ''}".lower()
-        kind = (
-            "quota_error"
-            if any(marker in joined for marker in _QUOTA_ERROR_MARKERS)
-            else "transport_error"
-        )
         sys.stderr.write(
-            f"codex exec failed (review_service_failure:{kind}); "
-            "rerun the same command after the review service recovers\n"
+            f"reviewer_job exited {proc.returncode}; "
+            "review_service_failure:exit; rerun the same command after the review service recovers\n"
         )
-        return proc.returncode or 2
+        return proc.returncode
 
-    final_message, observed_model = parse_json_events(proc.stdout)
-    if not final_message:
-        sys.stderr.write("codex exec produced no final agent message\n")
-        return 2
+    stdout = (proc.stdout or "").strip()
+    if not stdout:
+        sys.stderr.write("reviewer_job produced no final status\n")
+        return 3
     try:
-        payload = json.loads(final_message.strip())
+        status = json.loads(stdout.splitlines()[-1])
     except json.JSONDecodeError:
-        sys.stderr.write("final agent message was not valid JSON\n")
-        sys.stderr.write(final_message + "\n")
+        sys.stderr.write("reviewer_job final status was not valid JSON\n")
+        sys.stderr.write(stdout + "\n")
         return 3
-    if not isinstance(payload, dict) or set(payload) != _REVIEW_OUTPUT_KEYS:
-        sys.stderr.write("final agent message did not match the result-analysis schema\n")
+    if status.get("status") != "completed":
+        sys.stderr.write(f"reviewer_job did not complete: {status}\n")
         return 3
 
-    normalized_output = json.dumps(payload, ensure_ascii=False, sort_keys=True)
-    verdict = {
-        "schema_version": VERDICT_SCHEMA,
-        "status": "completed",
-        "backend": "codex-exec",
-        "exp_id": args.exp_id,
-        "run_ids": run_ids,
-        "requested_model": REQUESTED_MODEL,
-        "observed_model": observed_model or "unknown",
-        "task_path": str(task_path),
-        "task_sha256": sha256_bytes(task_bytes),
-        "events_path": str(events_path),
-        "events_sha256": sha256_bytes((proc.stdout or "").encode("utf-8")),
-        "review_output": normalized_output,
-        "review_output_sha256": sha256_bytes(normalized_output.encode("utf-8")),
-        "transport": "codex-exec-ephemeral",
-    }
-    write_atomic(verdict_path, json.dumps(verdict, ensure_ascii=False, indent=2, sort_keys=True) + "\n")
-    print(json.dumps({"status": "completed", "verdict": str(verdict_path)}, ensure_ascii=False))
+    verdict_rel = status.get("verdict")
+    if not isinstance(verdict_rel, str) or not verdict_rel.strip():
+        sys.stderr.write("reviewer_job missing verdict path\n")
+        return 3
+    print(json.dumps({"status": "completed", "verdict": verdict_rel}, ensure_ascii=False))
     return 0
 
 
@@ -385,6 +264,18 @@ def main() -> int:
     parser.add_argument("--csv", required=True, type=Path, help="Canonical mission CSV.")
     parser.add_argument("--exp-id", required=True, help="Experiment id to analyze.")
     parser.add_argument("--run-ids", required=True, nargs="+", help="Every ingested RunID of the experiment.")
+    parser.add_argument(
+        "--backend",
+        choices=("pi", "codex"),
+        default="pi",
+        help="Reviewer transport backend; Pi harnesses use 'pi', Codex harnesses use 'codex'.",
+    )
+    parser.add_argument(
+        "--attempt-timeout-seconds",
+        type=float,
+        default=1800,
+        help="Per-attempt reviewer timeout (matches reviewer_job default).",
+    )
     parser.add_argument("--workdir", default=".", type=Path, help="Repository root.")
     args = parser.parse_args()
     try:

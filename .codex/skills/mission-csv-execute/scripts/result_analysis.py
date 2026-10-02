@@ -9,10 +9,9 @@ from typing import Any
 
 
 ANALYSIS_ROW_ID = "RESULT-ANALYSIS-01"
-ANALYSIS_AGENT_MODE = "scientific-reviewer-subagent"
+ANALYSIS_AGENT_MODE = "result-analysis-reviewer-job"
 ANALYSIS_AGENT_MODES = {
-    "scientific-reviewer-subagent",
-    "codex-exec-independent",
+    "result-analysis-reviewer-job",
 }
 
 ANALYSIS_SKILL = "post-run-result-analysis"
@@ -78,12 +77,14 @@ def _metadata_errors(
         if index_key == "requested_model":
             mode_value = index.get("analysis_agent_mode")
             try:
-                expected_model = review_model.accepted_model_for_host(
-                    review_model.host_for_channel(str(mode_value))
-                )
+                host = review_model.host_for_channel(str(mode_value))
             except (ValueError, KeyError):
-                expected_model = review_model.RECORDED_MODEL
-            if index_value != expected_model:
+                host = None
+            # requested_model is the invocation identity recorded by reviewer_job;
+            # for reviewer-job channels it is checked against the job verdict by
+            # validate_result_analysis, so here we only require it normalizes to
+            # an approved model identity (any host).
+            if not review_model.is_accepted_model_identity(str(index_value), host=None):
                 errors.append(f"result_analysis_index_metadata_invalid:{index_key}")
         if not isinstance(index_value, str) or not index_value.strip():
             errors.append(f"result_analysis_index_metadata_missing:{index_key}")

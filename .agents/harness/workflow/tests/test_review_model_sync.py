@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
 """审查模型"单源"约束。
 
-`review_model.py` 是每个宿主审查模型的唯一事实源。宿主工具仍需在少数结构化位置
-实际使用该值：Pi 的 `scientific-reviewer` agent frontmatter 决定子代理用哪个模型，
-PRERUN launcher 与 closing review 的运行参数则决定 verdict 记录的 `requested_model`。
+`review_model.py` 是每个宿主审查模型的唯一事实源。审查执行统一通过
+`.agents/harness/reviewer_job.py`：PRERUN launcher 与 closing review 的运行参数决定
+verdict 里的 `requested_model`，由验证器对照 canonical 值。宿主不再有 `.pi/agents/…`
+frontmatter 需要同步——若某宿主重新引入 sub-agent 分发，请同步恢复一致性测试。
+
 本测试把两类漏改提前到提交前：
 
-1. 结构化位置必须与 canonical 值一致（frontmatter 精确相等，launcher 不再复述）；
-2. 说明性文档不得复述 canonical 值，而应指向 `review_model.py`。
+1. 宿主 launcher 标记块必须只给 backend，不复述模型值；
+2. 说明性文档与注释不得复述 canonical 值，而应指向 `review_model.py`。
 
 否则换模型时只能等门禁在运行时 fail-closed 拒收（`analysis_requested_model_invalid`
 / `gate_provenance.verdict_artifact_model_mismatch`）才发现。
@@ -20,7 +22,6 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[4]
 REVIEW_MODEL_PATH = ROOT / ".agents/harness/review_model.py"
-PI_REVIEWER_AGENT = ROOT / ".pi/agents/scientific-reviewer.md"
 LAUNCHER_START = "<!-- reviewer-launcher:start -->"
 LAUNCHER_END = "<!-- reviewer-launcher:end -->"
 PRERUN_LAUNCHERS = (
@@ -54,20 +55,6 @@ def _load_review_model():
     return module
 
 
-def _frontmatter(path: Path) -> dict[str, str]:
-    lines = path.read_text(encoding="utf-8").splitlines()
-    if not lines or lines[0].strip() != "---":
-        raise AssertionError(f"{path} 缺少 frontmatter")
-    fields: dict[str, str] = {}
-    for line in lines[1:]:
-        if line.strip() == "---":
-            return fields
-        key, separator, value = line.partition(":")
-        if separator:
-            fields[key.strip()] = value.strip()
-    raise AssertionError(f"{path} 的 frontmatter 未闭合")
-
-
 def _launcher_block(path: Path) -> str:
     text = path.read_text(encoding="utf-8")
     if text.count(LAUNCHER_START) != 1 or text.count(LAUNCHER_END) != 1:
@@ -93,11 +80,6 @@ def _without_launcher_blocks(text: str) -> str:
 class ReviewModelSyncTests(unittest.TestCase):
     def setUp(self):
         self.review_model = _load_review_model()
-
-    def test_pi_reviewer_agent_frontmatter_matches_canonical_value(self):
-        fields = _frontmatter(PI_REVIEWER_AGENT)
-        self.assertEqual(fields["model"], self.review_model.model_for_host("pi"))
-        self.assertEqual(fields["thinking"], self.review_model.REVIEW_THINKING)
 
     def test_each_prerun_launcher_leaves_the_model_to_review_model(self):
         for path in PRERUN_LAUNCHERS:

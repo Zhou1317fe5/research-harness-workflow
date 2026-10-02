@@ -1,5 +1,14 @@
 #!/usr/bin/env python3
-"""Run one persistent, resumable independent pre-run reviewer job."""
+"""Run one persistent, resumable independent reviewer job.
+
+Supports three review kinds:
+- ``prerun``: pre-run implementation review (existing packet schema).
+- ``result-analysis``: post-run scientific result analysis; output contract
+  is the post-run result-analysis payload (four-section markdown embedded in
+  JSON) and the verdict schema is ``post-run.result-analysis-verdict.v1``.
+- ``closing``: closing vision review; model is supplied by the invoking
+  session rather than the review contract (``--model-source invoker``).
+"""
 
 from __future__ import annotations
 
@@ -36,8 +45,16 @@ def _load_review_model():
 review_model = _load_review_model()
 
 
-VERDICT_SCHEMA = "prerun.scientific-verdict.v1"
+VERDICT_SCHEMA_PRERUN = "prerun.scientific-verdict.v1"
+VERDICT_SCHEMA_RESULT_ANALYSIS = "post-run.result-analysis-verdict.v1"
+VERDICT_SCHEMA_CLOSING = "closing.vision-verdict.v1"
+VERDICT_SCHEMA_BY_KIND = {
+    "prerun": VERDICT_SCHEMA_PRERUN,
+    "result-analysis": VERDICT_SCHEMA_RESULT_ANALYSIS,
+    "closing": VERDICT_SCHEMA_CLOSING,
+}
 JOB_SCHEMA = "prerun.reviewer-job.v1"
+
 RESULTS = {
     "scientific_review": {
         "scientifically_correct",
@@ -50,6 +67,23 @@ RESULTS = {
         "not_evaluable",
     },
 }
+
+RESULT_ANALYSIS_KEYS = {
+    "exp_id",
+    "run_ids",
+    "analysis_markdown",
+    "scientific_outcome",
+    "limitations",
+    "validation_gaps",
+}
+RESULT_ANALYSIS_OUTCOMES = {
+    "hypothesis_supported",
+    "hypothesis_not_supported",
+    "gate_failed",
+    "inconclusive",
+    "not_applicable",
+}
+CLOSING_RESULTS = {"pass", "issues_found", "not_evaluable"}
 
 
 def now() -> str:
@@ -88,44 +122,118 @@ def load_object(path: Path, label: str) -> dict[str, Any]:
     return value
 
 
-def validate_packet(packet_path: Path) -> tuple[dict[str, Any], str]:
+def validate_packet(packet_path: Path, review_kind: str) -> tuple[dict[str, Any], str]:
     packet = load_object(packet_path, "review packet")
-    if packet.get("schema_version") != "prerun.scientific-review.v1":
-        raise ValueError("review packet schema is not prerun.scientific-review.v1")
-    mode = packet.get("review_mode")
-    if mode not in RESULTS:
-        raise ValueError("review packet has an invalid review_mode")
-    commit = packet.get("pre_run_code_commit")
-    if not isinstance(commit, str) or len(commit) != 40:
-        raise ValueError("review packet has an invalid pre_run_code_commit")
-    repo = Path(str(packet.get("repo_root", ""))).expanduser().resolve()
-    if not repo.is_dir():
-        raise ValueError("review packet repo_root is not a directory")
-    scripts = Path(__file__).resolve().parents[1] / "skills/pre-run-implementation-review/scripts"
-    if str(scripts) not in sys.path:
-        sys.path.insert(0, str(scripts))
-    from prerun_ready import validate_packet as validate_ready_packet
-    readiness = validate_ready_packet(packet)
-    if not readiness.get("ready"):
-        raise ValueError("review packet is not ready: " + "; ".join(readiness.get("errors", [])))
-    return packet, sha256_bytes(canonical_json(packet))
+    if review_kind == "prerun":
+        if packet.get("schema_version") != "prerun.scientific-review.v1":
+            raise ValueError("review packet schema is not prerun.scientific-review.v1")
+        mode = packet.get("review_mode")
+        if mode not in RESULTS:
+            raise ValueError("review packet has an invalid review_mode")
+        commit = packet.get("pre_run_code_commit")
+        if not isinstance(commit, str) or len(commit) != 40:
+            raise ValueError("review packet has an invalid pre_run_code_commit")
+        repo = Path(str(packet.get("repo_root", ""))).expanduser().resolve()
+        if not repo.is_dir():
+            raise ValueError("review packet repo_root is not a directory")
+        scripts = Path(__file__).resolve().parents[1] / "skills/pre-run-implementation-review/scripts"
+        if str(scripts) not in sys.path:
+            sys.path.insert(0, str(scripts))
+        from prerun_ready import validate_packet as validate_ready_packet
+        readiness = validate_ready_packet(packet)
+        if not readiness.get("ready"):
+            raise ValueError("review packet is not ready: " + "; ".join(readiness.get("errors", [])))
+        return packet, sha256_bytes(canonical_json(packet))
+
+    if review_kind == "result-analysis":
+        if packet.get("schema_version") != "post-run.result-analysis.v1":
+            raise ValueError("review packet schema is not post-run.result-analysis.v1")
+        exp_id = packet.get("exp_id")
+        if not isinstance(exp_id, str) or not exp_id.strip():
+            raise ValueError("review packet has an invalid exp_id")
+        run_ids = packet.get("run_ids")
+        if (
+            not isinstance(run_ids, list)
+            or not run_ids
+            or any(not isinstance(item, str) or not item.strip() for item in run_ids)
+            or len(run_ids) != len(set(run_ids))
+        ):
+            raise ValueError("review packet has invalid run_ids")
+        repo = Path(str(packet.get("repo_root", ""))).expanduser().resolve()
+        if not repo.is_dir():
+            raise ValueError("review packet repo_root is not a directory")
+        return packet, sha256_bytes(canonical_json(packet))
+
+    if review_kind == "closing":
+        if packet.get("schema_version") != "closing.vision-review.v1":
+            raise ValueError("review packet schema is not closing.vision-review.v1")
+        repo = Path(str(packet.get("repo_root", ""))).expanduser().resolve()
+        if not repo.is_dir():
+            raise ValueError("review packet repo_root is not a directory")
+        return packet, sha256_bytes(canonical_json(packet))
+
+    raise ValueError(f"unknown review kind: {review_kind}")
 
 
-def output_schema(mode: str) -> dict[str, Any]:
-    return {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "object",
-        "additionalProperties": False,
-        "required": ["reviewer_id", "review_mode", "result", "decision", "report_markdown"],
-        "properties": {
-            "reviewer_id": {"type": "string", "minLength": 1},
-            # 严格 provider 要求每个属性带显式 type；enum/const 与 type 并存不改变取值范围。
-            "review_mode": {"type": "string", "const": mode},
-            "result": {"type": "string", "enum": sorted(RESULTS[mode])},
-            "decision": {"type": "string", "enum": ["allow_run", "do_not_run"]},
-            "report_markdown": {"type": "string", "minLength": 1},
-        },
-    }
+def output_schema(review_kind: str, mode: str | None = None) -> dict[str, Any]:
+    if review_kind == "prerun":
+        assert mode is not None
+        return {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["reviewer_id", "review_mode", "result", "decision", "report_markdown"],
+            "properties": {
+                "reviewer_id": {"type": "string", "minLength": 1},
+                # 严格 provider 要求每个属性带显式 type；enum/const 与 type 并存不改变取值范围。
+                "review_mode": {"type": "string", "const": mode},
+                "result": {"type": "string", "enum": sorted(RESULTS[mode])},
+                "decision": {"type": "string", "enum": ["allow_run", "do_not_run"]},
+                "report_markdown": {"type": "string", "minLength": 1},
+            },
+        }
+    if review_kind == "result-analysis":
+        return {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "type": "object",
+            "additionalProperties": False,
+            "required": sorted(RESULT_ANALYSIS_KEYS),
+            "properties": {
+                "exp_id": {"type": "string", "minLength": 1},
+                "run_ids": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1},
+                "analysis_markdown": {"type": "string", "minLength": 1},
+                "scientific_outcome": {"type": "string", "enum": sorted(RESULT_ANALYSIS_OUTCOMES)},
+                "limitations": {"type": "array", "items": {"type": "string", "minLength": 1}},
+                "validation_gaps": {"type": "array", "items": {"type": "string", "minLength": 1}},
+            },
+        }
+    if review_kind == "closing":
+        return {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["reviewer_id", "result", "report_markdown", "gaps"],
+            "properties": {
+                "reviewer_id": {"type": "string", "minLength": 1},
+                "result": {"type": "string", "enum": sorted(CLOSING_RESULTS)},
+                "report_markdown": {"type": "string", "minLength": 1},
+                "gaps": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "additionalProperties": False,
+                        "required": ["source_ref", "evidence_ref", "why_it_matters", "suggested_followup_issue"],
+                        "properties": {
+                            "source_ref": {"type": "string", "minLength": 1},
+                            "evidence_ref": {"type": "string", "minLength": 1},
+                            "why_it_matters": {"type": "string", "minLength": 1},
+                            "suggested_followup_issue": {"type": "string", "minLength": 1},
+                        },
+                    },
+                },
+            },
+        }
+    raise ValueError(f"unknown review kind: {review_kind}")
 
 
 def parse_json_object(text: str) -> dict[str, Any] | None:
@@ -149,21 +257,77 @@ def parse_json_object(text: str) -> dict[str, Any] | None:
     return found
 
 
-def validate_response(value: dict[str, Any] | None, mode: str) -> str | None:
-    if value is None:
-        return "reviewer did not return a JSON object"
-    result = value.get("result")
-    if value.get("review_mode") != mode or result not in RESULTS[mode]:
-        return "reviewer result does not match the requested review mode"
-    decision = value.get("decision")
-    expected = "allow_run" if result in {"scientifically_correct", "targeted_correct"} else "do_not_run"
-    if decision != expected:
-        return f"reviewer decision must be {expected} for result {result}"
+def _validate_result_analysis_payload(value: dict[str, Any], packet: dict[str, Any]) -> str | None:
+    if set(value) != RESULT_ANALYSIS_KEYS:
+        return "result-analysis payload keys do not match the contract"
+    if value.get("exp_id") != packet.get("exp_id"):
+        return "result-analysis exp_id does not match the packet"
+    run_ids = value.get("run_ids")
+    packet_runs = packet.get("run_ids") or []
+    if (
+        not isinstance(run_ids, list)
+        or any(not isinstance(item, str) or not item.strip() for item in run_ids)
+        or len(run_ids) != len(set(run_ids))
+        or set(run_ids) != set(packet_runs)
+    ):
+        return "result-analysis run_ids do not match the packet"
+    if not isinstance(value.get("analysis_markdown"), str) or not value["analysis_markdown"].strip():
+        return "analysis_markdown is missing"
+    if value.get("scientific_outcome") not in RESULT_ANALYSIS_OUTCOMES:
+        return "scientific_outcome is invalid"
+    for field in ("limitations", "validation_gaps"):
+        items = value.get(field)
+        if not isinstance(items, list) or any(not isinstance(item, str) or not item.strip() for item in items):
+            return f"{field} is invalid"
+    return None
+
+
+def _validate_closing_payload(value: dict[str, Any]) -> str | None:
+    if value.get("result") not in CLOSING_RESULTS:
+        return "closing result is invalid"
     if not isinstance(value.get("reviewer_id"), str) or not value["reviewer_id"].strip():
         return "reviewer_id is missing"
     if not isinstance(value.get("report_markdown"), str) or not value["report_markdown"].strip():
         return "report_markdown is missing"
+    gaps = value.get("gaps")
+    if not isinstance(gaps, list):
+        return "gaps is invalid"
+    for gap in gaps:
+        if not isinstance(gap, dict):
+            return "gap entry is not an object"
+        for key in ("source_ref", "evidence_ref", "why_it_matters", "suggested_followup_issue"):
+            if not isinstance(gap.get(key), str) or not gap[key].strip():
+                return f"gap entry missing {key}"
     return None
+
+
+def validate_response(
+    value: dict[str, Any] | None,
+    review_kind: str,
+    mode: str | None,
+    packet: dict[str, Any],
+) -> str | None:
+    if value is None:
+        return "reviewer did not return a JSON object"
+    if review_kind == "prerun":
+        assert mode is not None
+        result = value.get("result")
+        if value.get("review_mode") != mode or result not in RESULTS[mode]:
+            return "reviewer result does not match the requested review mode"
+        decision = value.get("decision")
+        expected = "allow_run" if result in {"scientifically_correct", "targeted_correct"} else "do_not_run"
+        if decision != expected:
+            return f"reviewer decision must be {expected} for result {result}"
+        if not isinstance(value.get("reviewer_id"), str) or not value["reviewer_id"].strip():
+            return "reviewer_id is missing"
+        if not isinstance(value.get("report_markdown"), str) or not value["report_markdown"].strip():
+            return "report_markdown is missing"
+        return None
+    if review_kind == "result-analysis":
+        return _validate_result_analysis_payload(value, packet)
+    if review_kind == "closing":
+        return _validate_closing_payload(value)
+    return f"unknown review kind: {review_kind}"
 
 
 def command_for(
@@ -440,15 +604,38 @@ def run_process(
         return process.wait(), "".join(lines), timed_out
 
 
-def reviewer_prompt(task: str, mode: str) -> str:
-    allowed = ", ".join(sorted(RESULTS[mode]))
-    return (
-        task.rstrip()
-        + "\n\nTransport output contract: return only one JSON object with keys "
-        "reviewer_id, review_mode, result, decision, report_markdown. "
-        f"review_mode must be {mode}; result must be one of {allowed}. "
-        "Use allow_run only for a correct result; every other result uses do_not_run.\n"
-    )
+def reviewer_prompt(task: str, review_kind: str, mode: str | None = None) -> str:
+    if review_kind == "prerun":
+        assert mode is not None
+        allowed = ", ".join(sorted(RESULTS[mode]))
+        return (
+            task.rstrip()
+            + "\n\nTransport output contract: return only one JSON object with keys "
+            "reviewer_id, review_mode, result, decision, report_markdown. "
+            f"review_mode must be {mode}; result must be one of {allowed}. "
+            "Use allow_run only for a correct result; every other result uses do_not_run.\n"
+        )
+    if review_kind == "result-analysis":
+        keys = ", ".join(sorted(RESULT_ANALYSIS_KEYS))
+        outcomes = ", ".join(sorted(RESULT_ANALYSIS_OUTCOMES))
+        return (
+            task.rstrip()
+            + "\n\nTransport output contract: return only one JSON object with keys "
+            f"{keys}. scientific_outcome must be one of {outcomes}. "
+            "analysis_markdown must contain the four sections Change, Result, Finding, Next, in order. "
+            "Do not wrap the JSON in code fences or prose.\n"
+        )
+    if review_kind == "closing":
+        allowed = ", ".join(sorted(CLOSING_RESULTS))
+        return (
+            task.rstrip()
+            + "\n\nTransport output contract: return only one JSON object with keys "
+            "reviewer_id, result, report_markdown, gaps. "
+            f"result must be one of {allowed}. "
+            "Each gap must have source_ref, evidence_ref, why_it_matters, suggested_followup_issue. "
+            "Do not wrap the JSON in code fences or prose.\n"
+        )
+    raise ValueError(f"unknown review kind: {review_kind}")
 
 
 def _reviewer_job_children_alive() -> bool:
@@ -480,7 +667,9 @@ def execute(args: argparse.Namespace) -> int:
     packet_path = args.packet.resolve()
     task_path = args.task.resolve()
     job_dir = args.job_dir.resolve()
-    packet, packet_sha = validate_packet(packet_path)
+    review_kind = getattr(args, "review_kind", None) or "prerun"
+    model_source = getattr(args, "model_source", None) or "contract"
+    packet, packet_sha = validate_packet(packet_path, review_kind)
     cwd = Path(packet["repo_root"]).resolve()
     if args.cwd and args.cwd.resolve() != cwd:
         raise ValueError("--cwd must equal packet.repo_root")
@@ -497,10 +686,17 @@ def execute(args: argparse.Namespace) -> int:
         raise ValueError(f"review task unreadable: {exc}") from exc
     task_text = task_bytes.decode("utf-8")
     task_sha = sha256_bytes(task_bytes)
-    mode = packet["review_mode"]
+    mode = packet.get("review_mode") if review_kind == "prerun" else None
+    candidate_commit = packet.get("pre_run_code_commit") if review_kind == "prerun" else None
     # The approved reviewer identity comes from review_model.py; a launcher may
     # omit --model and inherit it instead of restating the value.
-    model = args.model or review_model.review_job_model(args.backend)
+    if model_source == "invoker":
+        if not (args.model or "").strip():
+            raise ValueError("--model is required when --model-source=invoker")
+        model = args.model.strip()
+    else:
+        # model_source == contract: ignore any --model and use the contract value
+        model = review_model.review_job_model(args.backend)
     job_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
     lock_path = job_dir / "job.lock"
     with lock_path.open("a+") as lock:
@@ -511,10 +707,11 @@ def execute(args: argparse.Namespace) -> int:
 
         state_path = job_dir / "job.json"
         verdict_path = job_dir / "verdict.json"
+        verdict_schema = VERDICT_SCHEMA_BY_KIND[review_kind]
         if verdict_path.is_file():
             verdict = load_object(verdict_path, "verdict artifact")
             if (
-                verdict.get("schema_version") == VERDICT_SCHEMA
+                verdict.get("schema_version") == verdict_schema
                 and verdict.get("packet_sha256") == packet_sha
                 and verdict.get("task_sha256") == task_sha
             ):
@@ -540,11 +737,12 @@ def execute(args: argparse.Namespace) -> int:
             state = {
                 "schema_version": JOB_SCHEMA,
                 "backend": args.backend,
+                "review_kind": review_kind,
                 "packet_path": str(packet_path),
                 "packet_sha256": packet_sha,
                 "task_path": str(task_path),
                 "task_sha256": task_sha,
-                "candidate_commit": packet["pre_run_code_commit"],
+                "candidate_commit": candidate_commit,
                 "review_mode": mode,
                 "replacement": 0,
                 "resumes_used": 0,
@@ -555,8 +753,8 @@ def execute(args: argparse.Namespace) -> int:
             atomic_json(state_path, state)
 
         schema_path = job_dir / "response-schema.json"
-        atomic_json(schema_path, output_schema(mode))
-        initial_prompt = reviewer_prompt(task_text, mode)
+        atomic_json(schema_path, output_schema(review_kind, mode))
+        initial_prompt = reviewer_prompt(task_text, review_kind, mode)
         prompt_path = job_dir / "review-task.txt"
         prompt_path.write_text(initial_prompt, encoding="utf-8")
         os.chmod(prompt_path, 0o600)
@@ -610,34 +808,63 @@ def execute(args: argparse.Namespace) -> int:
                 os.chmod(raw_path, 0o600)
             response_text = raw_path.read_text(encoding="utf-8")
             response = parse_json_object(response_text)
-            last_error = validate_response(response, mode) or ""
+            last_error = validate_response(response, review_kind, mode, packet) or ""
             if not last_error and response is not None:
                 raw_sha = sha256_bytes(response_text.encode("utf-8"))
                 verdict = {
-                    "schema_version": VERDICT_SCHEMA,
+                    "schema_version": verdict_schema,
                     "status": "completed",
                     "backend": args.backend,
+                    "review_kind": review_kind,
                     "reviewer_session_id": state.get("session_id"),
-                    "reviewer_id": response["reviewer_id"].strip(),
                     "requested_model": model,
                     "observed_model": observed or "unknown",
                     "model_evidence": evidence_channel if observed else "unknown",
-                    "review_mode": mode,
-                    "result": response["result"],
-                    "decision": response["decision"],
-                    "candidate_commit": packet["pre_run_code_commit"],
+                    "model_source": model_source,
                     "packet_path": str(packet_path),
                     "packet_sha256": packet_sha,
                     "task_path": str(task_path),
                     "task_sha256": task_sha,
                     "raw_response_path": str(raw_path),
                     "raw_response_sha256": raw_sha,
-                    "report_markdown": response["report_markdown"],
                     "replacement_count": state["replacement"],
                     "resume_count": state["resumes_used"],
                     "transport_exit_code": returncode,
                     "completed_at": now(),
                 }
+                if review_kind == "prerun":
+                    assert mode is not None
+                    assert candidate_commit is not None
+                    verdict.update(
+                        {
+                            "reviewer_id": response["reviewer_id"].strip(),
+                            "review_mode": mode,
+                            "result": response["result"],
+                            "decision": response["decision"],
+                            "candidate_commit": candidate_commit,
+                            "report_markdown": response["report_markdown"],
+                        }
+                    )
+                elif review_kind == "result-analysis":
+                    verdict.update(
+                        {
+                            "exp_id": packet["exp_id"],
+                            "run_ids": list(packet["run_ids"]),
+                            "review_output": json.dumps(response, ensure_ascii=False, sort_keys=True),
+                            "review_output_sha256": sha256_bytes(
+                                json.dumps(response, ensure_ascii=False, sort_keys=True).encode("utf-8")
+                            ),
+                        }
+                    )
+                elif review_kind == "closing":
+                    verdict.update(
+                        {
+                            "reviewer_id": response["reviewer_id"].strip(),
+                            "result": response["result"],
+                            "report_markdown": response["report_markdown"],
+                            "gaps": response["gaps"],
+                        }
+                    )
                 atomic_json(verdict_path, verdict)
                 state.update(status="completed", verdict_path=str(verdict_path), updated_at=now())
                 atomic_json(state_path, state)
@@ -668,6 +895,17 @@ def main() -> int:
     parser.add_argument("--packet", type=Path, required=True)
     parser.add_argument("--task", type=Path, required=True)
     parser.add_argument("--job-dir", type=Path, required=True)
+    parser.add_argument(
+        "--review-kind",
+        choices=("prerun", "result-analysis", "closing"),
+        default="prerun",
+    )
+    parser.add_argument(
+        "--model-source",
+        choices=("contract", "invoker"),
+        default="contract",
+        help="contract: model comes from review_contract.toml; invoker: must pass --model",
+    )
     parser.add_argument("--cwd", type=Path)
     parser.add_argument("--model")
     parser.add_argument("--max-resumes", type=int, default=3)

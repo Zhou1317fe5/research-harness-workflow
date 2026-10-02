@@ -302,54 +302,94 @@ class MissionContractTests(unittest.TestCase):
                 self.assertTrue(self.validate_claim([{**claim, key: value}], rows))
         self.assertTrue(any("duplicate" in x for x in self.validate_claim([claim, claim], rows)))
 
-    def result_analysis_fixture(self, *, include_analysis=True, run_ids=None):
+    def _write_job_verdict(self, exp_id, run_ids, *, analysis_text, packet_sha=None,
+                           task_sha=None, raw_sha=None,
+                           requested=None, observed=None,
+                           model_evidence="job-verdict"):
+        """Write a reviewer_job verdict for the result-analysis fixture.
+
+        All digests are recomputed here from the written packet/task/raw/response
+        files so the validator's hash checks pass; tests can override specific
+        digests via kwargs to simulate tampering.
+        """
+        job_rel = f"reviews/result-analysis-{exp_id}"
+        job_dir = self.root / job_rel
+        job_dir.mkdir(parents=True, exist_ok=True)
+
+        # reviewer_job writes its payload with sort_keys=True and no indent; the
+        # validator reads back both sha and content, so we match that.
+        payload = {
+            "exp_id": exp_id,
+            "run_ids": list(run_ids),
+            "analysis_markdown": analysis_text,
+            "scientific_outcome": "inconclusive",
+            "limitations": [],
+            "validation_gaps": [],
+        }
+        review_output = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+        review_sha = hashlib.sha256(review_output.strip().encode("utf-8")).hexdigest()
+
+        packet_path = job_dir / "packet.json"
+        packet_text = json.dumps({"exp_id": exp_id, "run_ids": list(run_ids)}, indent=2, ensure_ascii=False)
+        packet_path.write_text(packet_text, encoding="utf-8")
+        packet_sha = packet_sha or hashlib.sha256(packet_text.encode("utf-8")).hexdigest()
+
+        task_path = job_dir / "task.md"
+        task_text = f"Analyze {exp_id} {sorted(run_ids)}\n"
+        task_path.write_text(task_text, encoding="utf-8")
+        task_sha = task_sha or hashlib.sha256(task_text.encode("utf-8")).hexdigest()
+
+        raw_path = job_dir / "raw-response.json"
+        raw_text = json.dumps({"raw": review_output}, indent=2, ensure_ascii=False)
+        raw_path.write_text(raw_text, encoding="utf-8")
+        raw_sha = raw_sha or hashlib.sha256(raw_text.encode("utf-8")).hexdigest()
+
+        requested = requested if requested is not None else f"{PI_MODEL}:max"
+        observed = observed if observed is not None else f"{PI_MODEL}:max"
+
+        verdict = {
+            "schema_version": "post-run.result-analysis-verdict.v1",
+            "status": "completed",
+            "review_mode": "implementation_review",
+            "review_kind": "result-analysis",
+            "job_id": job_rel,
+            "backend": "pi",
+            "reviewer_session_id": "fixture-session-id",
+            "requested_model": requested,
+            "observed_model": observed,
+            "model_evidence": model_evidence,
+            "model_source": "contract",
+            "packet_path": str(packet_path),
+            "packet_sha256": packet_sha,
+            "task_path": str(task_path),
+            "task_sha256": task_sha,
+            "raw_response_path": str(raw_path),
+            "raw_response_sha256": raw_sha,
+            "response_path": str(raw_path),
+            "response_sha256": raw_sha,
+            "replacement_count": 0,
+            "resume_count": 0,
+            "transport_exit_code": 0,
+            "completed_at": "2026-01-01T00:00:00Z",
+            "exp_id": exp_id,
+            "run_ids": list(run_ids),
+            "review_output": review_output,
+            "review_output_sha256": review_sha,
+        }
+        verdict_path = job_dir / "verdict.json"
+        verdict_path.write_text(json.dumps(verdict, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
+        return job_rel, review_sha
+
+    def result_analysis_fixture(self, *, include_analysis=True, run_ids=None, backend="pi"):
         analysis_path = self.root / "research_workspace/experiments/EXP-1/analysis/analysis.md"
         analysis_path.parent.mkdir(parents=True, exist_ok=True)
         analysis_text = "## Change\ncode\n\n## Result\nmetric\n\n## Finding\nuncertain\n\n## Next\nrepeat\n"
         analysis_path.write_text(analysis_text, encoding="utf-8")
         run_ids = list(run_ids or ["RUN-1"])
-        review_payload = {
-            "exp_id": "EXP-1", "run_ids": run_ids,
-            "analysis_markdown": analysis_text,
-            "scientific_outcome": "inconclusive", "limitations": [], "validation_gaps": [],
-        }
-        review_output = json.dumps(review_payload, ensure_ascii=False, sort_keys=True)
-        session_id = "00000000-0000-0000-0000-000000000001"
-        tool_id = "call-test"
-        session_path = self.root / ".pi/agent/sessions" / f"fixture_{session_id}.jsonl"
-        session_path.parent.mkdir(parents=True, exist_ok=True)
-        call_record = {
-            "type": "message",
-            "message": {
-                "role": "assistant",
-                "content": [{
-                    "type": "toolCall", "name": "subagent", "id": tool_id,
-                    "arguments": json.dumps({
-                        "agent": "scientific-reviewer", "agentScope": "project",
-                        "cwd": str(self.root),
-                        "task": "Analyze EXP-1 RUN-1 from raw evidence. result_analysis_targets: "
-                                + json.dumps({"exp_id": "EXP-1", "run_ids": run_ids}),
-                    }),
-                }],
-            },
-        }
-        result_record = {
-            "type": "message",
-            "message": {
-                "role": "toolResult", "toolName": "subagent", "toolCallId": tool_id,
-                "details": {"results": [{
-                    "agent": "scientific-reviewer", "model": f"{PI_MODEL}:max",
-                    "exitCode": 0, "messages": [{
-                        "role": "assistant", "content": [{"type": "text", "text": review_output}],
-                    }],
-                }]},
-            },
-        }
-        session_path.write_text(
-            json.dumps(call_record) + "\n" + json.dumps(result_record) + "\n", encoding="utf-8"
-        )
-        evidence_ref = f"session:{session_id}#tool:{tool_id}"
-        output_digest = hashlib.sha256(review_output.strip().encode("utf-8")).hexdigest()
+
+        job_rel, review_sha = self._write_job_verdict("EXP-1", run_ids, analysis_text=analysis_text)
+        evidence_ref = f"job:{job_rel}/verdict.json#verdict"
+
         ordinary_rows = [
             self.row(
                 id=run_id, phase="remote", exp_id="EXP-1", run_id=run_id,
@@ -369,11 +409,11 @@ class MissionContractTests(unittest.TestCase):
                 notes=(
                     "analysis_kind:post_run; "
                     "result_analysis:reviews/result-analysis.json; "
-                    "analysis_agent_mode:scientific-reviewer-subagent; "
+                    "analysis_agent_mode:result-analysis-reviewer-job; "
                     "analysis_independence:true; "
-                    f"analysis_requested_model:{PI_MODEL}; "
-                    f"analysis_observed_model:{PI_MODEL}; "
-                    "analysis_model_evidence:session-metadata; "
+                    f"analysis_requested_model:{PI_MODEL}:max; "
+                    f"analysis_observed_model:{PI_MODEL}:max; "
+                    "analysis_model_evidence:job-verdict; "
                     f"analysis_model_evidence_ref:{evidence_ref}"
                 ),
             )
@@ -384,17 +424,17 @@ class MissionContractTests(unittest.TestCase):
         index = {
             "schema_version": "post-run.result-analysis.v1",
             "status": "complete",
-            "analysis_agent_mode": "scientific-reviewer-subagent",
+            "analysis_agent_mode": "result-analysis-reviewer-job",
             "analysis_independence": True,
-            "requested_model": PI_MODEL,
-            "observed_model": PI_MODEL,
-            "model_evidence": "session-metadata",
+            "requested_model": f"{PI_MODEL}:max",
+            "observed_model": f"{PI_MODEL}:max",
+            "model_evidence": "job-verdict",
             "model_evidence_ref": evidence_ref,
             "entries": [{
                 "exp_id": "EXP-1", "run_id": run_id,
                 "analysis_path": "research_workspace/experiments/EXP-1/analysis/analysis.md",
                 "analysis_sha256": digest, "scientific_outcome": "inconclusive",
-                "review_evidence_ref": evidence_ref, "review_output_sha256": output_digest,
+                "review_evidence_ref": evidence_ref, "review_output_sha256": review_sha,
                 "evidence_refs": [f"command:fixture-{run_id}"], "limitations": [], "validation_gaps": [],
             } for run_id in run_ids],
         }
@@ -402,6 +442,91 @@ class MissionContractTests(unittest.TestCase):
         index_path.parent.mkdir(parents=True, exist_ok=True)
         index_path.write_text(json.dumps(index), encoding="utf-8")
         return rows, index_path
+
+    def result_analysis_exec_fixture(self, run_ids=("RUN-1",)):
+        """Codex-side reviewer_job fixture. Identical structure to Pi; only the
+        backend / requested_model strings change (Codex uses the bare model name
+        without a thinking suffix)."""
+        rows, _ = self.result_analysis_fixture(run_ids=list(run_ids))
+        analysis_path = self.root / "research_workspace/experiments/EXP-1/analysis/analysis.md"
+        analysis_text = analysis_path.read_text(encoding="utf-8")
+        job_rel = f"reviews/result-analysis-EXP-1"
+        job_dir = self.root / job_rel
+        # Rewrite verdict as a codex-backend one.
+        payload = {
+            "exp_id": "EXP-1", "run_ids": list(run_ids),
+            "analysis_markdown": analysis_text,
+            "scientific_outcome": "inconclusive", "limitations": [], "validation_gaps": [],
+        }
+        review_output = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+        review_sha = hashlib.sha256(review_output.strip().encode("utf-8")).hexdigest()
+        packet_path = job_dir / "packet.json"
+        task_path = job_dir / "task.md"
+        raw_path = job_dir / "raw-response.json"
+        verdict = {
+            "schema_version": "post-run.result-analysis-verdict.v1",
+            "status": "completed",
+            "review_mode": "implementation_review",
+            "review_kind": "result-analysis",
+            "job_id": job_rel,
+            "backend": "codex",
+            "reviewer_session_id": "fixture-session-id",
+            "requested_model": CODEX_MODEL,
+            "observed_model": f"{CODEX_MODEL}:high",
+            "model_evidence": "job-verdict",
+            "model_source": "contract",
+            "packet_path": str(packet_path),
+            "packet_sha256": hashlib.sha256(packet_path.read_bytes()).hexdigest(),
+            "task_path": str(task_path),
+            "task_sha256": hashlib.sha256(task_path.read_bytes()).hexdigest(),
+            "raw_response_path": str(raw_path),
+            "raw_response_sha256": hashlib.sha256(raw_path.read_bytes()).hexdigest(),
+            "response_path": str(raw_path),
+            "response_sha256": hashlib.sha256(raw_path.read_bytes()).hexdigest(),
+            "replacement_count": 0,
+            "resume_count": 0,
+            "transport_exit_code": 0,
+            "completed_at": "2026-01-01T00:00:00Z",
+            "exp_id": "EXP-1",
+            "run_ids": list(run_ids),
+            "review_output": review_output,
+            "review_output_sha256": review_sha,
+        }
+        verdict_path = job_dir / "verdict.json"
+        verdict_path.write_text(json.dumps(verdict, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
+        evidence_ref = f"job:{job_rel}/verdict.json#verdict"
+        index = {
+            "schema_version": "post-run.result-analysis.v1",
+            "status": "complete",
+            "analysis_agent_mode": "result-analysis-reviewer-job",
+            "analysis_independence": True,
+            "requested_model": CODEX_MODEL,
+            "observed_model": f"{CODEX_MODEL}:high",
+            "model_evidence": "job-verdict",
+            "model_evidence_ref": evidence_ref,
+            "entries": [{
+                "exp_id": "EXP-1", "run_id": run_id,
+                "analysis_path": "research_workspace/experiments/EXP-1/analysis/analysis.md",
+                "analysis_sha256": hashlib.sha256(analysis_path.read_bytes()).hexdigest(),
+                "scientific_outcome": "inconclusive",
+                "review_evidence_ref": evidence_ref,
+                "review_output_sha256": review_sha,
+                "evidence_refs": [f"command:fixture-{run_id}"], "limitations": [], "validation_gaps": [],
+            } for run_id in run_ids],
+        }
+        index_path = self.root / "reviews/result-analysis.json"
+        index_path.write_text(json.dumps(index), encoding="utf-8")
+        analysis_row = next(r for r in rows if r.get("id") == "RESULT-ANALYSIS-01")
+        analysis_row["notes"] = (
+            "analysis_kind:post_run; result_analysis:reviews/result-analysis.json; "
+            "analysis_agent_mode:result-analysis-reviewer-job; analysis_independence:true; "
+            f"analysis_requested_model:{CODEX_MODEL}; "
+            f"analysis_observed_model:{CODEX_MODEL}:high; "
+            "analysis_model_evidence:job-verdict; "
+            f"analysis_model_evidence_ref:{evidence_ref}"
+        )
+        self.write_csv(rows)
+        return rows, index_path, verdict_path
 
     def test_result_analysis_validator_cli_writes_record_and_ledger(self):
         rows, index_path = self.result_analysis_fixture()
@@ -455,9 +580,9 @@ class MissionContractTests(unittest.TestCase):
         self.assertEqual(json.loads(record_path.read_text())["outcome"], "pending")
         analysis_path.write_text(analysis_before)
         self.assertEqual(run_validator().returncode, 0)
-        session_path = self.root / ".pi/agent/sessions/fixture_00000000-0000-0000-0000-000000000001.jsonl"
-        session_before = session_path.read_bytes()
-        session_path.unlink()
+        verdict_path = self.root / "reviews/result-analysis-EXP-1/verdict.json"
+        verdict_before = verdict_path.read_bytes()
+        verdict_path.unlink()
         generated = json.loads(record_path.read_text())
         generated["outcome"] = "pending"
         generated["_pending"] = ["outcome"]
@@ -466,7 +591,7 @@ class MissionContractTests(unittest.TestCase):
             self.assertEqual(records.cmd_build(argparse.Namespace(
                 exp="EXP-1", force=False, config=self.root / "missing.toml"), repo_root=self.root), 0)
         self.assertEqual(json.loads(record_path.read_text())["outcome"], "pending")
-        session_path.write_bytes(session_before)
+        verdict_path.write_bytes(verdict_before)
         self.assertEqual(run_validator().returncode, 0)
         generated = json.loads(record_path.read_text())
         generated["outcome"] = "pending"
@@ -592,16 +717,13 @@ class MissionContractTests(unittest.TestCase):
 
     def test_reviewer_output_verdict_cannot_be_replaced(self):
         rows, index_path = self.result_analysis_fixture()
-        session_path = next((self.root / ".pi/agent/sessions").glob("*.jsonl"))
-        records = [json.loads(line) for line in session_path.read_text(encoding="utf-8").splitlines()]
-        result = records[1]["message"]["details"]["results"][0]
-        payload = json.loads(result["messages"][0]["content"][0]["text"])
+        verdict_path = self.root / "reviews/result-analysis-EXP-1/verdict.json"
+        verdict = json.loads(verdict_path.read_text(encoding="utf-8"))
+        payload = json.loads(verdict["review_output"])
         payload["scientific_outcome"] = "hypothesis_supported"
         replacement = json.dumps(payload, ensure_ascii=False, sort_keys=True)
-        result["messages"][0]["content"][0]["text"] = replacement
-        session_path.write_text(
-            "\n".join(json.dumps(record) for record in records) + "\n", encoding="utf-8"
-        )
+        verdict["review_output"] = replacement
+        verdict_path.write_text(json.dumps(verdict, ensure_ascii=False, indent=2), encoding="utf-8")
         data = json.loads(index_path.read_text(encoding="utf-8"))
         data["entries"][0]["review_output_sha256"] = hashlib.sha256(
             replacement.encode("utf-8")
@@ -624,19 +746,14 @@ class MissionContractTests(unittest.TestCase):
         for field, (value, error_code) in cases.items():
             with self.subTest(field=field):
                 rows, index_path = self.result_analysis_fixture()
-                session_path = next((self.root / ".pi/agent/sessions").glob("*.jsonl"))
-                records = [
-                    json.loads(line)
-                    for line in session_path.read_text(encoding="utf-8").splitlines()
-                ]
-                result = records[1]["message"]["details"]["results"][0]
-                payload = json.loads(result["messages"][0]["content"][0]["text"])
+                verdict_path = self.root / "reviews/result-analysis-EXP-1/verdict.json"
+                verdict = json.loads(verdict_path.read_text(encoding="utf-8"))
+                payload = json.loads(verdict["review_output"])
                 payload[field] = value
                 replacement = json.dumps(payload, ensure_ascii=False, sort_keys=True)
-                result["messages"][0]["content"][0]["text"] = replacement
-                session_path.write_text(
-                    "\n".join(json.dumps(record) for record in records) + "\n",
-                    encoding="utf-8",
+                verdict["review_output"] = replacement
+                verdict_path.write_text(
+                    json.dumps(verdict, ensure_ascii=False, indent=2), encoding="utf-8"
                 )
                 data = json.loads(index_path.read_text(encoding="utf-8"))
                 data["entries"][0]["review_output_sha256"] = hashlib.sha256(
@@ -648,14 +765,13 @@ class MissionContractTests(unittest.TestCase):
 
     def test_reviewer_output_rejects_duplicate_json_keys(self):
         rows, index_path = self.result_analysis_fixture()
-        session_path = next((self.root / ".pi/agent/sessions").glob("*.jsonl"))
-        records = [json.loads(line) for line in session_path.read_text(encoding="utf-8").splitlines()]
-        result = records[1]["message"]["details"]["results"][0]
-        original = result["messages"][0]["content"][0]["text"]
+        verdict_path = self.root / "reviews/result-analysis-EXP-1/verdict.json"
+        verdict = json.loads(verdict_path.read_text(encoding="utf-8"))
+        original = verdict["review_output"]
         duplicate = original.replace('"exp_id": "EXP-1",', '"exp_id": "EXP-1", "exp_id": "EXP-1",', 1)
-        result["messages"][0]["content"][0]["text"] = duplicate
-        session_path.write_text(
-            "\n".join(json.dumps(record) for record in records) + "\n", encoding="utf-8"
+        verdict["review_output"] = duplicate
+        verdict_path.write_text(
+            json.dumps(verdict, ensure_ascii=False, indent=2), encoding="utf-8"
         )
         data = json.loads(index_path.read_text(encoding="utf-8"))
         data["entries"][0]["review_output_sha256"] = hashlib.sha256(
@@ -714,83 +830,99 @@ class MissionContractTests(unittest.TestCase):
         self.assertTrue(any("order_invalid" in error for error in errors))
 
     def test_reviewer_session_attestation_is_fail_closed(self):
-        self.result_analysis_fixture()
-        session_path = next((self.root / ".pi/agent/sessions").glob("*.jsonl"))
-        mutations = {
-            "model": lambda result: result.update(model="openai-codex/gpt-5.6-luna:max"),
-            "agent": lambda result: result.update(agent="worker"),
-            "exit": lambda result: result.update(exitCode=1),
-        }
-        for name, mutate in mutations.items():
-            with self.subTest(name=name):
-                records = [json.loads(line) for line in session_path.read_text(encoding="utf-8").splitlines()]
-                result = records[1]["message"]["details"]["results"][0]
-                mutate(result)
-                session_path.write_text(
-                    "\n".join(json.dumps(record) for record in records) + "\n", encoding="utf-8"
-                )
-                errors = result_analysis_completion_errors(self.path, [
-                    self.row(id="RUN-1", phase="remote", exp_id="EXP-1", run_id="RUN-1",
-                             remote_state="ingested", artifact_path="remote_artifacts/EXP-1/RUN-1"),
-                    self.row(id="RESULT-ANALYSIS-01", phase="analysis",
-                             required_skills="post-run-result-analysis",
-                             notes=("analysis_kind:post_run; result_analysis:reviews/result-analysis.json; "
-                                    "analysis_agent_mode:scientific-reviewer-subagent; "
-                                    f"analysis_independence:true; analysis_requested_model:{PI_MODEL}; "
-                                    f"analysis_observed_model:{PI_MODEL}; "
-                                    "analysis_model_evidence:session-metadata; "
-                                    "analysis_model_evidence_ref:session:00000000-0000-0000-0000-000000000001#tool:call-test")),
-                    self.row(id="REVIEW-01", phase="review", notes="result_analysis:reviews/result-analysis.json"),
-                ], workdir=self.root)
-                self.assertTrue(any("review_" in error or "evidence_unverifiable" in error for error in errors))
+        rows, index_path = self.result_analysis_fixture()
+        verdict_path = self.root / "reviews/result-analysis-EXP-1/verdict.json"
+        mutations = (
+            ("backend", "unknown-host", "review_backend_invalid"),
+            ("observed_model", "unknown-model-x", "review_runtime_model_invalid"),
+            ("packet_sha256", "0" * 64, "review_evidence_unverifiable"),
+        )
+        for field, value, expected_error in mutations:
+            with self.subTest(field=field):
                 self.result_analysis_fixture()
+                verdict = json.loads(verdict_path.read_text(encoding="utf-8"))
+                verdict[field] = value
+                verdict_path.write_text(
+                    json.dumps(verdict, ensure_ascii=False, indent=2), encoding="utf-8"
+                )
+                errors = result_analysis_completion_errors(self.path, rows, workdir=self.root)
+                self.assertTrue(
+                    any(expected_error in error for error in errors),
+                    f"{field}: expected {expected_error} in {errors!r}",
+                )
 
-        rows, _ = self.result_analysis_fixture()
-        records = [json.loads(line) for line in session_path.read_text(encoding="utf-8").splitlines()]
-        records.pop(0)
-        session_path.write_text(
-            "\n".join(json.dumps(record) for record in records) + "\n", encoding="utf-8"
+        # verifiable hash chain — after each fixture load, packet/task/raw digests verifier recomputes will diverge
+        # only if actual files were tampered; the validator closed-loop should reject.
+        rows, index_path = self.result_analysis_fixture()
+        data = json.loads(index_path.read_text(encoding="utf-8"))
+        verdict = json.loads((self.root / "reviews/result-analysis-EXP-1/verdict.json").read_text(encoding="utf-8"))
+        verdict["packet_sha256"] = "0" * 64  # diverges from actual packet file
+        (self.root / "reviews/result-analysis-EXP-1/verdict.json").write_text(
+            json.dumps(verdict, ensure_ascii=False, indent=2), encoding="utf-8"
         )
         errors = result_analysis_completion_errors(self.path, rows, workdir=self.root)
-        self.assertTrue(any("tool_call_result_pair" in error for error in errors))
+        self.assertTrue(any("review_evidence_unverifiable" in error for error in errors), errors)
 
 
     def result_analysis_exec_fixture(self, run_ids=("RUN-1",)):
+        """Codex-side reviewer_job fixture. Identical structure to Pi; only the
+        backend / requested_model strings change (Codex uses the bare model name
+        without a thinking suffix)."""
         rows, _ = self.result_analysis_fixture(run_ids=list(run_ids))
-        job_dir = self.root / "reviews/result-analysis-EXP-1"
-        job_dir.mkdir(parents=True, exist_ok=True)
         analysis_path = self.root / "research_workspace/experiments/EXP-1/analysis/analysis.md"
         analysis_text = analysis_path.read_text(encoding="utf-8")
+        job_rel = "reviews/result-analysis-EXP-1"
+        job_dir = self.root / job_rel
         payload = {
             "exp_id": "EXP-1", "run_ids": list(run_ids),
             "analysis_markdown": analysis_text,
             "scientific_outcome": "inconclusive", "limitations": [], "validation_gaps": [],
         }
         review_output = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+        review_sha = hashlib.sha256(review_output.strip().encode("utf-8")).hexdigest()
+        packet_path = job_dir / "packet.json"
+        task_path = job_dir / "task.md"
+        raw_path = job_dir / "raw-response.json"
         verdict = {
             "schema_version": "post-run.result-analysis-verdict.v1",
             "status": "completed",
-            "backend": "codex-exec",
-            "exp_id": "EXP-1",
-            "run_ids": list(run_ids),
+            "review_mode": "implementation_review",
+            "review_kind": "result-analysis",
+            "job_id": job_rel,
+            "backend": "codex",
+            "reviewer_session_id": "fixture-session-id",
             "requested_model": CODEX_MODEL,
             "observed_model": f"{CODEX_MODEL}:high",
-            "task_sha256": hashlib.sha256(b"task").hexdigest(),
-            "events_sha256": hashlib.sha256(b"events").hexdigest(),
+            "model_evidence": "job-verdict",
+            "model_source": "contract",
+            "packet_path": str(packet_path),
+            "packet_sha256": hashlib.sha256(packet_path.read_bytes()).hexdigest(),
+            "task_path": str(task_path),
+            "task_sha256": hashlib.sha256(task_path.read_bytes()).hexdigest(),
+            "raw_response_path": str(raw_path),
+            "raw_response_sha256": hashlib.sha256(raw_path.read_bytes()).hexdigest(),
+            "response_path": str(raw_path),
+            "response_sha256": hashlib.sha256(raw_path.read_bytes()).hexdigest(),
+            "replacement_count": 0,
+            "resume_count": 0,
+            "transport_exit_code": 0,
+            "completed_at": "2026-01-01T00:00:00Z",
+            "exp_id": "EXP-1",
+            "run_ids": list(run_ids),
             "review_output": review_output,
-            "review_output_sha256": hashlib.sha256(review_output.encode("utf-8")).hexdigest(),
+            "review_output_sha256": review_sha,
         }
         verdict_path = job_dir / "verdict.json"
-        verdict_path.write_text(json.dumps(verdict), encoding="utf-8")
-        evidence_ref = "exec:reviews/result-analysis-EXP-1/verdict.json#verdict"
+        verdict_path.write_text(json.dumps(verdict, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
+        evidence_ref = f"job:{job_rel}/verdict.json#verdict"
         index = {
             "schema_version": "post-run.result-analysis.v1",
             "status": "complete",
-            "analysis_agent_mode": "codex-exec-independent",
+            "analysis_agent_mode": "result-analysis-reviewer-job",
             "analysis_independence": True,
             "requested_model": CODEX_MODEL,
-            "observed_model": CODEX_MODEL,
-            "model_evidence": "event-stream",
+            "observed_model": f"{CODEX_MODEL}:high",
+            "model_evidence": "job-verdict",
             "model_evidence_ref": evidence_ref,
             "entries": [{
                 "exp_id": "EXP-1", "run_id": run_id,
@@ -798,18 +930,19 @@ class MissionContractTests(unittest.TestCase):
                 "analysis_sha256": hashlib.sha256(analysis_path.read_bytes()).hexdigest(),
                 "scientific_outcome": "inconclusive",
                 "review_evidence_ref": evidence_ref,
-                "review_output_sha256": hashlib.sha256(review_output.strip().encode("utf-8")).hexdigest(),
+                "review_output_sha256": review_sha,
                 "evidence_refs": [f"command:fixture-{run_id}"], "limitations": [], "validation_gaps": [],
             } for run_id in run_ids],
         }
         index_path = self.root / "reviews/result-analysis.json"
         index_path.write_text(json.dumps(index), encoding="utf-8")
-        rows[1]["notes"] = (
+        analysis_row = next(r for r in rows if r.get("id") == "RESULT-ANALYSIS-01")
+        analysis_row["notes"] = (
             "analysis_kind:post_run; result_analysis:reviews/result-analysis.json; "
-            "analysis_agent_mode:codex-exec-independent; analysis_independence:true; "
+            "analysis_agent_mode:result-analysis-reviewer-job; analysis_independence:true; "
             f"analysis_requested_model:{CODEX_MODEL}; "
-            f"analysis_observed_model:{CODEX_MODEL}; "
-            "analysis_model_evidence:event-stream; "
+            f"analysis_observed_model:{CODEX_MODEL}:high; "
+            "analysis_model_evidence:job-verdict; "
             f"analysis_model_evidence_ref:{evidence_ref}"
         )
         self.write_csv(rows)
@@ -846,12 +979,16 @@ class MissionContractTests(unittest.TestCase):
             verdict_path.with_suffix(".json.moved").rename(verdict_path)
 
     def test_result_analysis_rejects_cross_channel_evidence_mismatch(self):
+        # The reviewer_job channel accepts any model_evidence label recorded by the
+        # index writer; the actual reviewer output is verified from the verdict +
+        # packet/task files. Stale labels from legacy channels must be rejected so
+        # the recorded channel cannot be silently rewritten.
         rows, index_path, _ = self.result_analysis_exec_fixture()
         data = json.loads(index_path.read_text(encoding="utf-8"))
         data["model_evidence"] = "session-metadata"
         index_path.write_text(json.dumps(data), encoding="utf-8")
         errors = result_analysis_completion_errors(self.path, rows, workdir=self.root)
-        self.assertTrue(any("analysis_model_evidence_unverifiable" in error for error in errors))
+        self.assertTrue(any("analysis_model_evidence_invalid" in error for error in errors))
 
         rows, index_path = self.result_analysis_fixture()
         data = json.loads(index_path.read_text(encoding="utf-8"))
@@ -859,7 +996,8 @@ class MissionContractTests(unittest.TestCase):
         data["model_evidence_ref"] = "event:whatever"
         index_path.write_text(json.dumps(data), encoding="utf-8")
         errors = result_analysis_completion_errors(self.path, rows, workdir=self.root)
-        self.assertTrue(any("analysis_model_evidence_unverifiable" in error for error in errors))
+        # base _JOB_REF_RE only accepts job: prefixed refs; legacy channels are rejected by format.
+        self.assertTrue(any("model_evidence" in error or "evidence_ref_invalid" in error for error in errors))
 
     def test_result_analysis_exec_ref_resolves_outside_csv_dir(self):
         rows, index_path, verdict_path = self.result_analysis_exec_fixture()
@@ -870,7 +1008,14 @@ class MissionContractTests(unittest.TestCase):
         data["model_evidence_ref"] = escape_ref
         index_path.write_text(json.dumps(data), encoding="utf-8")
         errors = result_analysis_completion_errors(self.path, rows, workdir=self.root)
-        self.assertTrue(any("review_evidence_unverifiable" in error for error in errors))
+        # escape_refs no longer satisfy the reviewer_job ref format
+        self.assertTrue(
+            any(
+                "review_evidence_ref_invalid" in error or "analysis_model_evidence_ref_invalid" in error
+                for error in errors
+            ),
+            errors,
+        )
 
     def test_result_analysis_binds_paths_to_exp_and_run(self):
         rows, index_path = self.result_analysis_fixture()
