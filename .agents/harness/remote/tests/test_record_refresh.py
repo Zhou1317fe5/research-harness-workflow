@@ -13,8 +13,8 @@ from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[4]
 sys.path.insert(0, str(ROOT / ".agents"))
-from harness.records import experiment_records as records
-from harness.remote.build_rrctl_runspec import build_runspec, run_spec_digest
+from harness.records import experiment_records as records  # noqa: E402
+from harness.remote.build_rrctl_runspec import build_runspec, run_spec_digest  # noqa: E402
 
 
 class RecordRefreshTests(unittest.TestCase):
@@ -69,8 +69,33 @@ class RecordRefreshTests(unittest.TestCase):
         (run_root / "artifact_manifest.json").write_text(json.dumps(manifest))
         return path
 
-    def build(self, exp="E1", force=False):
-        return records.cmd_build(Namespace(exp=exp, force=force, config=self.root / "absent.toml"))
+    def build(self, exp="E1", force=False, config=None):
+        return records.cmd_build(Namespace(exp=exp, force=force,
+                                           config=config or self.root / "absent.toml"))
+
+    def attach_validated_outcome(self, record_path):
+        validator = self.root / ".codex/skills/post-run-result-analysis/scripts/validate_result_analysis.py"
+        validator.parent.mkdir(parents=True, exist_ok=True)
+        validator.write_text("def validate_index(index_path, csv_path, *, workdir):\n    return []\n")
+        index = self.root / "issues/E1/result-analysis.json"
+        entry = {"exp_id": "E1", "run_id": "R1", "scientific_outcome": "inconclusive",
+                 "review_evidence_ref": "session:fixture#tool:review",
+                 "review_output_sha256": "a" * 64}
+        index.write_text(json.dumps({"entries": [entry]}))
+        record = json.loads(record_path.read_text())
+        record["outcome"] = "inconclusive"
+        record["_pending"] = [field for field in record.get("_pending", []) if field != "outcome"]
+        record["outcome_meta"] = {
+            "schema_version": records.OUTCOME_META_SCHEMA,
+            "source": "issues/E1/result-analysis.json",
+            "csv_source": "issues/E1/tasks.csv",
+            "entries_sha256": hashlib.sha256(json.dumps([entry], sort_keys=True).encode()).hexdigest(),
+            "runs_sha256": records._runs_digest(record), "run_ids": ["R1"],
+            "review_evidence_ref": entry["review_evidence_ref"],
+            "review_output_sha256": entry["review_output_sha256"],
+            "applied_at": "2026-01-01T00:00:00+00:00", "applied_by": "test",
+        }
+        record_path.write_text(json.dumps(record, indent=2) + "\n")
 
     def record(self, exp="E1"):
         return self.experiments / exp / "record.json"
@@ -81,6 +106,21 @@ class RecordRefreshTests(unittest.TestCase):
             writer.writeheader()
             writer.writerows(dict(exp_id=exp, spec_id="SPEC", branch="main", commit_hash="a" * 40, run_id=run)
                              for run in run_ids)
+
+    def test_real_rebuild_preserves_validated_outcome_and_resets_on_run_change(self):
+        self.summary()
+        self.assertEqual(self.build(), 0)
+        record_path = self.record()
+        self.attach_validated_outcome(record_path)
+        config = self.root / "project.toml"
+        config.write_text("version = 1\n[records]\nsummary_glob = 'summary.json'\n")
+        self.assertEqual(self.build(config=config), 0)
+        self.assertEqual(json.loads(record_path.read_text())["outcome"], "inconclusive")
+        self.summary(value=2)
+        self.assertEqual(self.build(config=config), 0)
+        rebuilt = json.loads(record_path.read_text())
+        self.assertEqual(rebuilt["outcome"], "pending")
+        self.assertIn("outcome", rebuilt["_pending"])
 
     def test_selected_experiment_refreshes_new_run_and_unchanged_does_not_write(self):
         self.summary()

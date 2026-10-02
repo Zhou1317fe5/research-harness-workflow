@@ -643,7 +643,7 @@ def apply_result_analysis_outcomes(
             continue
         formal_run_ids = set(csv_projection(root).get(exp_id, {}).get("run_id", set()))
         pending = record.get("_pending")
-        if formal_run_ids and isinstance(pending, list) and any(
+        if isinstance(pending, list) and any(
                 isinstance(item, str) and item.startswith("runs.") for item in pending):
             print(f"result_analysis_sync: skip ({exp_id} formal Run evidence incomplete)", file=stream)
             skipped += 1
