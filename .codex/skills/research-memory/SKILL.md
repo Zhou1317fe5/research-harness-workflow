@@ -1,14 +1,12 @@
 ---
 name: research-memory
-description: Record and recall research decisions, findings, hypotheses, and experiment analyses. Also use when the user requests a Hindsight publication preview, confirms a batch, or asks to resume its upload. This does not launch experiments or authorize new runs.
+description: Record and recall research decisions, findings, hypotheses, and experiment analyses in the local research workspace. This does not launch experiments or authorize new runs.
 ---
 
 # Research Memory
 
 短入口为 `./scripts/memory`，转发到 `.agents/harness/memory/research_memory.py`。本地脚本负责来源队列、
-结论整理和恢复；配置启用 Hindsight 时，由脚本补充同步与远端召回。
-
-仅办理入账预览、确认或续传时，直接按 [发布指引](references/publication.md) 执行；不先扫描对话、整理本地队列或恢复 Mission。
+结论整理、恢复和精确召回；不访问远端记忆服务。
 
 在科研交流出现新决定或推断、实验分析更新，或新任务需要既有结论时，先核对本地上下文与相关待处理来源。
 宿主钩子通常已经完成采集；使用队列中的事件 ID，避免把同一条消息再录一份。
@@ -132,21 +130,3 @@ Pi 的 Historian 和 Reviewer 子进程按宿主身份隔离，不采集其输�
 可选配置位于 `.agents/harness/config/research-memory.json`。
 需要暂停当前项目的自动采集时，在此配置设置 `"hooks_enabled": false`（默认 `true`）。
 已加载的回调会清除缓存，不采集、扫描或恢复事务；手工 CLI 仍可使用。
-
-## 可选的 Hindsight
-
-Hindsight 默认关闭；`hindsight_enabled: true` 开启按需召回和手工同步。
-`hindsight_auto_sync` 默认 false，不因每条对话或工具调用启动远端处理。
-普通原文、STATE、CONCLUSIONS 整篇投影和 record.json 不自动上传。
-整理后的有效决定、发现和执行事实以精简条目入队；OPEN/PROPOSED 留在本地。
-
-交付本轮更新的定稿主分析且 Hindsight 已启用时，按 [发布指引](references/publication.md) 准备本轮实验的固定预览。
-用户在对话中一次确认后，由 Agent 执行上传、等待和结果核验；多个实验可以合在一批。
-文件保存、Git 提交和实验退出不代表发布授权。待确认或同步失败不阻塞科研交付。
-
-单份已登记的完成版分析仍可显式使用 `publish <项目相对路径>`；
-`sync --limit 4` 则推进所有精选队列，适合用户明确要求同步整个队列时使用。
-分析更新后旧远端候选失效，核对后重新发布。内容不变的 Git commit 不生成新来源。
-召回仅接受当前已知、版本匹配的精选对象；状态、协议和范围筛选同时作用于远端候选。
-旧版原文同步队列不再自动发送。污染修复使用明确的事件列表：向 `quarantine` 提交
-`{"event_ids":["<id>"],"reason":"<核对依据>"}`；隔离保留原件，不自动删除远端内容。

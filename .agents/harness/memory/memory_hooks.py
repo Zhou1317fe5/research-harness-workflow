@@ -1,10 +1,8 @@
 #!/usr/bin/env python3
-"""科研记忆的宿主事件适配；同步工作与宿主前台回调分开。"""
+"""科研记忆的宿主事件适配；只负责本地采集与上下文。"""
 from __future__ import annotations
 
 import json
-import subprocess
-import sys
 from pathlib import Path
 
 from harness.memory.research_memory import MAX_INPUT, MemoryError, digest, internal_host_process, sensitive, timestamp
@@ -163,41 +161,22 @@ def recover_replies(memory, payload, host):
     return key
 
 
-def start_sync(memory):
-    if not memory.config["hindsight_enabled"] or not memory.config["hindsight_auto_sync"]:
-        return
-    # worker 自己取得非阻塞同步锁；关闭所有宿主管道，宿主不等待网络返回。
-    try:
-        subprocess.Popen(
-            [sys.executable, str(Path(__file__).with_name("research_memory.py")),
-             "--repo-root", str(memory.root), "--store", str(memory.store), "sync", "--limit", "4"],
-            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            close_fds=True, start_new_session=True,
-        )
-    except OSError as error:
-        with memory.locked() as state:
-            state["sync_worker_error"] = type(error).__name__
-
-
 def handle_hook(memory, payload, action, host="codex"):
     if not memory.config["hooks_enabled"] or internal_host_process():
         return {"hookSpecificOutput": {"additionalContext": "", "snapshotRevision": "disabled"}}
     if not isinstance(payload, dict):
         raise MemoryError("宿主事件必须是 JSON 对象")
+    if action not in {"prompt", "stop", "context", "scan", "checkpoint"}:
+        raise MemoryError("不支持的本地记忆 hook action")
     event_name = payload.get("hook_event_name") or "SessionStart"
-    key = session_key(payload, host)
+    session_key(payload, host)
     if action == "prompt":
         capture_message(memory, payload, host, "user", payload.get("prompt"))
     elif action == "stop":
         capture_stop(memory, payload, host)
     elif action == "context":
         recover_replies(memory, payload, host)
-    elif action == "sync":
-        start_sync(memory)
-        return {}
-    changes = memory.scan()
-    if action in {"context", "stop"} or changes:
-        start_sync(memory)
+    memory.scan()
     if action in {"context", "prompt", "scan", "checkpoint"}:
         if host == "pi" and payload.get("memory_protocol") != "2":
             # 已加载旧扩展时先清除危险的末尾 user 注入；/reload 后恢复版本化快照。
@@ -206,7 +185,7 @@ def handle_hook(memory, payload, action, host="codex"):
         query = payload.get("prompt") or ""
         if not isinstance(query, str) or sensitive(query):
             query = ""
-        # 生命周期回调只读取本地；可选远端检索由 recall 命令按需执行。
+        # 生命周期回调只读取本地；精确召回由 recall 命令按需执行。
         snapshot = memory.snapshot(query)
         output = {"hookEventName": event_name, "snapshotRevision": snapshot["revision"],
                   "generatedAt": snapshot["generated_at"]}

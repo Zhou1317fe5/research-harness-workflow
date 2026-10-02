@@ -9,8 +9,8 @@ import unittest
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
-from harness.memory.memory_hooks import handle_hook, start_sync
-from harness.memory.research_memory import Memory, MemoryError, SYNC_POLICY, atomic, digest
+from harness.memory.memory_hooks import handle_hook
+from harness.memory.research_memory import Memory, MemoryError, atomic
 
 
 class LifecycleTests(unittest.TestCase):
@@ -168,7 +168,7 @@ class LifecycleTests(unittest.TestCase):
         with self.assertRaises(MemoryError):
             self.memory.process(request)
 
-    def test_raw_sources_and_projection_scans_do_not_create_remote_jobs(self):
+    def test_raw_sources_and_projection_scans_preserve_local_search(self):
         self.memory.capture("user", "测试工具")
         self.memory.capture("assistant", "测试已完成")
         self.memory.workspace.mkdir()
@@ -176,19 +176,6 @@ class LifecycleTests(unittest.TestCase):
         self.memory.scan()
         self.assertEqual(self.index()["jobs"], {})
         self.assertEqual(len(self.memory.search()), 2)
-
-    def test_curated_job_contains_record_not_whole_conversation(self):
-        source = "与决定无关的长背景。" * 100 + "用户决定采用配置 A。"
-        event = self.memory.capture("user", source)
-        self.memory.process({"event_id": event, "disposition": "recorded", "records": [{
-            "kind": "decision", "status": "ACTIVE", "scope": "model", "summary": "采用配置 A",
-            "authorization_quote": "用户决定采用配置 A。",
-        }]})
-        key, job = next(iter(self.index()["jobs"].items()))
-        payload = json.loads((self.memory.store / "outbox" / f"{key}-{job['revision']}.json").read_text())
-        self.assertEqual(job["policy"], SYNC_POLICY)
-        self.assertIn("采用配置 A", payload["content"])
-        self.assertNotIn("长背景", payload["content"])
 
     def test_unchanged_document_commit_does_not_create_new_source(self):
         self.memory.workspace.mkdir()
@@ -207,20 +194,6 @@ class LifecycleTests(unittest.TestCase):
         git("commit", "-qm", "unrelated")
         self.assertEqual(self.memory.scan(), [])
         self.assertEqual(len(self.index()["events"]), count)
-
-    def test_explicit_analysis_publish_and_stale_invalidation(self):
-        path = self.memory.workspace / "analysis/final.md"
-        path.parent.mkdir(parents=True)
-        path.write_text("# 完成的分析\n可追溯的发现。\n")
-        self.memory.publish("research_workspace/analysis/final.md")
-        self.assertEqual(len(self.index()["jobs"]), 1)
-        path.write_text(path.read_text() + "新的未发布修改。\n")
-        self.memory.scan()
-        self.assertEqual(next(iter(self.index()["jobs"].values()))["state"], "stale")
-        self.memory.publish("research_workspace/analysis/final.md")
-        self.assertEqual(next(iter(self.index()["jobs"].values()))["state"], "pending")
-        with self.assertRaises(MemoryError):
-            self.memory.publish("research_workspace/STATE.md")
 
     def test_quarantine_retains_originals_but_excludes_sources(self):
         event = self.memory.capture("user", "内部工具提示词")
@@ -241,23 +214,36 @@ class LifecycleTests(unittest.TestCase):
         self.assertEqual(self.memory.records(), [])
         self.assertEqual(self.memory.records(history=True)[0]["processing_state"], "quarantined")
 
-    def test_sync_never_submits_legacy_raw_jobs(self):
-        self.decision("采用配置 A")
+    def test_processing_stays_local_and_does_not_create_remote_artifacts(self):
+        outbox = self.memory.store / "outbox"
+        before = sorted(outbox.glob("*.json"))
+        self.decision("本地结论")
+        self.assertEqual(self.index()["jobs"], {})
+        self.assertEqual(sorted(outbox.glob("*.json")), before)
+
+    def test_legacy_remote_state_is_preserved_but_not_progressed(self):
+        outbox = self.memory.store / "outbox"
+        outbox.mkdir(parents=True, exist_ok=True)
+        legacy = outbox / "legacy.json"
+        legacy.write_text('{"historical": true}\n')
         with self.memory.locked() as state:
             state["jobs"]["legacy"] = {"state": "pending", "revision": "old", "updated_at": "2000-01-01"}
-        self.memory.config["hindsight_enabled"] = True
-        calls = []
-        class Client:
-            def call(self, name, payload):
-                calls.append((name, payload))
-                return {"structuredContent": {"status": "completed"}}
-        result = self.memory.sync(client=Client())
-        self.assertEqual(result["completed"], 1)
-        self.assertEqual(len(calls), 1)
-        self.assertEqual(calls[0][1]["metadata"]["sync_policy"], SYNC_POLICY)
-        with patch("subprocess.Popen") as popen:
-            start_sync(self.memory)
-            popen.assert_not_called()
+        state_before = self.memory.state_path.read_bytes()
+        outbox_before = legacy.read_bytes()
+        self.memory.status()
+        self.memory.context()
+        self.assertEqual(self.memory.state_path.read_bytes(), state_before)
+        self.assertEqual(legacy.read_bytes(), outbox_before)
+        self.assertEqual(self.index()["jobs"]["legacy"]["state"], "pending")
+
+    def test_removed_remote_commands_and_hook_action_are_rejected(self):
+        with self.assertRaises(MemoryError):
+            handle_hook(self.memory, {"session_id": "s"}, "sync", "pi")
+        script = Path(__file__).resolve().parents[1] / "research_memory.py"
+        for command in ("publish", "publish-batch", "sync"):
+            result = subprocess.run([sys.executable, str(script), "--repo-root", str(self.root), command],
+                                    capture_output=True, text=True)
+            self.assertNotEqual(result.returncode, 0, command)
 
     def test_internal_host_hook_never_captures(self):
         for environment in ({"MAGIC_CONTEXT_PI_SUBAGENT": "1"}, {"PI_SUB_AGENT_DEPTH": "2"}):
@@ -298,24 +284,6 @@ class LifecycleTests(unittest.TestCase):
             "authorization_quote": "明确批准配置 B。",
         }]})
         self.assertEqual(ids, ["C001"])
-
-    def test_remote_recall_filters_superseded_and_protocol(self):
-        old, _ = self.decision("旧协议决定", protocol="official")
-        self.decision("新协议决定", at="2026-09-09T00:00:00Z", protocol="official", supersedes=old)
-        self.decision("修复协议", protocol="corrected")
-        payloads = []
-        for key, job in self.index()["jobs"].items():
-            payload = json.loads((self.memory.store / "outbox" / f"{key}-{job['revision']}.json").read_text())
-            payloads.append({"text": payload["content"], **{k: payload[k] for k in ("metadata", "tags", "document_id")}})
-        class Client:
-            def call(self, *_args):
-                return {"structuredContent": {"results": payloads}}
-        self.memory.config["hindsight_enabled"] = True
-        result = self.memory.remote_search("协议", client=Client(), kind="decision", status="ACTIVE", protocol="official")
-        self.assertEqual(len(result["results"]), 1)
-        self.assertIn("新协议决定", result["results"][0]["text"])
-        history = self.memory.remote_search("协议", client=Client(), history=True)
-        self.assertEqual(len(history["results"]), 3)
 
 
 if __name__ == "__main__":

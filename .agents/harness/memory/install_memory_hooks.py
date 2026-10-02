@@ -30,12 +30,8 @@ EVENTS = {
 
 def command(root, action, host):
     script = root / ".agents/harness/memory/research_memory.py"
-    env = root / ".agents/harness/config/.env"
-    # 凭据只在钩子子进程中加载；不写入配置，不返回环境变量内容。
-    shell = ('if [ -f "$1" ]; then set -a; . "$1"; set +a; fi; '
-             'exec "$2" "$3" --repo-root "$5" hook --action "$4" --host "$6" --binding ' + MARKER)
-    return shlex.join(["bash", "-c", shell, "research-memory", str(env), sys.executable,
-                       str(script), action, str(root), host])
+    return shlex.join([sys.executable, str(script), "--repo-root", str(root),
+                       "hook", "--action", action, "--host", host, "--binding", MARKER])
 
 
 def _tokens_look_like_install(parts):
@@ -117,7 +113,7 @@ def install(root=ROOT, *, remove=False, hosts=("codex", "claude")):
                 if kept or not group["hooks"]:
                     groups.append({**group, "hooks": kept})
             if not remove:
-                # 同事件的 handlers 会并发执行；由一个回调先落盘，再安排可选同步。
+                # 同事件的 handlers 会并发执行；由一个回调先落盘，再提供本地上下文。
                 group = {"hooks": [{"type": "command", "command": command(root, action, host),
                                     "timeout": 20}]}
                 if event in {"PreToolUse", "PostToolUse"}:
@@ -148,6 +144,6 @@ def main():
     except (ValueError, OSError) as error:
         print(json.dumps({"ok": False, "error_type": type(error).__name__}))
         return 2
-    print(json.dumps({"ok": True, "paths": paths, "hindsight_configuration": "unchanged",
-                      "note": "Hindsight 默认关闭；Codex 新定义需在 /hooks 中由宿主完成信任"}, ensure_ascii=False))
+    print(json.dumps({"ok": True, "paths": paths,
+                      "note": "本地科研记忆钩子已安装；Codex 新定义需在 /hooks 中由宿主完成信任"}, ensure_ascii=False))
     return 0

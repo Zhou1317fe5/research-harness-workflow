@@ -4,7 +4,7 @@ import { existsSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 
-type HookAction = "context" | "prompt" | "scan" | "checkpoint" | "stop" | "sync";
+type HookAction = "context" | "prompt" | "scan" | "checkpoint" | "stop";
 type HookPayload = Record<string, string>;
 type HookResult = { hookSpecificOutput?: { additionalContext?: string; snapshotRevision?: string; generatedAt?: string }; systemMessage?: string };
 type HookRunner = (root: string, action: HookAction, payload: HookPayload) => Promise<HookResult>;
@@ -23,16 +23,14 @@ export function memoryProjectRoot(cwd: string): string | undefined {
 	}
 }
 
-/** 与现有 Codex hook 一样，仅在子进程内加载项目环境；凭据不经过 TS 或命令参数。 */
+/** 只启动本地记忆脚本；不加载项目凭据，也不访问远端服务。 */
 export function runMemoryHook(root: string, action: HookAction, payload: HookPayload): Promise<HookResult> {
 	const input = JSON.stringify(payload);
 	if (Buffer.byteLength(input) > MAX_INPUT) return Promise.reject(new Error("memory_input_too_large"));
 	return new Promise((resolveResult, reject) => {
-		const shell = 'if [ -f "$1" ]; then set -a; . "$1"; set +a; fi; exec python3 "$2" --repo-root "$3" hook --action "$4" --host pi --binding research-memory-v1';
-		const child = spawn("bash", ["-c", shell, "research-memory-pi",
-			join(root, ".agents/harness/config/.env"),
-			join(root, ".agents/harness/memory/research_memory.py"), root, action],
-		{ cwd: root, stdio: ["pipe", "pipe", "ignore"] });
+		const child = spawn("python3", [join(root, ".agents/harness/memory/research_memory.py"),
+			"--repo-root", root, "hook", "--action", action, "--host", "pi", "--binding", "research-memory-v1"],
+			{ cwd: root, stdio: ["pipe", "pipe", "ignore"] });
 		const output: Buffer[] = [];
 		let outputBytes = 0;
 		let failure: string | undefined;
@@ -109,7 +107,7 @@ export function registerResearchMemory(pi: ExtensionAPI, runHook: HookRunner = r
 						contextRevision = "";
 					}
 				}
-				needsRefresh = action === "stop" || action === "sync";
+				needsRefresh = action === "stop";
 			} catch {
 				context = "";
 				contextRevision = "";
@@ -177,9 +175,6 @@ export function registerResearchMemory(pi: ExtensionAPI, runHook: HookRunner = r
 		await call(ctx, "stop", "Stop", finalReply
 			? { last_assistant_message: finalReply.text, timestamp: finalReply.timestamp } : {});
 		inputCaptured = false;
-	});
-	pi.on("session_shutdown", async (_event, ctx) => {
-		await call(ctx, "sync", "SessionEnd");
 	});
 	pi.on("context", async (event, ctx) => {
 		await queue;
