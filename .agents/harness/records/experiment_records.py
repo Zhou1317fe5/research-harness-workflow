@@ -376,7 +376,7 @@ def _valid_outcome_metadata(previous: dict, current: dict, *, repo_root: Path | 
             or sorted(run_ids) != current_run_ids):
         return False
     if not all(isinstance(meta.get(key), str) and meta[key].strip()
-               for key in ("source", "entries_sha256", "runs_sha256", "review_evidence_ref", "review_output_sha256")):
+               for key in ("source", "csv_source", "entries_sha256", "runs_sha256", "review_evidence_ref", "review_output_sha256")):
         return False
     if (not _SHA256_RE.fullmatch(meta["entries_sha256"])
             or not _SHA256_RE.fullmatch(meta["runs_sha256"])
@@ -386,10 +386,25 @@ def _valid_outcome_metadata(previous: dict, current: dict, *, repo_root: Path | 
     root = (repo_root or REPO_ROOT).resolve()
     try:
         source = (root / meta["source"]).resolve()
-        if not source.is_relative_to(root):
+        csv_source = (root / meta["csv_source"]).resolve()
+        if (not source.is_relative_to(root) or not csv_source.is_relative_to(root)
+                or not source.is_file() or not csv_source.is_file()):
+            return False
+        validator_path = root / ".codex/skills/post-run-result-analysis/scripts/validate_result_analysis.py"
+        if not validator_path.is_file():
+            validator_path = root / ".agents/skills/post-run-result-analysis/scripts/validate_result_analysis.py"
+        if not validator_path.is_file():
+            return False
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("result_analysis_validator_for_records", validator_path)
+        if spec is None or spec.loader is None:
+            return False
+        validator = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(validator)
+        if validator.validate_index(source, csv_source, workdir=root):
             return False
         payload = json.loads(source.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError):
+    except (OSError, UnicodeError, json.JSONDecodeError, KeyError, ValueError):
         return False
     entries = payload.get("entries") if isinstance(payload, dict) else None
     if not isinstance(entries, list):
@@ -435,6 +450,9 @@ def cmd_build(args, *, repo_root: Path | None = None) -> int:
     project_root = (repo_root or REPO_ROOT).resolve()
     artifacts_root = project_root / "remote_artifacts"
     experiments_root = project_root / "research_workspace" / "experiments"
+    if (not artifacts_root.resolve().is_relative_to(project_root)
+            or not experiments_root.resolve().is_relative_to(project_root)):
+        raise ValueError("record projection paths outside project root")
     proj = csv_projection(project_root)
     config_path = Path(getattr(args, "config", DEFAULT_CONFIG))
     if not config_path.is_absolute():
@@ -446,6 +464,8 @@ def cmd_build(args, *, repo_root: Path | None = None) -> int:
     written = skipped = 0
     for exp_id in targets:
         out = experiments_root / identifier(exp_id) / "record.json"
+        if not out.resolve().is_relative_to(project_root):
+            raise ValueError(f"record output outside project root: {out}")
         # 无参模式保持只补建；显式选择实验才自动刷新，--force 保留批量兼容。
         if out.exists() and not args.exp and not args.force:
             skipped += 1
@@ -537,6 +557,7 @@ def apply_result_analysis_outcomes(
     *,
     repo_root: Path,
     allowed_outcomes: set[str] | frozenset[str] | None = None,
+    csv_path: Path | None = None,
     stderr=None,
 ) -> tuple[int, int]:
     """将已通过验证的 RESULT-ANALYSIS 按 ExpID 原子回写并派生 ledger。
@@ -636,9 +657,18 @@ def apply_result_analysis_outcomes(
             skipped += 1
             continue
         record["outcome"] = next(iter(outcomes))
+        csv_source = ""
+        if csv_path is not None:
+            candidate_csv = Path(csv_path).resolve()
+            if not candidate_csv.is_file() or not candidate_csv.is_relative_to(root):
+                print(f"result_analysis_sync: skip ({exp_id} CSV outside repo or missing)", file=stream)
+                skipped += 1
+                continue
+            csv_source = candidate_csv.relative_to(root).as_posix()
         record["outcome_meta"] = {
             "schema_version": OUTCOME_META_SCHEMA,
             "source": index.relative_to(root).as_posix(),
+            "csv_source": csv_source,
             "entries_sha256": entries_sha256,
             "runs_sha256": _runs_digest(record),
             "run_ids": sorted(set(run_ids)),

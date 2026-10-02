@@ -715,6 +715,7 @@ def main() -> int:
             args.index,
             repo_root=repo_root,
             allowed_outcomes=SCIENTIFIC_OUTCOMES,
+            csv_path=args.csv,
             stderr=sys.stderr,
         )
     except Exception as exc:  # 派生侧失败不改变验证结论

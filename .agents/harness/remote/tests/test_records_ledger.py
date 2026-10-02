@@ -191,7 +191,7 @@ class LedgerTests(unittest.TestCase):
             self.assertEqual(records.apply_result_analysis_outcomes(index, repo_root=self.root), (0, 1))
         self.assertEqual(json.loads((self.experiments / "E1/record.json").read_text())["outcome"], "pending")
 
-    def test_build_preserves_only_still_validated_outcome(self):
+    def test_build_resets_outcome_without_validation_binding(self):
         self.record("E1", runs=[{"run_id": "R1"}], outcome="pending")
         record_path = self.experiments / "E1/record.json"
         previous = json.loads(record_path.read_text())
@@ -199,36 +199,16 @@ class LedgerTests(unittest.TestCase):
         record_path.write_text(json.dumps(previous, ensure_ascii=False, indent=2) + "\n")
         index = self.root / "issues/spec/reviews/result-analysis.json"
         index.parent.mkdir(parents=True)
-        entry = {
+        index.write_text(json.dumps({"entries": [{
             "exp_id": "E1", "run_id": "R1", "scientific_outcome": "inconclusive",
             "review_evidence_ref": "session:abc#tool:def", "review_output_sha256": "a" * 64,
-        }
-        index.write_text(json.dumps({"entries": [entry]}))
+        }]}))
         with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
             self.assertEqual(records.apply_result_analysis_outcomes(index, repo_root=self.root), (1, 0))
         generated = json.loads(record_path.read_text())
         generated["outcome"] = "pending"
         generated["_pending"] = ["outcome"]
         generated.pop("outcome_meta")
-        with patch.object(records, "build_record", return_value=generated), redirect_stdout(io.StringIO()):
-            self.assertEqual(records.cmd_build(Namespace(exp="E1", force=False, config=self.root / "missing.toml"), repo_root=self.root), 0)
-        preserved = json.loads(record_path.read_text())
-        self.assertEqual(preserved["outcome"], "inconclusive")
-        self.assertNotIn("outcome", preserved["_pending"])
-        preserved["outcome_meta"]["run_ids"] = [1]
-        record_path.write_text(json.dumps(preserved, ensure_ascii=False, indent=2) + "\n")
-        generated["outcome"] = "pending"
-        generated["_pending"] = ["outcome"]
-        generated.pop("outcome_meta", None)
-        with patch.object(records, "build_record", return_value=generated), redirect_stdout(io.StringIO()):
-            self.assertEqual(records.cmd_build(Namespace(exp="E1", force=False, config=self.root / "missing.toml"), repo_root=self.root), 0)
-        malformed_reset = json.loads(record_path.read_text())
-        self.assertEqual(malformed_reset["outcome"], "pending")
-        entry["scientific_outcome"] = "hypothesis_supported"
-        index.write_text(json.dumps({"entries": [entry]}))
-        generated["outcome"] = "pending"
-        generated["_pending"] = ["outcome"]
-        generated.pop("outcome_meta", None)
         with patch.object(records, "build_record", return_value=generated), redirect_stdout(io.StringIO()):
             self.assertEqual(records.cmd_build(Namespace(exp="E1", force=False, config=self.root / "missing.toml"), repo_root=self.root), 0)
         reset = json.loads(record_path.read_text())

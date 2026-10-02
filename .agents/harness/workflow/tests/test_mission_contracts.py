@@ -9,6 +9,7 @@ import json
 from pathlib import Path
 import subprocess
 import sys
+import shutil
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -27,6 +28,7 @@ from run_vision_review import discover_claim_ledger, resolve_existing_file, arti
 from check_handoff_contract import (load_review_notes, load_review_json, note_value_matches_handoff,
                                     check_contract, load_outcome_contract)
 from harness.workflow.mission_state import update
+from harness.records import experiment_records as records
 from validate_deferred_ledger import load_csv_deferred
 from validate_claim_ledger import validate_ledger
 from ensure_result_analysis_row import ensure_result_analysis_row
@@ -428,6 +430,53 @@ class MissionContractTests(unittest.TestCase):
         self.assertEqual(updated["outcome_meta"]["run_ids"], ["RUN-1"])
         with (self.root / "research_workspace/EXPERIMENTS.csv").open(newline="") as stream:
             self.assertEqual(next(csv.DictReader(stream))["Outcome"], "inconclusive")
+        generated = json.loads(record_path.read_text())
+        generated["outcome"] = "pending"
+        generated["_pending"] = ["outcome"]
+        generated.pop("outcome_meta")
+        with patch.object(records, "build_record", return_value=generated), chdir(self.root):
+            self.assertEqual(records.cmd_build(argparse.Namespace(
+                exp="EXP-1", force=False, config=self.root / "missing.toml"), repo_root=self.root), 0)
+        rebuilt = json.loads(record_path.read_text())
+        self.assertEqual(rebuilt["outcome"], "inconclusive")
+        self.assertNotIn("outcome", rebuilt["_pending"])
+
+    def test_result_analysis_validator_cli_rejects_invalid_index_without_writes(self):
+        _, index_path = self.result_analysis_fixture()
+        (self.root / ".agents").symlink_to(ROOT / ".agents", target_is_directory=True)
+        record_path = self.root / "research_workspace/experiments/EXP-1/record.json"
+        record_path.parent.mkdir(parents=True, exist_ok=True)
+        record_path.write_text(json.dumps({"exp_id": "EXP-1", "runs": [{"run_id": "RUN-1"}], "outcome": "pending"}) + "\n")
+        before = record_path.read_bytes()
+        payload = json.loads(index_path.read_text())
+        payload["entries"][0]["scientific_outcome"] = "invalid"
+        index_path.write_text(json.dumps(payload))
+        result = subprocess.run(
+            [sys.executable, str(ROOT / ".codex/skills/post-run-result-analysis/scripts/validate_result_analysis.py"),
+             "--csv", str(self.path), "--index", str(index_path), "--workdir", str(self.root)],
+            cwd=ROOT, capture_output=True, text=True,
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(record_path.read_bytes(), before)
+        self.assertFalse((self.root / "research_workspace/EXPERIMENTS.csv").exists())
+
+    def test_result_analysis_validator_cli_warns_on_writeback_failure(self):
+        _, index_path = self.result_analysis_fixture()
+        (self.root / ".agents").symlink_to(ROOT / ".agents", target_is_directory=True)
+        record_path = self.root / "research_workspace/experiments/EXP-1/record.json"
+        record_path.parent.mkdir(parents=True, exist_ok=True)
+        outside = Path(tempfile.mkdtemp(prefix="result-analysis-outside-")) / "record.json"
+        self.addCleanup(lambda: shutil.rmtree(outside.parent, ignore_errors=True))
+        outside.write_text(json.dumps({"outcome": "pending"}) + "\n")
+        record_path.symlink_to(outside)
+        result = subprocess.run(
+            [sys.executable, str(ROOT / ".codex/skills/post-run-result-analysis/scripts/validate_result_analysis.py"),
+             "--csv", str(self.path), "--index", str(index_path), "--workdir", str(self.root)],
+            cwd=ROOT, capture_output=True, text=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("record path outside repo", result.stderr)
+        self.assertIn("post-run result analysis: valid", result.stdout)
 
     def test_result_analysis_allows_multiple_runs_per_exp(self):
         rows, index_path = self.result_analysis_fixture(run_ids=["RUN-1", "RUN-2"])
