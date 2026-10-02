@@ -82,7 +82,7 @@ class ReviewerJobTests(unittest.TestCase):
 
     def test_runner_rejects_packet_that_did_not_pass_readiness(self):
         with self.assertRaisesRegex(ValueError, "review packet is not ready"):
-            reviewer_job.validate_packet(self.packet)
+            reviewer_job.validate_packet(self.packet, "prerun")
 
     def test_pi_argv_keeps_read_only_constraints_and_shared_model_registry(self):
         argv, _ = reviewer_job.command_for(
