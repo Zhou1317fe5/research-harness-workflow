@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+# Runtime sys.path bootstrap is intentional for the template's isolated harness imports.
+# ruff: noqa: E402
+
 import contextlib
 import csv
 import hashlib

@@ -9,6 +9,9 @@
 3. 通过 csv_state.apply_update 执行 resume 后的续写，断言恢复方向被允许、
    回退方向（重复 launch / remote 回退 / 无证据 ingest）被拒绝。
 """
+
+# Runtime sys.path bootstrap is intentional for the template's isolated harness imports.
+# ruff: noqa: E402
 import csv
 import json
 import os

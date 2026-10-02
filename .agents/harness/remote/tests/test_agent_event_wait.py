@@ -69,7 +69,8 @@ class AgentEventWaitTests(unittest.TestCase):
     def test_start_does_not_spawn_a_second_relay_while_attention_is_pending(self):
         # 同一 RunID 的 attention 已投递、执行者尚未处理时，重复 start 必须复用而不是
         # 再启动一个 relay（否则会向 thread 重复唤醒同一事件）。
-        import io, contextlib
+        import io
+        import contextlib
         args = Namespace(
             runspec=self.runspec, thread="thread-fixture", profiles=None,
             poll_seconds=600, resume=False,

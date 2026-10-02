@@ -8,7 +8,7 @@ if __name__ == "__main__":
     import sys
     from pathlib import Path
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-    from harness.remote.build_rrctl_runspec import main
+    from harness.remote.build_rrctl_runspec import main  # noqa: E402
     raise SystemExit(main())
 
 import argparse
@@ -32,7 +32,7 @@ SCIENTIFIC_VERDICT_SCHEMA = "prerun.scientific-verdict.v1"
 # The scientific review model is part of the research contract; a verdict from
 # another model cannot open the gate. Loaded by path so both entry modes work
 # (direct script run only puts .agents on sys.path, not .agents/harness).
-import importlib.util as _importlib_util
+import importlib.util as _importlib_util  # noqa: E402 - runtime path-loaded contract module
 
 _review_model_spec = _importlib_util.spec_from_file_location(
     "review_model", Path(__file__).resolve().parents[1] / "review_model.py"

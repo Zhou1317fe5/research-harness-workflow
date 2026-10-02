@@ -90,7 +90,6 @@ class ReviewerGateE2ETests(unittest.TestCase):
                 "run_id": "fixture-run",
                 "exact_command": "bash train.sh",
                 "exit_code": 0,
-                "step_budget": 1,
                 "baseline_equivalence_required": False,
                 "computation_kind": "training",
                 "isolated_output": True,

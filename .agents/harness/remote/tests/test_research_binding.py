@@ -1,4 +1,7 @@
 """跨真实临时 Git、RunSpec、manifest 和 record 的接口回归；不调用远端。"""
+
+# Runtime sys.path bootstrap is intentional for the template's isolated harness imports.
+# ruff: noqa: E402
 from argparse import Namespace
 from contextlib import ExitStack
 import copy

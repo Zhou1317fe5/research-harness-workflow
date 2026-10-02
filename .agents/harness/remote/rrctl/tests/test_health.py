@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import sys
 import unittest
 from dataclasses import replace
 from pathlib import Path
@@ -279,9 +278,7 @@ class PersistHealthTests(fixtures.ProcessBackendTests, SamplingFixtures):
     def test_evaluate_health_persists_events_and_tracking(self):
         spec = self.spec()
         root = self.sample_root(spec)
-        result = health.evaluate_health(
-            spec, root, phase="first_step", process_required=False
-        )
+        health.evaluate_health(spec, root, phase="first_step", process_required=False)
         self.assertTrue((root / "health.jsonl").is_file())
         self.assertTrue((root / "health_state.json").is_file())
         events = (root / "health.jsonl").read_text().strip().splitlines()

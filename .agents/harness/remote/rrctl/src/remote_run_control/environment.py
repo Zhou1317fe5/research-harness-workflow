@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import sys
@@ -117,11 +118,11 @@ def staging_write_probe(settings: dict[str, Any]) -> dict[str, Any]:
         return {"ok": True, "path": str(path)}
     except OSError as exc:
         _cleanup_created_parents()
-        for leftover in (stage_path.glob(STAGING_WRITE_PROBE_NAME + "*") if stage_path.is_dir() else []):
-            try:
+        leftovers = (stage_path.glob(STAGING_WRITE_PROBE_NAME + "*")
+                     if stage_path.is_dir() else [])
+        for leftover in leftovers:
+            with contextlib.suppress(OSError):
                 leftover.unlink()
-            except OSError:
-                pass
         _cleanup_created_parents()
         return {
             "ok": False,

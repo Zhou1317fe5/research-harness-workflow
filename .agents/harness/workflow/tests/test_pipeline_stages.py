@@ -1,4 +1,7 @@
 """run_pipeline 的 stage 传播与预检分支；只在本仓库内执行 fixture 脚本。"""
+
+# Runtime sys.path bootstrap is intentional for the template's isolated harness imports.
+# ruff: noqa: E402
 import json
 import os
 from pathlib import Path
@@ -122,7 +125,6 @@ class PipelineStageTests(unittest.TestCase):
 
     def test_check_pipeline_input_and_executable_branches(self):
         self.script("ok.py", "value = 1\n")
-        script_path = self.repo / "scripts/ok.py"
         broken_json = self.repo / "contracts/fixture.json"
         checks = self.repo / "checks"
         checks.mkdir()

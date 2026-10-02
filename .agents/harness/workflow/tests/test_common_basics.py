@@ -1,5 +1,7 @@
 """common 子系统（locking / paths / project_config）的行为回归；全部使用隔离目录。"""
-import json
+
+# Runtime sys.path bootstrap is intentional for the template's isolated harness imports.
+# ruff: noqa: E402
 import multiprocessing
 from pathlib import Path
 import sys

@@ -9,10 +9,10 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from remote_run_control.output_limits import (
+    _MARKER,
     CONTROL_OUTPUT_LIMIT,
     OutputCapture,
     TailBuffer,
-    _MARKER,
     run_bounded,
 )
 
@@ -40,7 +40,11 @@ class TailBufferTests(unittest.TestCase):
         self.assertEqual(len(result), limit)
         self.assertIn(_MARKER, result)
         self.assertTrue(result.startswith(b"chunk0:"))
-        self.assertTrue(result.rstrip(b"x\n").endswith(b"chunk7:").real if False else result.endswith(b"chunk7:" + b"x" * (len(result.rsplit(b"chunk7:", 1)[1]))))
+        self.assertTrue(
+            result.rstrip(b"x\n").endswith(b"chunk7:").real
+            if False
+            else result.endswith(b"chunk7:" + b"x" * len(result.rsplit(b"chunk7:", 1)[1]))
+        )
 
     def test_truncation_across_many_small_feeds_matches_single_feed(self):
         for pattern in ("single", "chunked"):

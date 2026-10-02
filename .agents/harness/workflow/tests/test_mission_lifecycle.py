@@ -5,8 +5,11 @@ completed 门禁现场 importlib 加载 mission_completion 为独立模块
 不起作用——它活在另一个 module 对象上。这里直接 patch importlib 的工厂，让
 mission_state 收到一个本地假 completion 模块。
 """
+
+# Runtime sys.path bootstrap is intentional for the template's isolated harness imports.
+# ruff: noqa: E402
+
 import csv
-import importlib.util
 import json
 import os
 from pathlib import Path

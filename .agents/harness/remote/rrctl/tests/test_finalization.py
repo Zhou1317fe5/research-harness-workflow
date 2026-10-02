@@ -2,16 +2,13 @@
 
 from __future__ import annotations
 
-import json
-import sys
 import time
 import unittest
-from dataclasses import replace
 from pathlib import Path
-from unittest.mock import patch
 
 import test_process_backend as fixtures
 
+from remote_run_control import state
 from remote_run_control.errors import RRCError
 from remote_run_control.finalization import (
     complete_existing,
@@ -21,7 +18,6 @@ from remote_run_control.finalization import (
 )
 from remote_run_control.health import HealthResult
 from remote_run_control.jsonutil import atomic_write_json, load_json, sha256_json, utc_now
-from remote_run_control import state
 from remote_run_control.models import RunSpec
 
 
@@ -45,7 +41,7 @@ class FinalizationHelpers:
     """在临时 control_root 中装出可验收的 workload_complete 状态。"""
 
     def settled_root(
-        self: "fixtures.ProcessBackendTests", spec: RunSpec, *, up_to: str = "launched"
+        self: fixtures.ProcessBackendTests, spec: RunSpec, *, up_to: str = "launched"
     ):
         # finalize_exit 的结构：first_step 阶段只在 state == launched 时运行，
         # completion 阶段在 state == running 时先推进 workload_complete 再检查。

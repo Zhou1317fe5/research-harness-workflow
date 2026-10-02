@@ -118,7 +118,9 @@ class ResourceTests(unittest.TestCase):
             with self.assertRaises(RRCError) as caught:
                 resources.available_devices(self.spec(ids=["0"]))
             self.assertEqual(caught.exception.code, "gpu_busy")
-            self.assertEqual(caught.exception.details["processes"], [{"gpu_uuid": "GPU-one", "pid": "4242"}])
+            self.assertEqual(
+                caught.exception.details["processes"], [{"gpu_uuid": "GPU-one", "pid": "4242"}]
+            )
             self.assertFalse(caught.exception.details["allow_occupied"])
 
     def test_allow_occupied_shares_gpu_when_memory_budget_holds(self):

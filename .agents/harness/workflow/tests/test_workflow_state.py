@@ -1,4 +1,7 @@
 """生命周期恢复与 CSV 并发回归，不调用远端或模型。"""
+
+# Runtime sys.path bootstrap is intentional for the template's isolated harness imports.
+# ruff: noqa: E402
 import csv
 import hashlib
 import importlib.util
@@ -122,7 +125,7 @@ class WorkflowTests(unittest.TestCase):
 
     def test_current_task_has_priority_over_newer_file_mtime(self):
         old = self.csv("chosen")
-        other = self.csv("other")
+        self.csv("other")
         self.register("chosen", old)
         result = RECOVERY.scan(self.root)
         self.assertEqual(result["candidates"][0]["path"], old.relative_to(self.root).as_posix())

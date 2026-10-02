@@ -35,6 +35,7 @@ for _path in (ROOT / ".agents", ROOT / ".codex/skills/mission-csv-execute/script
 
 from csv_state import SCHEMA, StateUpdateError, apply_update  # noqa: E402
 from harness.workflow.mission_state import load_registry, update  # noqa: E402
+from harness import review_model  # noqa: E402
 from mission_completion import (  # noqa: E402
     EXPECTED_FIELDS,
     csv_completion_errors,
@@ -53,7 +54,7 @@ ARTIFACT_DIR_REL = f"remote_artifacts/{EXP_ID}/"
 # source.commit 是 40/64-hex git 提交的引用；与本地 git commit_hash 同型。由
 # _write_provenance 的调用方传入 commit_c，不在模块级固死。
 SIDECAR_NAME = f"{STEM}.events.json"
-MODEL = "openai-codex/gpt-5.6-sol"
+MODEL = review_model.model_for_host("pi")
 
 
 def _write(path: Path, text: str) -> Path:

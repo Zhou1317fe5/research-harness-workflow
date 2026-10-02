@@ -14,7 +14,6 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from remote_run_control import cli
 from remote_run_control.controller import Controller
 from remote_run_control.errors import RRCError
 from remote_run_control.models import RunSpec
@@ -252,7 +251,7 @@ class LifecycleIntegrationTests(unittest.TestCase):
             with probe.open("xb", buffering=0) as handle:
                 handle.truncate(1024)
         except OSError:
-            raise unittest.SkipTest("/dev/shm is not a writable tmpfs on this host")
+            raise unittest.SkipTest("/dev/shm is not a writable tmpfs on this host") from None
         probe.unlink()
         stats = os.statvfs(mount)
         free_bytes = stats.f_bavail * stats.f_frsize

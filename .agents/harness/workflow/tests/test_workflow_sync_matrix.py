@@ -9,9 +9,7 @@ diverged / deleted / target_ahead / template_only / symlink / 新文件。
 """
 from __future__ import annotations
 
-import json
 import os
-import shutil  # used for .rmtree in _reseed_target (unused after the swap below, kept for lint).
 import subprocess
 import sys
 import tempfile
