@@ -1274,12 +1274,44 @@ class CsvStateTransitionMatrixTests(unittest.TestCase):
                                       "set": {"git_state": "未提交"}})
         self.assertIn("git_reopen", str(exc.exception))
 
+    def test_retry_reconciliation_allows_new_runid_after_failed(self):
+        self.write_csv([self.row(remote_state="failed", run_id="old-run")])
+        result = apply_update(self.path, {
+            "schema_version": SCHEMA,
+            "row_id": "I-1",
+            "set": {"run_id": "new-run", "remote_state": "running_remote"},
+            "retry_binding": {
+                "prior_run_id": "old-run",
+                "new_run_id": "new-run",
+                "reason": "new rrctl attempt after failed workload",
+            },
+            "event": {
+                "kind": "retry_reconciliation",
+                "prior_run_id": "old-run",
+                "new_run_id": "new-run",
+            },
+        })
+        self.assertEqual(result["row"]["remote_state"], "running_remote")
+        self.assertEqual(result["row"]["run_id"], "new-run")
+
+    def test_retry_reconciliation_rejects_same_runid(self):
+        self.write_csv([self.row(remote_state="failed", run_id="old-run")])
+        with self.assertRaisesRegex(StateUpdateError, "retry_binding_invalid"):
+            apply_update(self.path, {
+                "schema_version": SCHEMA, "row_id": "I-1",
+                "set": {"remote_state": "completed"},
+                "retry_binding": {
+                    "prior_run_id": "old-run", "new_run_id": "old-run", "reason": "bad"
+                },
+                "event": {"kind": "retry_reconciliation", "prior_run_id": "old-run", "new_run_id": "old-run"},
+            })
+
     def test_bug_candidate_remote_failure_resume_to_running(self):
-        """FIXED BC-2/F-012: failed 不可直跳 running_remote。"""
-        self.write_csv([self.row(remote_state="failed")])
+        """FIXED BC-2/F-012: failed 不可无显式新 RunID 直跳 running_remote。"""
+        self.write_csv([self.row(remote_state="failed", run_id="old-run")])
         with self.assertRaises(StateUpdateError) as exc:
             apply_update(self.path, {"schema_version": SCHEMA, "row_id": "I-1",
-                                      "set": {"remote_state": "running_remote"}})
+                                      "set": {"remote_state": "running_remote", "run_id": "old-run"}})
         self.assertIn("remote_regression", str(exc.exception))
 
     def test_bug_candidate_remote_failed_jump_to_completed(self):

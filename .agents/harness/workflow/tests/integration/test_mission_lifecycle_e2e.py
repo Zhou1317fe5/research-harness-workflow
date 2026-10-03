@@ -657,7 +657,7 @@ class MissionLifecycleE2ETests(unittest.TestCase):
     # ==================================================================
     # 场景 4：F-012
     # ==================================================================
-    def test_committed_row_rejects_running_remote_transition(self):
+    def test_committed_row_allows_running_remote_recovery_transition(self):
         _write(self.root / "impl.py", "value = 1\n")
         self.write_csv([self.row("IMPL-01", remote_state="", refs="impl.py")])
         commit_b = self.commit(["impl.py", CSV_REL], "c1 impl")
@@ -665,14 +665,17 @@ class MissionLifecycleE2ETests(unittest.TestCase):
         self._close_development_states(["IMPL-01"])
         self.close_git("IMPL-01", refs=["impl.py"], commit=commit_b)
 
-        with self.assertRaisesRegex(StateUpdateError,
-                                    "git_committed_with_remote_running"):
-            apply_update(self.csv_path, {
-                "schema_version": SCHEMA, "row_id": "IMPL-01",
-                "set": {"remote_state": "running_remote"},
-            })
-        self.assertEqual(self.read_row("IMPL-01")["remote_state"], "",
-                         "拒绝应原子（CSV 未被改写）")
+        apply_update(self.csv_path, {
+            "schema_version": SCHEMA, "row_id": "IMPL-01",
+            "set": {"remote_state": "running_remote"},
+        })
+        self.assertEqual(self.read_row("IMPL-01")["remote_state"], "running_remote")
+
+        apply_update(self.csv_path, {
+            "schema_version": SCHEMA, "row_id": "IMPL-01",
+            "set": {"remote_state": "failed"},
+        })
+        self.assertEqual(self.read_row("IMPL-01")["remote_state"], "failed")
 
 
 _HANDOFF = "\n".join([

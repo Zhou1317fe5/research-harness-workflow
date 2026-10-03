@@ -225,7 +225,56 @@ _REMOTE_FORWARD = {
 }
 
 
-def _validate_row_transition(original: dict[str, str], updated: dict[str, str]) -> None:
+def _validate_retry_binding(
+    original: dict[str, str],
+    updated: dict[str, str],
+    binding: Any,
+    event: Any,
+) -> bool:
+    """Validate an explicit new-RunID retry reconciliation."""
+    changed_run = original.get("run_id", "") != updated.get("run_id", "")
+    retry_state = original.get("remote_state") == "failed" and changed_run
+    if binding is None:
+        if retry_state and updated.get("remote_state") != "failed":
+            raise StateUpdateError("retry_binding_required: failed row changed to a new RunID")
+        return False
+    if not isinstance(binding, dict):
+        raise StateUpdateError("retry_binding_invalid: expected object")
+    if set(binding) != {"prior_run_id", "new_run_id", "reason"}:
+        raise StateUpdateError("retry_binding_invalid: expected prior_run_id,new_run_id,reason")
+    prior = binding["prior_run_id"]
+    new = binding["new_run_id"]
+    reason = binding["reason"]
+    if not all(isinstance(value, str) and value for value in (prior, new, reason)):
+        raise StateUpdateError("retry_binding_invalid: values must be non-empty strings")
+    if original.get("remote_state") != "failed":
+        raise StateUpdateError("retry_binding_invalid: prior remote_state must be failed")
+    row_already_bound = (
+        original.get("run_id") == new
+        and isinstance(event, dict)
+        and event.get("row_run_id") == new
+        and (
+            f"prior_run:{prior}:" in original.get("notes", "")
+            or f"prior_run:{prior};" in original.get("notes", "")
+        )
+    )
+    if (original.get("run_id") != prior and not row_already_bound) or updated.get("run_id") != new or prior == new:
+        raise StateUpdateError("retry_binding_invalid: RunID does not match row transition")
+    if updated.get("remote_state") not in {"running_remote", "completed", "artifacts_pulled"}:
+        raise StateUpdateError("retry_binding_invalid: target remote_state is not a retry outcome")
+    if not isinstance(event, dict) or event.get("kind") != "retry_reconciliation":
+        raise StateUpdateError("retry_binding_event_required: kind=retry_reconciliation")
+    if event.get("prior_run_id") != prior or event.get("new_run_id") != new:
+        raise StateUpdateError("retry_binding_event_mismatch")
+    return True
+
+
+def _validate_row_transition(
+    original: dict[str, str],
+    updated: dict[str, str],
+    *,
+    retry_binding: bool = False,
+) -> None:
     """写后单调性/junction 校验：original 为读入 CSV 的原值，updated 为写后 row。
 
     只在 apply_update 的 `_validate_rows(rows)` 之前调用（此处抛 StateUpdateError
@@ -242,13 +291,14 @@ def _validate_row_transition(original: dict[str, str], updated: dict[str, str]) 
         raise StateUpdateError(f"git_reopen:{original['id']}")
     o = original.get("remote_state", "")
     u = updated.get("remote_state", "")
-    if u not in _REMOTE_FORWARD.get(o, {o}):
+    allowed_remote = _REMOTE_FORWARD.get(o, {o})
+    if retry_binding and o == "failed" and original.get("run_id") != updated.get("run_id"):
+        allowed_remote = allowed_remote | {"running_remote", "completed", "artifacts_pulled"}
+    if u not in allowed_remote:
         raise StateUpdateError(f"remote_regression:{o}->{u}")
     if updated.get("git_state") == "已提交":
-        if updated.get("remote_state") == "running_remote":
-            raise StateUpdateError(
-                f"git_committed_with_remote_running:{original['id']}"
-            )
+        # 已提交源码可以拥有仍在运行的远端 RunID；这是 rrctl 超时/恢复
+        # 的合法中间态。真正的代码回退仍由 git_state 单调守卫阻止。
         if updated.get("dev_state") == "未开始":
             raise StateUpdateError(f"git_committed_with_dev_unstarted:{original['id']}")
 
@@ -379,6 +429,7 @@ def _apply_update_locked(csv_path, request, *, replace):
         "event",
         "commit_boundary",
         "expected_sha256",
+        "retry_binding",
     }
     unknown = sorted(set(request) - allowed)
     if unknown:
@@ -417,6 +468,7 @@ def _apply_update_locked(csv_path, request, *, replace):
     event = request.get("event")
     if event is not None and not isinstance(event, dict):
         raise StateUpdateError("event_invalid: expected object or null")
+    retry_binding = request.get("retry_binding")
 
     original_hash = hashlib.sha256(csv_path.read_bytes()).hexdigest()
     expected_hash = request.get("expected_sha256")
@@ -471,7 +523,8 @@ def _apply_update_locked(csv_path, request, *, replace):
         target["notes"] = target["notes"] + prefix + "; ".join(append_notes)
 
     _validate_rows(rows)
-    _validate_row_transition(original_row, target)
+    retry_reconciled = _validate_retry_binding(original_row, target, retry_binding, event)
+    _validate_row_transition(original_row, target, retry_binding=retry_reconciled)
     try:
         for row in rows:
             parse_note_tags(row["notes"])
