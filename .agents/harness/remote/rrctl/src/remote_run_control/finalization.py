@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -20,6 +21,59 @@ from .state import (
     read_status,
     transition_if_open,
 )
+
+
+def _is_finite(value: Any) -> bool:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return False
+    return number == number and number not in (float("inf"), float("-inf"))
+
+
+def _first_step_progress_evidence(spec: RunSpec) -> bool:
+    """快任务 exit 0 时是否已有真实训练进展，可跳过 first_step 门只由 completion 判终。
+
+    仅根据 adapter 声明的 first_step progress 契约判断：progress_path 存在、记录数达到
+    first_step_min_count，且声明的有限性字段取值有限。读取失败一律 fail-closed 返回 False，
+    保持启动即退(0)等无进展场景的现行 first_step 门语义。
+    """
+    contract = spec.metadata.get("adapter_contract")
+    if not isinstance(contract, dict):
+        return False
+    progress_path = contract.get("progress_path")
+    if not isinstance(progress_path, str) or not progress_path:
+        return False
+    path = Path(spec.remote.output_root) / progress_path
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return False
+    lines = [line for line in text.splitlines() if line.strip()]
+    records = []
+    for line in lines:
+        try:
+            value = json.loads(line)
+        except ValueError:
+            return False
+        if not isinstance(value, dict):
+            return False
+        records.append(value)
+    minimum = contract.get("first_step_min_count", 1)
+    if not isinstance(minimum, int) or isinstance(minimum, bool) or minimum < 1:
+        minimum = 1
+    if len(records) < minimum:
+        return False
+    finite_fields = contract.get("progress_finite_fields", ())
+    if not isinstance(finite_fields, (list, tuple)):
+        return False
+    for field in finite_fields:
+        if not isinstance(field, str):
+            continue
+        last = records[-1].get(field)
+        if not _is_finite(last):
+            return False
+    return True
 
 
 def run_identity(spec: RunSpec, binding: dict[str, Any]) -> str:
@@ -186,6 +240,25 @@ def finalize_exit(
         except OSError:
             return unavailable("cleanup_io", "cleanup")
 
+        # 快任务 exit 0 且已有真实训练进展时，不再跑针对活进程进展的 first_step 门，
+        # 先推进到 running，让唯一权威判终收敛到 completion 契约；启动即退(0)、无进展
+        # 的非进展场景不命中此分支，仍走下方 first_step 门、按现行保守语义判 failed。
+        # first_step_passed 与 running 均非终态，且属于状态机合法转换路径。
+        if read_status(control_root)["state"] == "launched" and _first_step_progress_evidence(spec):
+            transition_if_open(
+                control_root,
+                run_id=spec.run_id,
+                next_state="first_step_passed",
+                reason="workload_exit_zero_with_first_step_progress",
+                detail={"exit_code": 0},
+            )
+            transition_if_open(
+                control_root,
+                run_id=spec.run_id,
+                next_state="running",
+                reason="workload_exit_zero_with_first_step_progress",
+                detail={"exit_code": 0},
+            )
         for phase in ("first_step", "completion"):
             if stopped():
                 return read_status(control_root)

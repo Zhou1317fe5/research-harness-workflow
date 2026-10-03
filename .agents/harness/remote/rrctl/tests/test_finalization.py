@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import time
 import unittest
+from dataclasses import replace
 from pathlib import Path
 
 import test_process_backend as fixtures
@@ -279,6 +280,72 @@ class FinalizeExitTests(fixtures.ProcessBackendTests, FinalizationHelpers):
         spec = self.spec()
         root, _binding = self.settled_root(spec)  # state == launched
         Path(spec.remote.output_root).mkdir(parents=True, exist_ok=True)
+        phases = []
+
+        def check(phase):
+            phases.append(phase)
+            return HealthResult(
+                healthy=False,
+                complete=False,
+                phase=phase,
+                observations={},
+                errors=("boom",),
+                status="unhealthy",
+                issues=(
+                    {"code": "fatal_pattern", "subject": "", "required": True,
+                     "retryable": False},
+                ),
+            )
+
+        status = finalize_exit(spec, root, 0, check=check, heartbeat=lambda: None)
+        self.assertEqual(status["state"], "failed")
+        self.assertEqual(status["reason"], "first_step_contract_failed")
+        self.assertEqual(phases, ["first_step"])
+
+    def _progress_contract_spec(self):
+        spec = self.spec()
+        contract = {
+            "progress_path": "progress.jsonl",
+            "progress_format": "jsonl_last",
+            "first_step_min_count": 1,
+            "progress_finite_fields": ["finite"],
+        }
+        return replace(spec, metadata={"adapter_contract": contract})
+
+    def test_fast_exit_with_real_progress_skips_first_step_gate(self):
+        # smoke 场景：workload 真实跑完并 exit 0，只是首步 progress 读取过早；
+        # 已有达到 min_count 且有限性合格的 progress 记录时，跳过 first_step 门，
+        # 由 completion 契约唯一判终到 completed。
+        spec = self._progress_contract_spec()
+        root, _binding = self.settled_root(spec)  # state == launched
+        output = Path(spec.remote.output_root)
+        output.mkdir(parents=True, exist_ok=True)
+        (output / "progress.jsonl").write_text(
+            '{"step": 1, "loss": 1.0, "finite": true}\n'
+            '{"step": 20, "loss": 0.4, "finite": true}\n'
+        )
+        # completion 契约所需声明 artifacts（沿用 fixture 声明）。
+        Path(output, "summary.json").write_text("summary\n")
+        Path(output, "started.json").write_text("started\n")
+        phases = []
+
+        def check(phase):
+            phases.append(phase)
+            return completed_report(phase=phase)
+
+        status = finalize_exit(spec, root, 0, check=check, heartbeat=lambda: None)
+        self.assertEqual(status["state"], "completed")
+        self.assertEqual(phases, ["completion"])
+        self.assertNotIn("first_step", phases)
+
+    def test_fast_exit_without_real_progress_keeps_first_step_gate(self):
+        # 启动即退(0)、无有效 progress：不命中跳过分支，仍走 first_step 门并按
+        # 现行保守语义判 failed；这是 test_first_step_failure_from_launched_is_result_contract
+        # 在新 helper 路径下的回归保证。
+        spec = self._progress_contract_spec()
+        root, _binding = self.settled_root(spec)  # state == launched
+        Path(spec.remote.output_root).mkdir(parents=True, exist_ok=True)
+        # progress 不存在或不足 min_count -> 无真实进展。
         phases = []
 
         def check(phase):
