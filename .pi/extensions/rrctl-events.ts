@@ -27,6 +27,8 @@ type Waiter = {
 	key: string;
 	settled: boolean;
 	settledAt?: number;
+	/** 子进程退出码：`0` 为 terminal，非 `0`/spawn 失败为 attention。 */
+	exitCode?: number;
 };
 
 type Notification = { root: string; message: string; logPath: string };
@@ -190,6 +192,7 @@ export function registerRrctlEvents(pi: ExtensionAPI, options: RrctlEventsOption
 		if (entry.settled) return;
 		entry.settled = true;
 		entry.settledAt = Date.now();
+		entry.exitCode = entry.child.exitCode;
 		// 不立即从 broker.waits 删除：把本 waiter 留作 tombstone，同 key 的同 event
 		// 后续 execute 会命中该 tombstone 并复用其结果，而不是 spawn 新 child
 		// 再推送一次。清理在 execute 的 getOrCreate 路径上做。
@@ -240,8 +243,11 @@ export function registerRrctlEvents(pi: ExtensionAPI, options: RrctlEventsOption
 				if (existing) {
 					if (existing.settled) {
 						const age = Date.now() - (existing.settledAt ?? 0);
-						if (age < RRCTL_SETTLED_TOMBSTONE_MS) {
-							// 同一 RunID + 同一 session + 同一 runspec 的 event 已在最近 settle 过，
+						// attention(exit!=0)表示「需要介入」而非终态：控制面可能仍在推进终态收口，
+						// 允许重 spawn 一个新 observer 继续等；仅 terminal 在 tombstone 窗口内去重，
+						// 避免同一完成事件被重复推送给用户。
+						if (existing.exitCode === 0 && age < RRCTL_SETTLED_TOMBSTONE_MS) {
+							// 同一 RunID + 同一 session + 同一 runspec 的 terminal event 已在最近 settle 过，
 							// 重复 execute 只是同一事件的回看（不会重 spawn、不会重复推送）。
 							return {
 								content: [{ type: "text" as const, text: `Event for RunID ${existing.runId} already delivered; no new observer is spawned.` }],

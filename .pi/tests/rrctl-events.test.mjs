@@ -369,6 +369,26 @@ test("Pi reuses a settled tombstone instead of respawning for the same event", a
 	assert.match(second.content[0].text, /already delivered/);
 });
 
+test("Pi respawns within the window when the settled event was attention, not terminal", async (t) => {
+	resetRrctlEventsBroker();
+	const root = await fixture(t);
+	const spawns = [];
+	const pi = await boot(root, "session-a", spawns);
+	const first = await waitOn(pi, root);
+	assert.equal(first.details.reused, false);
+	// attention: 非零退出表示控制面仍在推进终态，允许在 tombstone 窗口内重等新 observer。
+	spawns[0].child.finish(2, null);
+	assert.equal(pi.messages.length, 1);
+	assert.match(pi.messages[0].text, /attention event for RunID RUN-A/);
+	const second = await waitOn(pi, root);
+	assert.equal(second.details.reused, false);
+	assert.equal(spawns.length, 2);
+	// 第二个 observer 到 terminal 后正常推送一次。
+	spawns[1].child.finish(0, null);
+	assert.equal(pi.messages.length, 2);
+	assert.match(pi.messages[1].text, /terminal event for RunID RUN-A/);
+});
+
 test("Pi respawns after the settled tombstone has expired", async (t) => {
 	resetRrctlEventsBroker();
 	const root = await fixture(t);
