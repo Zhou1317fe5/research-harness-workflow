@@ -23,7 +23,13 @@ import tempfile
 from pathlib import Path, PurePosixPath
 
 from harness.common.paths import REPO_ROOT
-from harness.remote.build_rrctl_runspec import RunSpecBuildError, canonical_run_spec, run_spec_digest
+from harness.remote.build_rrctl_runspec import (
+    RunSpecBuildError,
+    behavior_scope_hint,
+    canonical_run_spec,
+    run_spec_digest,
+    same_scientific_behavior,
+)
 
 
 def validate_mission_launch(spec: dict, *, resume: bool = False, spec_path: Path | None = None) -> None:
@@ -128,8 +134,15 @@ def validate_mission_launch(spec: dict, *, resume: bool = False, spec_path: Path
                 spec["run_id"] not in PurePosixPath(spec["remote"]["output_root"]).parts):
             raise ValueError("restricted run requires isolated Mission output roots bound to RunID")
         boundary = metadata.get(purpose)
-        if not isinstance(boundary, dict) or boundary.get("candidate_commit") != commit:
-            raise ValueError("restricted run boundary must bind the candidate commit")
+        if not isinstance(boundary, dict) or not same_scientific_behavior(
+            repo, str(boundary.get("candidate_commit") or ""), commit
+        ):
+            raise ValueError(
+                "restricted run boundary must bind a candidate with the same "
+                "scientific behavior"
+                + (behavior_scope_hint(repo, str(boundary.get("candidate_commit") or ""), commit)
+                   if isinstance(boundary, dict) else "")
+            )
         if purpose == "pre_review_smoke":
             resources = spec.get("resources", {})
             if resources.get("device") != "gpu" or (resources.get("gpu_ids") and
@@ -174,12 +187,30 @@ def validate_mission_launch(spec: dict, *, resume: bool = False, spec_path: Path
         raise ValueError("mission remote route blocked: " + "; ".join(decision["errors"] or decision["reason_codes"]))
     route = decision["change_route"]
     if route is not None:
-        if not route["valid"] or route["candidate_commit"] != commit:
-            raise ValueError("mission change route invalid or source commit mismatched")
+        if not route["valid"] or not same_scientific_behavior(
+            repo, route["candidate_commit"], commit
+        ):
+            raise ValueError(
+                "mission change route invalid or source commit has different "
+                "scientific behavior"
+                + behavior_scope_hint(repo, route["candidate_commit"], commit)
+            )
+        # manifest 覆盖校验比较的是**行为相关路径**：从 route 的 reviewed_commit
+        # 到当前 commit 之间，只允许出现非行为变更（否则上面已拒绝），而 manifest
+        # 只需要覆盖真正的行为变更。这样补文档/测试不再要求重写 manifest。
         base = verify_commit(repo, route["reviewed_commit"])
-        actual = subprocess.run(["git", "diff", "--name-only", "--no-renames", "-z", base, commit], cwd=repo, capture_output=True, check=True).stdout
-        if {x.decode() for x in actual.split(b"\0") if x} != {item["path"] for item in change["changes"]}:
-            raise ValueError("mission change manifest does not cover the actual Git diff")
+        from harness.remote.change_fingerprint import FingerprintError, behavior_delta
+
+        try:
+            actual = set(behavior_delta(repo, base, commit))
+        except FingerprintError as exc:
+            raise ValueError(f"cannot compute behavior delta: {exc}") from exc
+        declared = {item["path"] for item in change["changes"]}
+        if actual != declared:
+            raise ValueError(
+                "mission change manifest does not cover the actual behavior diff: "
+                f"缺少 {sorted(actual - declared)}，多余 {sorted(declared - actual)}"
+            )
     needs_review = (
         not restricted
         and route is not None
@@ -187,8 +218,15 @@ def validate_mission_launch(spec: dict, *, resume: bool = False, spec_path: Path
         and pre_run_exception is None
     )
     if pre_run_exception is not None:
-        if pre_run_exception.get("candidate_commit") != commit:
-            raise ValueError("pre-run launch exception candidate commit mismatch")
+        if not same_scientific_behavior(
+            repo, str(pre_run_exception.get("candidate_commit") or ""), commit
+        ):
+            raise ValueError(
+                "pre-run launch exception candidate has different scientific behavior"
+                + behavior_scope_hint(
+                    repo, str(pre_run_exception.get("candidate_commit") or ""), commit
+                )
+            )
         if pre_run_exception.get("review_result") != "not_evaluable":
             raise ValueError("pre-run launch exception cannot claim a scientific verdict")
         evidence_paths = pre_run_exception.get("evidence_paths", [])
@@ -243,7 +281,7 @@ def validate_mission_launch(spec: dict, *, resume: bool = False, spec_path: Path
             ):
                 reviews.append(item_tags)
         expected_review = [
-            ("pre_run_code_commit", commit), ("pre_run_result", "pass"),
+            ("pre_run_result", "pass"),
             ("review_mode", gate["review_mode"]), ("review_result", gate["review_result"]),
         ]
         if "verdict_artifact" in gate:
@@ -252,6 +290,14 @@ def validate_mission_launch(spec: dict, *, resume: bool = False, spec_path: Path
             reviews[0].get(key) != expected for key, expected in expected_review
         ):
             raise ValueError("mission scientific gate does not match the RunSpec")
+        # 审查行绑定的是**被审查的科学行为**。文档/台账/测试提交使 commit 前进时，
+        # 若行为指纹未变，原裁决仍然有效（否则每个记账提交都要重跑审查）。
+        reviewed_commit = str(reviews[0].get("pre_run_code_commit") or "")
+        if not same_scientific_behavior(repo, reviewed_commit, commit):
+            raise ValueError(
+                "mission scientific gate does not match the RunSpec"
+                + behavior_scope_hint(repo, reviewed_commit, commit)
+            )
         from validate_claim_ledger import reference_file
         for value in gate["blocker_closure_evidence"]:
             if reference_file(value, csv_path.parent, repo) is None:

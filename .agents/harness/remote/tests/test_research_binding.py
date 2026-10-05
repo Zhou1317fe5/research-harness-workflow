@@ -284,6 +284,7 @@ class ResearchBindingTests(unittest.TestCase):
             validate_mission_launch(legacy, resume=False, spec_path=self.spec_path)
 
     def test_low_risk_route_must_cover_the_real_diff(self):
+        """manifest 只需覆盖**行为相关**变更；纯文档变更不再使候选失效。"""
         (self.root / "notes.md").write_text("documentation change")
         self.git("add", "notes.md")
         self.git("commit", "-m", "fixture documentation")
@@ -297,6 +298,10 @@ class ResearchBindingTests(unittest.TestCase):
         spec["metadata"]["change_manifest"] = manifest
         self.row["commit_hash"] = candidate
         self.write_csv()
+        # 只有当 manifest 声明了非行为路径时才是多余项（它应当被移除）。
+        with self.assertRaisesRegex(ValueError, "多余"):
+            validate_mission_launch(spec)
+        manifest["changes"] = []
         validate_mission_launch(spec)
         original = self.review["notes"]
         self.review["notes"] = original.replace("pre_run_result:pass", "pre_run_result:failed")
@@ -304,9 +309,36 @@ class ResearchBindingTests(unittest.TestCase):
         validate_mission_launch(spec)
         self.write_csv([self.row])
         validate_mission_launch(spec)
-        manifest["changes"] = []
-        with self.assertRaisesRegex(ValueError, "actual Git diff"):
+
+    def test_manifest_must_cover_real_behavior_change(self):
+        """真正的行为变更必须被 manifest 覆盖（fail-closed）。"""
+        (self.root / "behaviour.py").write_text("VALUE = 2\n")
+        self.git("add", "behaviour.py")
+        self.git("commit", "-m", "fixture behaviour change")
+        candidate = self.git("rev-parse", "HEAD")
+        spec = copy.deepcopy(self.spec)
+        spec["source"]["commit"] = candidate
+        spec["metadata"].pop("gate_provenance")
+        manifest = {"schema_version": "prerun.change-route.v1", "reviewed_commit": self.commit, "candidate_commit": candidate,
+                    "changes": []}
+        spec["metadata"]["change_manifest"] = manifest
+        self.row["commit_hash"] = candidate
+        self.write_csv()
+        with self.assertRaisesRegex(ValueError, "缺少"):
             validate_mission_launch(spec)
+
+    def test_docs_only_commit_does_not_invalidate_gate(self):
+        """B2 的核心：文档/台账提交不再使已通过的审查失效。"""
+        (self.root / "notes.md").write_text("churn")
+        self.git("add", "notes.md")
+        self.git("commit", "-m", "fixture docs churn")
+        candidate = self.git("rev-parse", "HEAD")
+        spec = copy.deepcopy(self.spec)
+        spec["source"]["commit"] = candidate
+        # gate 仍指向被审查的原 commit；行为没变，因此应当放行。
+        self.row["commit_hash"] = candidate
+        self.write_csv()
+        validate_mission_launch(spec)
 
     def changed_request(self, change_class):
         (self.root / "train.sh").write_text(f"#!/bin/sh\n# {change_class}\nexit 0\n")

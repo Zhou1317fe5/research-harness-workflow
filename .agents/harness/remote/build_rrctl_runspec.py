@@ -112,6 +112,36 @@ GATE_PROVENANCE_FIELDS = {
 GATE_PROVENANCE_METADATA_KEYS = GATE_PROVENANCE_FIELDS - {"schema_version"}
 
 
+def same_scientific_behavior(repo_root: Path, left: str, right: str) -> bool:
+    """两个 commit 的科学行为是否一致（行为指纹相等）。
+
+    gate 的有效性判据是「被审查的科学行为没变」，不是「commit 字节相等」。
+    用行为指纹替代后，文档/测试/台账/生成物造成的 commit churn 不再使已通过的
+    审查或 smoke 失效。不可解析的 commit 按「行为不同」处理（fail-closed）。
+    """
+    from harness.remote.change_fingerprint import FingerprintError, same_behavior
+
+    try:
+        return same_behavior(repo_root, left, right)
+    except FingerprintError:
+        return False
+
+
+def behavior_scope_hint(repo_root: Path, base: str, head: str) -> str:
+    """行为差异路径的可读摘要，用于错误信息里说明真正需要重跑的原因。"""
+    from harness.remote.change_fingerprint import FingerprintError, behavior_delta
+
+    try:
+        delta = behavior_delta(repo_root, base, head)
+    except FingerprintError:
+        return ""
+    if not delta:
+        return ""
+    shown = ", ".join(delta[:5])
+    more = f" 等 {len(delta)} 个路径" if len(delta) > 5 else ""
+    return f"; 行为相关路径已变化: {shown}{more}"
+
+
 def _load_project_adapters() -> dict[tuple[str, ...], dict[str, Any]]:
     """加载本项目自定义 adapter 的契约校验；缺失时返回空注册表。
 
@@ -328,8 +358,13 @@ def _verified_verdict(
     if not isinstance(reviewed_commit, str) or not COMMIT_RE.fullmatch(reviewed_commit):
         raise RunSpecBuildError("gate_provenance.verdict_artifact_reviewed_commit_invalid")
     direct_result = review_result in {"scientifically_correct", "targeted_correct"}
-    if direct_result and reviewed_commit != source_commit:
-        raise RunSpecBuildError("gate_provenance.verdict_artifact_identity_mismatch")
+    # 审查针对的是**科学行为**，不是 commit 字节。行为指纹相等时，审查所看过的
+    # 代码语义未变，即使后续提交了文档/测试/台账也不要求重审。
+    if direct_result and not same_scientific_behavior(repo_root, reviewed_commit, source_commit):
+        raise RunSpecBuildError(
+            "gate_provenance.verdict_artifact_identity_mismatch"
+            + behavior_scope_hint(repo_root, reviewed_commit, source_commit)
+        )
     if not direct_result and subprocess.run(
         ["git", "-C", str(repo_root), "merge-base", "--is-ancestor", reviewed_commit, source_commit],
         check=False, capture_output=True,
@@ -465,9 +500,10 @@ def _gate_provenance(
         raise RunSpecBuildError(
             "gate_provenance.pre_run_code_commit_invalid"
         )
-    if commit != source_commit:
+    if not same_scientific_behavior(repo_root, commit, source_commit):
         raise RunSpecBuildError(
             "gate_provenance.pre_run_code_commit_mismatch_with_source"
+            + behavior_scope_hint(repo_root, commit, source_commit)
         )
     review_mode = provenance["review_mode"]
     if review_mode not in {"scientific_review", "targeted_review"}:
