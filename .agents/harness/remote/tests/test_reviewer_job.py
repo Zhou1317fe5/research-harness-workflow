@@ -40,11 +40,11 @@ class ReviewerJobTests(unittest.TestCase):
 
     def test_transport_failure_resumes_same_session_before_replacement(self):
         calls = []
-        def run(argv, _prompt, _events, _stderr, _timeout, on_session, _cwd):
+        def run(argv, _prompt, _events, _stderr, _timeout, on_session, cwd, *_args):
             calls.append(argv)
             if len(calls) == 1:
                 on_session("session-fixture")
-                return 1, '{"type":"thread.started","thread_id":"session-fixture"}\n', False
+                return 1, '{"type":"thread.started","thread_id":"session-fixture"}\n', False, ""
             output = Path(argv[argv.index("--output-last-message") + 1])
             output.write_text(json.dumps({
                 "reviewer_id": "independent-fixture",
@@ -53,7 +53,7 @@ class ReviewerJobTests(unittest.TestCase):
                 "decision": "allow_run",
                 "report_markdown": "No blockers.",
             }))
-            return 0, "", False
+            return 0, "", False, ""
 
         with patch.object(reviewer_job, "validate_packet", return_value=(json.loads(self.packet.read_text()), "f" * 64)), patch.object(reviewer_job.shutil, "which", return_value="/fixture/codex"), patch.object(reviewer_job, "run_process", side_effect=run):
             self.assertEqual(reviewer_job.execute(self.args()), 0)
@@ -66,7 +66,7 @@ class ReviewerJobTests(unittest.TestCase):
         self.assertEqual(verdict["resume_count"], 1)
 
     def test_existing_verdict_is_idempotent(self):
-        def run(argv, _prompt, _events, _stderr, _timeout, on_session, _cwd):
+        def run(argv, _prompt, _events, _stderr, _timeout, on_session, cwd, *_args):
             on_session("session-fixture")
             output = Path(argv[argv.index("--output-last-message") + 1])
             output.write_text(json.dumps({
@@ -74,7 +74,7 @@ class ReviewerJobTests(unittest.TestCase):
                 "result": "not_evaluable", "decision": "do_not_run",
                 "report_markdown": "Missing evidence.",
             }))
-            return 0, "", False
+            return 0, "", False, ""
         with patch.object(reviewer_job, "validate_packet", return_value=(json.loads(self.packet.read_text()), "f" * 64)), patch.object(reviewer_job.shutil, "which", return_value="/fixture/codex"), patch.object(reviewer_job, "run_process", side_effect=run):
             self.assertEqual(reviewer_job.execute(self.args()), 0)
             self.assertEqual(reviewer_job.execute(self.args()), 0)
@@ -100,7 +100,7 @@ class ReviewerJobTests(unittest.TestCase):
     def test_execute_uses_canonical_model_when_launcher_omits_it(self):
         seen = {}
 
-        def run(argv, _prompt, _events, _stderr, _timeout, on_session, _cwd):
+        def run(argv, _prompt, _events, _stderr, _timeout, on_session, cwd, *_args):
             seen["argv"] = argv
             on_session("pi-session-fixture")
             (self.job / "pi-session-0.jsonl").write_text(
@@ -116,7 +116,7 @@ class ReviewerJobTests(unittest.TestCase):
                 "result": "scientifically_correct",
                 "decision": "allow_run",
                 "report_markdown": "No blockers.",
-            }), False
+            }), False, ""
 
         args = self.args()
         args.backend = "pi"
@@ -264,7 +264,7 @@ class ReviewerJobTests(unittest.TestCase):
             encoding="utf-8",
         )
 
-        def run(argv, _prompt, _events, _stderr, _timeout, on_session, _cwd):
+        def run(argv, _prompt, _events, _stderr, _timeout, on_session, cwd, *_args):
             on_session(thread_id)
             output = Path(argv[argv.index("--output-last-message") + 1])
             output.write_text(json.dumps({
@@ -272,7 +272,7 @@ class ReviewerJobTests(unittest.TestCase):
                 "result": "scientifically_correct", "decision": "allow_run",
                 "report_markdown": "No blockers.",
             }))
-            return 0, json.dumps({"type": "thread.started", "thread_id": thread_id}) + "\n", False
+            return 0, json.dumps({"type": "thread.started", "thread_id": thread_id}) + "\n", False, ""
 
         with patch.dict("os.environ", {"CODEX_HOME": str(self.root / "codex-home")}), patch.object(
             reviewer_job, "validate_packet",
@@ -287,7 +287,7 @@ class ReviewerJobTests(unittest.TestCase):
         self.assertEqual(verdict["model_evidence"], "session-metadata")
 
     def test_valid_verdict_survives_trailing_transport_error(self):
-        def run(argv, _prompt, _events, _stderr, _timeout, on_session, _cwd):
+        def run(argv, _prompt, _events, _stderr, _timeout, on_session, cwd, *_args):
             on_session("session-fixture")
             output = Path(argv[argv.index("--output-last-message") + 1])
             output.write_text(json.dumps({
@@ -295,7 +295,7 @@ class ReviewerJobTests(unittest.TestCase):
                 "result": "scientifically_correct", "decision": "allow_run",
                 "report_markdown": "Verdict completed before disconnect.",
             }))
-            return 1, "", False
+            return 1, "", False, ""
         with patch.object(reviewer_job, "validate_packet", return_value=(json.loads(self.packet.read_text()), "f" * 64)), patch.object(reviewer_job.shutil, "which", return_value="/fixture/codex"), patch.object(reviewer_job, "run_process", side_effect=run):
             self.assertEqual(reviewer_job.execute(self.args()), 0)
         verdict = json.loads((self.job / "verdict.json").read_text())
@@ -305,3 +305,139 @@ class ReviewerJobTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ReviewerJobP0Tests(unittest.TestCase):
+    """P0: bounded invocations, failure classification, quota wait, no empty files."""
+
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory(prefix="reviewer-job-p0-")
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name)
+        self.packet = self.root / "packet.json"
+        self.task = self.root / "task.md"
+        self.job = self.root / "job"
+        self.packet.write_text(json.dumps({
+            "schema_version": "prerun.scientific-review.v1",
+            "review_mode": "scientific_review",
+            "pre_run_code_commit": "a" * 40,
+            "repo_root": str(self.root),
+        }))
+        self.task.write_text("Review the supplied implementation.\n")
+
+    def args(self, **overrides):
+        defaults = dict(
+            backend="codex", packet=self.packet, task=self.task,
+            job_dir=self.job, cwd=None, model=None, max_resumes=3,
+            max_replacements=1, attempt_timeout_seconds=30,
+        )
+        defaults.update(overrides)
+        return Namespace(**defaults)
+
+    def _patched(self, run_side_effect):
+        return (
+            patch.object(reviewer_job, "validate_packet",
+                         return_value=(json.loads(self.packet.read_text()), "f" * 64)),
+            patch.object(reviewer_job.shutil, "which", return_value="/fixture/codex"),
+            patch.object(reviewer_job, "run_process", side_effect=run_side_effect),
+        )
+
+    def test_no_session_failure_bounded_by_budget(self):
+        """No-session immediate failure must stop after budget (not infinite)."""
+        calls = []
+        def run(argv, _prompt, _events, _stderr, _timeout, on_session, cwd, *_args):
+            calls.append(argv)
+            return 1, "Model ambiguous across providers", False, ""
+
+        v, w, r = self._patched(run)
+        with v, w, r:
+            code = reviewer_job.execute(self.args())
+        self.assertEqual(code, 3)
+        self.assertLessEqual(len(calls), 8)  # (1+3)*(1+1) = 8 max
+
+    def test_quota_waiting_short_no_file(self):
+        """Quota <=3h returns 4 with no response file."""
+        def run(argv, _prompt, _events, _stderr, _timeout, on_session, cwd, *_args):
+            return 1, 'Error: You have hit your ChatGPT usage limit. Try again in ~172 min.', False, ""
+
+        v, w, r = self._patched(run)
+        with v, w, r:
+            code = reviewer_job.execute(self.args())
+        self.assertEqual(code, 4)
+        state = json.loads((self.job / "job.json").read_text())
+        self.assertEqual(state["status"], "quota_waiting")
+        self.assertIn("retry_at", state["quota_waiting"])
+        self.assertEqual(state["quota_waiting"]["model"], reviewer_job.review_model.MODELS["codex"])
+        # No empty response-*.json files should be created
+        for p in self.job.glob("response-*.json"):
+            if p.name != "response-schema.json":
+                self.assertGreater(p.stat().st_size, 0, f"empty file: {p}")
+
+    def test_quota_waiting_exceeds_3h_gives_capability_gap(self):
+        """Quota >3h (monthly) hits capability_gap immediately."""
+        def run(argv, _prompt, _events, _stderr, _timeout, on_session, cwd, *_args):
+            return 1, 'Error 429: monthly Clinepass limit, resets in 11d 3h', False, ""
+
+        v, w, r = self._patched(run)
+        with v, w, r:
+            code = reviewer_job.execute(self.args())
+        self.assertEqual(code, 3)
+        state = json.loads((self.job / "job.json").read_text())
+        self.assertEqual(state["status"], "capability_gap")
+
+    def test_config_error_immediate_stop(self):
+        """Model ambiguity config error stops after 1 call (stderr carries the marker)."""
+        calls = []
+        def run(argv, _prompt, _events, _stderr, _timeout, on_session, cwd, *_args):
+            calls.append(argv)
+            # Real-world model ambiguity appears in stderr increment from the child process.
+            with open(_stderr, "a") as f:
+                f.write('Error: Model "foo" is ambiguous across providers: a, b. Use --provider or provider/model.\n')
+            return 1, "Error: Model \"foo\" is ambiguous across providers: a, b. Use --provider or provider/model.", False, ""
+
+        v, w, r = self._patched(run)
+        with v, w, r:
+            code = reviewer_job.execute(self.args())
+        self.assertEqual(code, 3)
+        self.assertEqual(len(calls), 1)
+
+    def test_negative_verdict_not_retried(self):
+        """scientifically_incorrect / not_evaluable complete the gate, no retry."""
+        calls = []
+        def run(argv, _prompt, _events, _stderr, _timeout, on_session, cwd, *_args):
+            calls.append(argv)
+            on_session("session-neg")
+            output = Path(argv[argv.index("--output-last-message") + 1])
+            output.write_text(json.dumps({
+                "reviewer_id": "independent-fixture",
+                "review_mode": "scientific_review",
+                "result": "not_evaluable",
+                "decision": "do_not_run",
+                "report_markdown": "Missing baseline equivalence probe.",
+            }))
+            return 0, "", False, ""
+
+        v, w, r = self._patched(run)
+        with v, w, r:
+            code = reviewer_job.execute(self.args())
+        self.assertEqual(code, 0)
+        self.assertEqual(len(calls), 1)
+        verdict = json.loads((self.job / "verdict.json").read_text())
+        self.assertEqual(verdict["result"], "not_evaluable")
+
+    def test_no_empty_response_file_on_failure(self):
+        """Empty stdout must not leave a response file; attempts.log instead."""
+        def run(argv, _prompt, _events, _stderr, _timeout, on_session, cwd, *_args):
+            return 1, "", False, ""
+
+        v, w, r = self._patched(run)
+        with v, w, r:
+            code = reviewer_job.execute(self.args())
+        self.assertEqual(code, 3)
+        # No empty response files
+        for p in self.job.glob("response-*.json"):
+            self.assertGreater(p.stat().st_size, 0, f"empty file: {p}")
+        # attempts.log records the failure
+        self.assertTrue((self.job / "attempts.log").is_file())
+        log_lines = (self.job / "attempts.log").read_text().strip().split("\n")
+        self.assertGreaterEqual(len(log_lines), 1)

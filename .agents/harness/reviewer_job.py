@@ -90,6 +90,116 @@ def now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _utc_plus(seconds: float) -> str:
+    return datetime.fromtimestamp(time.time() + seconds, timezone.utc).isoformat()
+
+
+# Quota wait cap: at most three cumulative hours before surfacing to the caller.
+MAX_QUOTA_WAIT_SECONDS = 3 * 3600
+
+# Failure classes that terminate the review immediately (no transport retry).
+_CONFIG_ERROR_MARKERS = (
+    "ambiguous across providers",
+    "not authenticated",
+    "unauthorized",
+    "invalid api key",
+    "usage error",
+)
+
+# Quota/cap markers. `429` alone is transient rate limit unless the text
+# explicitly signals usage/cap/monthly exhaustion.
+_QUOTA_CAP_MARKERS = (
+    "usage limit", "quota", "cap_error", "inference_cap", "monthly", "weekly",
+    "credits", "billing", "insufficient_quota",
+)
+
+
+def _extract_service_error(stdout_text: str) -> str:
+    """Extract ONLY the structured service error from codex/pi stdout.
+    Checks:
+    1. JSON lines with errorMessage field (structured codex errors).
+    2. Lines that ONLY contain known service error patterns (stderr-like
+       content that leaked into stdout).
+    Never scans full task content or assistant text.
+    """
+    # Try structured JSON error extraction first.
+    for line in stdout_text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            event = json.loads(line)
+        except (json.JSONDecodeError, ValueError):
+            continue
+        if isinstance(event, dict):
+            msg = event.get("errorMessage") or event.get("error") or ""
+            if isinstance(msg, str) and msg.strip():
+                return msg
+    # If no structured error, check for known service-error-only lines.
+    for line in stdout_text.splitlines():
+        line = line.strip()
+        if any(m in line.lower() for m in (
+            "ambiguous across providers", "not authenticated", "unauthorized",
+            "invalid api key", "usage error", "usage limit", "quota",
+            "cap_error", "inference_cap", "rate limit", "too many requests",
+            "error 429", "try again",
+        )):
+            return line
+    return ""
+
+
+def classify_attempt_failure(
+    stdout_error_text: str,
+    stderr_delta: str,
+    timed_out: bool,
+) -> tuple[str, float | None, str]:
+    """Classify one failed transport attempt.
+
+    Uses ONLY:
+    - stdout_error_text: structured service error extracted by
+      _extract_service_error() from this attempt's stdout events.
+    - stderr_delta: stderr increment from this attempt only.
+    - timed_out flag.
+    Never scans full stdout (avoids confusing task content with service errors).
+    """
+    text = f"{stdout_error_text}\n{stderr_delta}".lower()
+    if timed_out:
+        return "transient", None, "attempt timed out"
+    if any(m in text for m in _CONFIG_ERROR_MARKERS):
+        return "config_error", None, stderr_delta.strip() or stdout_error_text.strip() or "permanent configuration / authentication failure"
+    retry = _parse_retry_after_seconds(text)
+    if retry is not None:
+        if any(m in text for m in _QUOTA_CAP_MARKERS):
+            return "quota_exhausted", retry, stderr_delta.strip() or stdout_error_text.strip() or "quota/rate limit with reported recovery"
+        return "transient", retry, stderr_delta.strip() or stdout_error_text.strip() or "HTTP 429 / rate limit"
+    if any(m in text for m in _QUOTA_CAP_MARKERS):
+        return "quota_exhausted", None, stderr_delta.strip() or stdout_error_text.strip() or "quota/rate limit without recovery time"
+    if "429" in text or "rate limit" in text or "too many requests" in text:
+        return "transient", None, stderr_delta.strip() or stdout_error_text.strip() or "HTTP 429 / rate limit"
+    return "unknown", None, stderr_delta.strip() or stdout_error_text.strip() or "unclassified failure"
+
+
+_RETRY_AFTER_PATTERNS = (
+    (re.compile(r"try again in ~?(\d+)\s*min", re.IGNORECASE), 60),
+    (re.compile(r"try again in ~?(\d+)\s*h(?!d)", re.IGNORECASE), 3600),
+    (re.compile(r"resets? in ~?(\d+)d\s*(\d+)h", re.IGNORECASE), None),
+    (re.compile(r"retry-after:\s*(\d+)", re.IGNORECASE), 1),
+)
+
+
+def _parse_retry_after_seconds(text: str) -> float | None:
+    for pattern, multiplier in _RETRY_AFTER_PATTERNS:
+        match = pattern.search(text)
+        if not match:
+            continue
+        if multiplier is None:
+            days, hours = int(match.group(1)), int(match.group(2))
+            return float(days * 86400 + hours * 3600)
+        value = int(match.group(1))
+        return float(value * multiplier)
+    return None
+
+
 def canonical_json(value: Any) -> bytes:
     return json.dumps(
         value, ensure_ascii=False, sort_keys=True, separators=(",", ":")
@@ -548,9 +658,12 @@ def run_process(
     timeout_seconds: float,
     on_session,
     cwd: Path,
-) -> tuple[int, str, bool]:
+) -> tuple[int, str, bool, str]:
     lines: list[str] = []
     timed_out = False
+    # Capture the stderr increment owned by this attempt (the log is append-only
+    # across attempts, so only the tail written in this call is meaningful).
+    stderr_start = stderr_path.stat().st_size if stderr_path.is_file() else 0
     with event_path.open("a", encoding="utf-8") as events, stderr_path.open(
         "a", encoding="utf-8"
     ) as errors:
@@ -564,7 +677,13 @@ def run_process(
             cwd=cwd,
         )
         assert process.stdin is not None and process.stdout is not None
-        process.stdin.write(prompt)
+        try:
+            process.stdin.write(prompt)
+        except BrokenPipeError:
+            # Child closed stdin before we finished writing (e.g. immediate
+            # exit on config/quota). Continue reading stdout/stderr for
+            # error classification; wait/reap below.
+            pass
         process.stdin.close()
         selector = selectors.DefaultSelector()
         selector.register(process.stdout, selectors.EVENT_READ)
@@ -601,7 +720,15 @@ def run_process(
                     lines.append(remainder)
                 break
         selector.close()
-        return process.wait(), "".join(lines), timed_out
+        stderr_end = stderr_path.stat().st_size if stderr_path.is_file() else 0
+        stderr_delta = ""
+        if stderr_end > stderr_start and stderr_path.is_file():
+            with stderr_path.open("rb") as stream:
+                stream.seek(stderr_start)
+                stderr_delta = stream.read(stderr_end - stderr_start).decode(
+                    "utf-8", errors="replace"
+                )
+        return process.wait(), "".join(lines), timed_out, stderr_delta
 
 
 def reviewer_prompt(task: str, review_kind: str, mode: str | None = None) -> str:
@@ -747,6 +874,8 @@ def execute(args: argparse.Namespace) -> int:
                 "replacement": 0,
                 "resumes_used": 0,
                 "session_id": None,
+                "invocations": 0,
+                "quota_deadline": None,
                 "status": "pending",
                 "created_at": now(),
             }
@@ -759,7 +888,42 @@ def execute(args: argparse.Namespace) -> int:
         prompt_path.write_text(initial_prompt, encoding="utf-8")
         os.chmod(prompt_path, 0o600)
         last_error = "review service did not return a verdict"
+        attempts_path = job_dir / "attempts.log"
+        max_total_invocations = (1 + args.max_resumes) * (1 + args.max_replacements)
         while state["replacement"] <= args.max_replacements:
+            # P0-1: hard cap on total transport invocations, independent of
+            # session state machine. Persists across runner restarts.
+            if int(state.get("invocations", 0)) >= max_total_invocations:
+                last_error = (
+                    f"invocation budget exhausted ({max_total_invocations}); "
+                    "service presumed unavailable"
+                )
+                break
+
+            # Quota wait: if a prior attempt was rate-limited and the caller
+            # re-invokes before retry_at, decline to launch the transport.
+            quota = state.get("quota_waiting")
+            if isinstance(quota, dict):
+                retry_at_str = quota.get("retry_at", "")
+                try:
+                    from datetime import datetime as _dt
+                    retry_at = _dt.fromisoformat(retry_at_str.replace("Z", "+00:00"))
+                    if datetime.now(timezone.utc) < retry_at:
+                        remaining = (retry_at - datetime.now(timezone.utc)).total_seconds()
+                        print(json.dumps({
+                            "status": "quota_waiting",
+                            "model": quota.get("model", model),
+                            "retry_at": retry_at_str,
+                            "remaining_seconds": int(remaining),
+                        }, ensure_ascii=False))
+                        return 4
+                    # Retry time arrived: clear the wait flag and retry once.
+                    state.pop("quota_waiting", None)
+                    atomic_json(state_path, state)
+                except (ValueError, TypeError, AttributeError):
+                    state.pop("quota_waiting", None)
+                    atomic_json(state_path, state)
+
             session_id = state.get("session_id")
             is_resume = bool(session_id)
             if is_resume and state["resumes_used"] >= args.max_resumes:
@@ -793,7 +957,7 @@ def execute(args: argparse.Namespace) -> int:
                 state["updated_at"] = now()
                 atomic_json(state_path, state)
 
-            returncode, stdout, timed_out = run_process(
+            returncode, stdout, timed_out, stderr_delta = run_process(
                 argv, prompt, event_path, stderr_path,
                 args.attempt_timeout_seconds, record_session, cwd,
             )
@@ -803,14 +967,33 @@ def execute(args: argparse.Namespace) -> int:
             observed, evidence_channel = observed_model_for_backend(
                 args.backend, event_path, pi_session, state.get("session_id")
             )
+            # P0-3: only persist non-empty response files. If the transport
+            # produced an empty file (common on quota/config/ambiguity failures),
+            # remove it — it carries no evidence.
             if not raw_path.is_file():
-                raw_path.write_text(stdout, encoding="utf-8")
-                os.chmod(raw_path, 0o600)
-            response_text = raw_path.read_text(encoding="utf-8")
+                if stdout.strip():
+                    raw_path.write_text(stdout, encoding="utf-8")
+                    os.chmod(raw_path, 0o600)
+                else:
+                    raw_path = None
+            if raw_path is not None:
+                response_text = raw_path.read_text(encoding="utf-8")
+                if not response_text.strip() and raw_path.is_file():
+                    raw_path.unlink(missing_ok=True)
+                    raw_path = None
+                    response_text = stdout if stdout.strip() else ""
+            else:
+                response_text = stdout if stdout.strip() else ""
             response = parse_json_object(response_text)
             last_error = validate_response(response, review_kind, mode, packet) or ""
             if not last_error and response is not None:
                 raw_sha = sha256_bytes(response_text.encode("utf-8"))
+                # raw_path must not be None here: response_text is non-empty
+                # and parsed successfully, so a path was persisted.
+                if raw_path is None:
+                    raise ValueError(
+                        "internal error: valid verdict but no persisted raw response file"
+                    )
                 verdict = {
                     "schema_version": verdict_schema,
                     "status": "completed",
@@ -875,10 +1058,92 @@ def execute(args: argparse.Namespace) -> int:
                 "review attempt timed out" if timed_out else
                 last_error or f"review process exited {returncode}"
             )
+            category, retry_after, detail = classify_attempt_failure(
+                _extract_service_error(stdout), stderr_delta, timed_out,
+            )
             state.update(status="service_failed", last_error=last_error, updated_at=now())
             atomic_json(state_path, state)
+
+            if category == "config_error":
+                break
+
+            if category == "quota_exhausted":
+                if retry_after is None:
+                    last_error = (
+                        "quota limit hit but recovery time is unknown; "
+                        "manual intervention required before retrying"
+                    )
+                    break
+                # Fixed UTC deadline from first hit; later hits cannot extend it.
+                existing_deadline = state.get("quota_deadline")
+                if not existing_deadline:
+                    state["quota_deadline"] = _utc_plus(MAX_QUOTA_WAIT_SECONDS)
+                    atomic_json(state_path, state)
+                    existing_deadline = state["quota_deadline"]
+                retry_at_ts = time.time() + retry_after
+                from datetime import datetime as _dt
+                deadline_dt = _dt.fromisoformat(existing_deadline)
+                if retry_at_ts > deadline_dt.timestamp():
+                    last_error = (
+                        f"quota recovery at {_utc_plus(retry_after)} exceeds "
+                        f"deadline {existing_deadline} ({retry_after:.0f}s > {MAX_QUOTA_WAIT_SECONDS}s window); "
+                        f"manual intervention required"
+                    )
+                    break
+                state.update(
+                    status="quota_waiting",
+                    quota_waiting={
+                        "retry_at": _utc_plus(retry_after),
+                        "model": model,
+                        "raw_message": detail,
+                        "deadline": existing_deadline,
+                    },
+                    updated_at=now(),
+                )
+                atomic_json(state_path, state)
+                # Record before exiting to quota_waiting.
+                with attempts_path.open("a", encoding="utf-8") as attempts:
+                    attempts.write(json.dumps({
+                        "at": now(),
+                        "execution": execution,
+                        "sequence": sequence,
+                        "exit_code": returncode,
+                        "timed_out": timed_out,
+                        "category": category,
+                        "detail": detail,
+                        "stdout_bytes": len(stdout.encode("utf-8")),
+                        "stderr_bytes": len(stderr_delta.encode("utf-8")),
+                    }, ensure_ascii=False) + "\n")
+                print(json.dumps({
+                    "status": "quota_waiting",
+                    "model": model,
+                    "retry_at": state["quota_waiting"]["retry_at"],
+                    "deadline": existing_deadline,
+                    "detail": detail,
+                }, ensure_ascii=False))
+                return 4
+
             if not state.get("session_id"):
-                state["resumes_used"] = args.max_resumes
+                state["replacement"] += 1
+                state["resumes_used"] = 0
+                state["session_id"] = None
+                atomic_json(state_path, state)
+
+            # P0-3: record the failed attempt BEFORE any branch exit so no
+            # category (config_error / transient / unknown) is missed.
+            with attempts_path.open("a", encoding="utf-8") as attempts:
+                attempts.write(json.dumps({
+                    "at": now(),
+                    "execution": execution,
+                    "sequence": sequence,
+                    "exit_code": returncode,
+                    "timed_out": timed_out,
+                    "category": category,
+                    "detail": detail,
+                    "stdout_bytes": len(stdout.encode("utf-8")),
+                    "stderr_bytes": len(stderr_delta.encode("utf-8")),
+                }, ensure_ascii=False) + "\n")
+            time.sleep(5)
 
         state.update(status="capability_gap", last_error=last_error, updated_at=now())
         atomic_json(state_path, state)
