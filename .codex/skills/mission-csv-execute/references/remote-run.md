@@ -48,7 +48,14 @@
 
    request 默认使用 `artifact_pull_policy:{"mode":"minimal","on_demand":[]}`：顶层 `artifacts` 与 `adapter_contract.artifacts` 只声明结论所需的 summary、必要日志或 manifest；完成校验所需 progress/summary 也属于最小清单。其他逐样本 trace 放在 `on_demand`，失败或真实 gap 时才精确拉取。official 可省略 `local_pull_root`，默认 `<source.repo_root>/remote_artifacts/<ExpID>`，由 rrctl 追加 `<RunID>`。受限 smoke/probe 必须显式使用当前 Mission 目录内的隔离 pull root，远端 output root 的路径组件包含 RunID，不进入正式科研记录。
 
-   builder 通过 stdin 解析本身就是 request JSON/转义检查；解析失败时原地修正输入，不写失败 request 文件。新增或修改 adapter、adapter contract、JSON/JSONL 输出格式或 required fields 时，必须在 GPU launch 前用代表性本地 fixture 跑实际 adapter：
+   builder 通过 stdin 解析本身就是 request JSON/转义检查；解析失败时原地修正输入，不写失败 request 文件。新增或修改 adapter、adapter contract、JSON/JSONL 输出格式或 required fields 时，必须在 GPU launch 前用代表性本地 fixture 跑实际 adapter。`fixture_contract.py` 会按 `metadata.adapter_contract` 自动合成符合契约的 progress/summary/artifacts，再调真实 adapter 跑三个 phase：
+
+   ```bash
+   python .agents/harness/remote/fixture_contract.py \
+     issues/<stem>/runs/<RunID>/runspec.json
+   ```
+
+   也可对已有的固定 fixture 目录调用 `validate_adapter.py`：
 
    ```bash
    python .agents/harness/remote/validate_adapter.py \
@@ -57,7 +64,13 @@
 
    它必须覆盖 `first_step/periodic/completion`，并确认 completion 输出 `complete:true`。这样在远程 mutation 前捕获 JSONL 解析、literal dotted key、缺字段和 adapter 输出协议错误。fixture 不替代真实 smoke；它只阻止控制契约错误进入 GPU。
 
-5. 需要 formal review 的 official RunSpec `source.commit` 等于 gate 的 `pre_run_code_commit`；`prerun.gate-provenance.v3` 还必须引用并校验 `prerun.scientific-verdict.v1` artifact。低风险分流使用 route candidate commit。smoke 使用绑定 RunID 的独立输出、`anchors=[]`、无 gate provenance、最小 progress/health 和 `smoke_summary.json`；入口仍检查 CSV/任务、候选 commit、隔离输出、GPU 与 cleanup，不要求先构造 reviewer packet 或 official ingest 材料。
+   **控制契约必须在本地 fixture 上收敛完，再上真机。** 监控 adapter 的下列内容与 GPU 无任何关系，必须在假 workload 上一次改完：`progress_path`/`summary_path` 取值、`progress_format`、`first_step_min_count` 等计数语义、`progress_identity_fields`/`summary_identity_fields`、`summary_required_fields`、序列化与 `complete:true` 写出、退出码与 cleanup 字段。
+
+   **归因规则**：若首步失败原因是路径、计数、字段缺失或序列化（即上段任一取值），不把它当作需要 GPU 的科学问题——在本地 fixture 上修好后重跑，**不另开新 RunID 做同类尝试**。同一类契约失败在同一行出现第二次时，停止重跑并在本地把整张契约表定义清楚。历史教训：只改 `summary_path` → `progress` 首步计数 → `progress_path=null` → 序列化，共耗了 4 个 RunID，全部本来可在本地 10 秒内完成。
+
+   **严格边界**：fixture 只用于证明「监控适配器能正确读到已知格式的文件」，**不得用于证明任何 GPU 或科学行为**。真实 smoke 仍必须走真实运行，其 first-step gate、显存占用、loss/log、checkpoint 存在性不能由 fixture 替代。fixture 输出目录不得进入 Mission 的科研证据路径，也不得作为任何 gate 的通过依据。
+
+5. 需要 formal review 的 official RunSpec `source.commit` 必须与 gate 的 `pre_run_code_commit` **科学行为一致**（行为指纹相等，见 `.agents/harness/remote/change_fingerprint.py`），不要求 commit 字节相等：补文档、补测试、写 issues/ 台账、提交生成物都不会使已通过的审查或 smoke 失效；反之，只要有一条行为相关路径（默认含 `src/`、`scripts/`、配置）发生变化，就必须重跑。判定 fail-closed：无法解析或无法确定时按「行为已变」处理。`prerun.gate-provenance.v3` 还必须引用并校验 `prerun.scientific-verdict.v1` artifact。低风险分流使用 route candidate commit，同样按行为一致性判定，且 change manifest 只需覆盖真实的行为差异。smoke 使用绑定 RunID 的独立输出、`anchors=[]`、无 gate provenance、最小 progress/health 和 `smoke_summary.json`；入口仍检查 CSV/任务、候选行为一致性、隔离输出、GPU 与 cleanup，不要求先构造 reviewer packet 或 official ingest 材料。
 6. 公共入口在 launch 前执行 ready。需要单独诊断时才运行以下命令，不在公共入口前例行重复：
 
    ```bash
@@ -195,6 +208,8 @@ printf '%s' '<mission.csv-state-update.v1 JSON>' \
 | 更新 CSV | `python3 .agents/skills/mission-csv-execute/scripts/csv_state.py <csv> -`，请求从 stdin 输入 |
 | 生成实验记录 | `python3 .agents/harness/records/experiment_records.py build --exp <ExpID>` |
 | 查看记忆状态 | `python3 .agents/harness/memory/research_memory.py --repo-root . status` |
+| 本地 adapter 契约自检 | `python3 .agents/harness/remote/fixture_contract.py <runspec>` |
+| 行为指纹对比 | `python3 .agents/harness/remote/change_fingerprint.py <commit> --compare <commit> --repo .` |
 | 离线完成复查 | `python3 .agents/harness/remote/validate_adapter.py <runspec> <pull 返回的 destination> --phase completion` |
 
 正式 pull 的 destination 直接包含声明的文件；只有 diagnostic snapshot 才包含 control/output 子目录。默认摘要中的 details_path 指向完整响应，可按字段或行读取，不把整段日志反复放入会话。
