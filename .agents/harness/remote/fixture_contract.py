@@ -25,7 +25,7 @@ import argparse
 import json
 import sys
 import tempfile
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 if __package__ in (None, ""):
@@ -91,9 +91,37 @@ def _finite_fields(contract: dict[str, Any], key: str) -> list[str]:
     return fields
 
 
+def _confined_target(output_root: Path, relative: str) -> Path:
+    """把契约里的相对路径安全地落到 output_root 内。
+
+    拒绝：空路径、绝对路径、驱动器/UNC 前缀、包含 `..` 的路径、以及解析后逃出
+    output_root 的路径（含经由符号链接的逃逸）。契约是外部输入，这里按系统边界
+    处理。
+    """
+    if not isinstance(relative, str) or not relative.strip():
+        raise FixtureError("adapter_contract path must be non-empty text")
+    normalized = relative.replace("\\", "/").strip()
+    if normalized.startswith("/") or normalized.startswith("//"):
+        raise FixtureError(f"adapter_contract path must be relative: {relative}")
+    if PurePosixPath(normalized).is_absolute() or ":" in normalized.split("/")[0]:
+        raise FixtureError(f"adapter_contract path has a drive or scheme prefix: {relative}")
+    parts = [part for part in normalized.split("/") if part not in ("", ".")]
+    if not parts or any(part == ".." for part in parts):
+        raise FixtureError(f"adapter_contract path escapes the output root: {relative}")
+    root = output_root.resolve()
+    target = (root / PurePosixPath(*parts)).resolve()
+    if target != root and not target.is_relative_to(root):
+        raise FixtureError(f"adapter_contract path escapes the output root: {relative}")
+    return target
+
+
 def synthesize(runspec: dict[str, Any], output_root: Path) -> dict[str, Any]:
-    """按 adapter_contract 合成 progress/summary 文件，返回写出的清单。"""
+    """按 adapter_contract 合成 progress/summary 文件，返回写出的清单。
+
+    所有写入都被限制在 `output_root` 内；不在仓库内写任何东西。
+    """
     contract = _contract(runspec)
+    output_root = output_root.expanduser()
     output_root.mkdir(parents=True, exist_ok=True)
     context = {
         "run_id": runspec.get("run_id"),
@@ -109,12 +137,11 @@ def synthesize(runspec: dict[str, Any], output_root: Path) -> dict[str, Any]:
     count = _count_records(contract)
     finite = _finite_fields(contract, "progress_finite_fields")
     progress_identity = _identity(contract, "progress_identity_fields", context)
-    with (output_root / progress_path).open("w", encoding="utf-8") as handle:
+    target = _confined_target(output_root, progress_path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    with target.open("w", encoding="utf-8") as handle:
         for index in range(count):
-            if count == 1:
-                value = 0
-            else:
-                value = index
+            value = 0 if count == 1 else index
             record: dict[str, Any] = {count_field: value}
             for name in finite:
                 record.setdefault(name, float(value))
@@ -135,7 +162,9 @@ def synthesize(runspec: dict[str, Any], output_root: Path) -> dict[str, Any]:
         for name in _finite_fields(contract, "summary_finite_fields"):
             summary[name] = 0.0
         summary.update(_identity(contract, "summary_identity_fields", context))
-        (output_root / summary_path).write_text(
+        target = _confined_target(output_root, summary_path)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(
             json.dumps(summary, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
             encoding="utf-8",
         )
@@ -147,7 +176,7 @@ def synthesize(runspec: dict[str, Any], output_root: Path) -> dict[str, Any]:
     for name in artifacts:
         if not isinstance(name, str) or not name:
             raise FixtureError("adapter_contract.artifacts items must be non-empty strings")
-        target = output_root / name
+        target = _confined_target(output_root, name)
         target.parent.mkdir(parents=True, exist_ok=True)
         if not target.exists():
             target.write_text("", encoding="utf-8")
@@ -168,9 +197,26 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("runspec", type=Path, help="RunSpec JSON 路径")
     parser.add_argument("--output-root", type=Path, default=None,
-                        help="fixture 输出目录；默认在系统临时目录下新建")
+                        help="fixture 输出目录；默认在系统临时目录下新建。"
+                             "传入的目录必须位于仓库之外，避免污染科研证据路径。")
     parser.add_argument("--phase", action="append", choices=PHASES, dest="phases")
     args = parser.parse_args(argv)
+    if args.output_root is not None:
+        repo_root = None
+        try:
+            spec = json.loads(args.runspec.read_text(encoding="utf-8"))
+            repo_root = (spec.get("source") or {}).get("repo_root")
+        except (OSError, UnicodeError, json.JSONDecodeError):
+            repo_root = None
+        if repo_root:
+            root = Path(str(repo_root)).expanduser().resolve()
+            candidate = args.output_root.expanduser().resolve()
+            if candidate == root or candidate.is_relative_to(root):
+                print(json.dumps({
+                    "ok": False,
+                    "error": "fixture output root must stay outside the repository",
+                }, ensure_ascii=False))
+                return 2
     temporary = None
     output_root = args.output_root
     if output_root is None:

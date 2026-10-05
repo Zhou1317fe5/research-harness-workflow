@@ -87,6 +87,28 @@ def git(repo_root: Path, *args: str) -> subprocess.CompletedProcess[str]:
     )
 
 
+def same_scientific_behavior(repo_root: Path, left: str, right: str) -> bool:
+    """两个 commit 的科学行为是否一致。
+
+    packet/smoke/gate 绑定的是**科学行为**，不是 commit 字节。本脚本可独立运行，
+    也可被 reviewer_job 导入，因此按需把仓库的 `.agents` 目录加进 sys.path，
+    拿不到实现时按「行为不同」处理（fail-closed）。
+    """
+    if left == right:
+        return True
+    harness_root = Path(repo_root) / ".agents"
+    if not (harness_root / "harness/remote/change_fingerprint.py").is_file():
+        return False
+    if str(harness_root) not in sys.path:
+        sys.path.insert(0, str(harness_root))
+    try:
+        from harness.remote.change_fingerprint import FingerprintError, same_behavior
+
+        return same_behavior(Path(repo_root), left, right)
+    except (FingerprintError, ImportError, OSError):
+        return False
+
+
 def committed_diff_paths(
     repo_root: Path, base_commit: str, reviewed_commit: str, errors: list[str]
 ) -> list[str]:
@@ -171,7 +193,11 @@ def validate_baseline_equivalence(raw: dict[str, Any], errors: list[str]) -> Non
 
 
 def validate_smoke(
-    packet: dict[str, Any], commit: str, errors: list[str], warnings: list[str]
+    packet: dict[str, Any],
+    commit: str,
+    errors: list[str],
+    warnings: list[str],
+    repo_root: Path,
 ) -> None:
     raw = packet.get("pre_review_smoke")
     if not isinstance(raw, dict):
@@ -210,11 +236,12 @@ def validate_smoke(
         return
 
     candidate = require_text(raw, "candidate_commit", "pre_review_smoke", errors)
-    if candidate and candidate != commit:
+    if candidate and not same_scientific_behavior(repo_root, candidate, commit):
         add_error(
             errors,
             "pre_review_smoke_commit_mismatch",
-            "pre_review_smoke.candidate_commit must equal pre_run_code_commit",
+            "pre_review_smoke.candidate_commit must match pre_run_code_commit "
+            "on scientific behavior",
         )
     if candidate and not COMMIT_RE.fullmatch(candidate):
         add_error(
@@ -447,8 +474,9 @@ def validate_packet(packet: Any) -> dict[str, Any]:
     validate_local_validation(packet, errors)
     validate_critical_values(packet, review_mode, errors)
     validate_experiment(packet, review_mode, errors)
+    repo_root = Path(repo_root_text).expanduser() if repo_root_text else Path(".")
     if review_mode == "scientific_review":
-        validate_smoke(packet, commit, errors, warnings)
+        validate_smoke(packet, commit, errors, warnings, repo_root)
 
     commit_valid = bool(COMMIT_RE.fullmatch(commit))
     base_valid = bool(COMMIT_RE.fullmatch(base_commit))
@@ -465,7 +493,6 @@ def validate_packet(packet: Any) -> dict[str, Any]:
             "review_diff_base_commit must be a full 40-character lowercase commit hash",
         )
 
-    repo_root = Path(repo_root_text).expanduser() if repo_root_text else Path(".")
     if not repo_root.is_dir():
         add_error(errors, "invalid_repo_root", f"repo_root is not a directory: {repo_root}")
     elif git(repo_root, "rev-parse", "--is-inside-work-tree").stdout.strip() != "true":

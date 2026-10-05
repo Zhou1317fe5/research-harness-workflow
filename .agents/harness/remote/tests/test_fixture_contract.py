@@ -5,6 +5,7 @@
 adapter 不健康/未完成时被发现，以及 fixture 不写进仓库内路径。
 """
 import json
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -118,6 +119,69 @@ class FixtureContractTests(unittest.TestCase):
                 json.loads(self._runspec(GOOD_ADAPTER, contract).read_text(encoding="utf-8")),
                 self.root / "out3",
             )
+
+    def test_contract_paths_cannot_escape_output_root(self):
+        """契约是外部输入：绝对路径、`..`、符号链接逃逸都必须被拒。"""
+        outside = self.root / "outside.json"
+        for bad in (
+            "/etc/passwd",
+            "../outside.json",
+            "nested/../../outside.json",
+            "C:/windows/system32/x.json",
+        ):
+            with self.subTest(path=bad):
+                contract = dict(self.contract)
+                contract["summary_path"] = bad
+                with self.assertRaises(FixtureError):
+                    synthesize(
+                        json.loads(self._runspec(GOOD_ADAPTER, contract).read_text(encoding="utf-8")),
+                        self.root / "out-escape",
+                    )
+                self.assertFalse(outside.exists())
+
+    def test_absent_summary_path_is_optional_not_an_escape(self):
+        contract = dict(self.contract)
+        contract["summary_path"] = ""
+        written = synthesize(
+            json.loads(self._runspec(GOOD_ADAPTER, contract).read_text(encoding="utf-8")),
+            self.root / "out-optional",
+        )
+        self.assertNotIn("summary", written)
+
+    def test_contract_artifact_paths_cannot_escape(self):
+        contract = dict(self.contract)
+        contract["artifacts"] = ["../escaped.txt"]
+        with self.assertRaises(FixtureError):
+            synthesize(
+                json.loads(self._runspec(GOOD_ADAPTER, contract).read_text(encoding="utf-8")),
+                self.root / "out-escape2",
+            )
+
+    def test_symlinked_output_root_escape_is_rejected(self):
+        """output_root 内的符号链接不得把写入带到外面。"""
+        out = self.root / "out-link"
+        out.mkdir()
+        target = self.root / "secret"
+        target.mkdir()
+        (out / "link").symlink_to(target, target_is_directory=True)
+        contract = dict(self.contract)
+        contract["summary_path"] = "link/summary.json"
+        with self.assertRaises(FixtureError):
+            synthesize(
+                json.loads(self._runspec(GOOD_ADAPTER, contract).read_text(encoding="utf-8")),
+                out,
+            )
+        self.assertFalse((target / "summary.json").exists())
+
+    def test_output_root_inside_repo_is_rejected_by_cli(self):
+        completed = subprocess.run(
+            [sys.executable, str(ROOT / ".agents/harness/remote/fixture_contract.py"),
+             str(self._runspec(GOOD_ADAPTER)), "--output-root", str(self.repo / "inside")],
+            capture_output=True, text=True, check=False,
+            env={"PATH": "/usr/bin:/bin"},
+        )
+        self.assertEqual(completed.returncode, 2)
+        self.assertIn("outside the repository", completed.stdout)
 
     def test_unhealthy_adapter_is_detected_locally(self):
         with self.assertRaisesRegex(ValueError, "not healthy"):

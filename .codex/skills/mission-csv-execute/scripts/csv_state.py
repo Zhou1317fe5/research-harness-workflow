@@ -37,17 +37,23 @@ COMMIT_BOUNDARIES = {
     "terminal",
     "final_review",
 }
-# 只有这些事件代表「远端真的产出过结果」。plumbing 事件（绑定/重试/pre-review
-# smoke 完成）不进这一集合：它们证明流程在动，不证明科学在动。
-SCIENTIFIC_COMPLETION_KINDS = frozenset({
+# 只是**启发式**信号：事件名由执行者自由书写，因此归入「可能暗示完成的终态名称」，
+# 仅供人看，不作为「科学已完成」的判据。权威判据是 CSV 的 remote_state=ingested
+#（它经 ingest 身份校验）。
+HEURISTIC_TERMINAL_KINDS = frozenset({
     "remote_completed",
     "remote_run_terminal",
     "remote_terminal",
     "milestone_completed",
+    "remote_smoke_completed",
 })
 RETRY_EVENT_PREFIXES = ("retry_", "rebind", "supersession", "prebind")
 # 受限用途运行：由 pre_review_smoke / preregistered_read_only_probe 产生的运行。
 RESTRICTED_RUN_EVENT_PREFIXES = ("pre_review_smoke",)
+# 有远端生命周期的行状态；只有这类行存在时，「完成」才有权威定义。
+REMOTE_LIFECYCLE_STATES = frozenset(
+    {"running_remote", "completed", "artifacts_pulled", "ingested", "failed"}
+)
 STATE_NARRATION_BOUNDARIES = frozenset({"none"})
 PROGRESS_SCHEMA = "mission.progress.v1"
 NOTE_ITEM_LIMIT = 512
@@ -375,8 +381,15 @@ def _write_progress_summary(csv_path: Path, rows: list[dict[str, str]], replace)
 
     动机：CSV 与 events.json 记录的是**证据**，读它们需要重建状态。历史会话里人
     反复问「卡点在哪」「多久能完」，说明现有信号不可读；而 rrctl 的 attention
-    唤醒又不等于科学进展。本文件把两者分开：只有远端真的产出结果的事件才算
-    「科学在动」；绑定/重试/pre-review smoke 单独计数。
+    唤醒又不等于科学进展。
+
+    可信度分层（重要）：
+
+    - **权威**：`ingested_rows` / `scientific_completions` 取自 CSV 的
+      `remote_state=ingested`，该状态经 ingest 身份校验。没有远端生命周期记录时
+      写 `unknown`，**不**谎报 0。
+    - **启发式**：事件名由执行者自由书写，因此 `heuristic_terminal_events` /
+      `last_terminal_event` 只作为线索标注，**不得**当作完成判据。
 
     本文件是派生视图：不参与任何闭环判定，不替代 CSV 或 events.json，删除后可由
     下一次写回重建。任何以「文件存在」为条件的校验都不要引用它。
@@ -391,7 +404,7 @@ def _write_progress_summary(csv_path: Path, rows: list[dict[str, str]], replace)
         if isinstance(payload, list):
             events = payload
     latest: dict[str, tuple[str, str]] = {}
-    counts = {"completion": 0, "retry": 0, "restricted": 0}
+    counts = {"terminal": 0, "retry": 0, "restricted": 0}
     for item in events:
         if not isinstance(item, dict):
             continue
@@ -402,9 +415,9 @@ def _write_progress_summary(csv_path: Path, rows: list[dict[str, str]], replace)
         if not isinstance(kind, str) or not kind:
             continue
         row_id = str(item.get("row_id") or "")
-        if kind in SCIENTIFIC_COMPLETION_KINDS:
-            counts["completion"] += 1
-            latest["completion"] = (
+        if kind in HEURISTIC_TERMINAL_KINDS:
+            counts["terminal"] += 1
+            latest["terminal"] = (
                 row_id,
                 f"{kind} {event.get('run_id') or event.get('new_run_id') or event.get('row_run_id') or '-'}",
             )
@@ -414,7 +427,8 @@ def _write_progress_summary(csv_path: Path, rows: list[dict[str, str]], replace)
         if kind.startswith(RESTRICTED_RUN_EVENT_PREFIXES):
             counts["restricted"] += 1
     closed = sum(1 for row in rows if _is_closed(row))
-    ingested = sum(1 for row in rows if row.get("remote_state") == "ingested")
+    ingested = [row["id"] for row in rows if row.get("remote_state") == "ingested"]
+    tracked = [row for row in rows if row.get("remote_state") in REMOTE_LIFECYCLE_STATES]
     open_remote = [
         row["id"]
         for row in rows
@@ -427,16 +441,22 @@ def _write_progress_summary(csv_path: Path, rows: list[dict[str, str]], replace)
         f"csv: {csv_path.name}",
         f"rows: {len(rows)}",
         f"closed_rows: {closed}",
-        f"ingested_rows: {ingested}",
-        f"scientific_completions: {counts['completion']}",
-        f"retry_events: {counts['retry']}",
-        f"restricted_run_events: {counts['restricted']}",
     ]
-    if "completion" in latest:
-        row_id, detail = latest["completion"]
-        lines.append(f"last_scientific_completion: {row_id} {detail}")
+    if tracked:
+        lines.append(f"scientific_completions: {len(ingested)}（权威：remote_state=ingested）")
+        if ingested:
+            lines.append("last_scientific_completion: " + ", ".join(ingested[-3:]))
+        else:
+            lines.append("last_scientific_completion: none")
     else:
-        lines.append("last_scientific_completion: none")
+        lines.append("scientific_completions: unknown（本 Mission 无远端生命周期记录）")
+        lines.append("last_scientific_completion: unknown")
+    lines.append(f"heuristic_terminal_events: {counts['terminal']}（启发式：事件名匹配，仅供参考）")
+    lines.append(f"retry_events: {counts['retry']}")
+    lines.append(f"restricted_run_events: {counts['restricted']}")
+    if "terminal" in latest:
+        row_id, detail = latest["terminal"]
+        lines.append(f"last_terminal_event: {row_id} {detail}")
     if "retry" in latest:
         row_id, kind = latest["retry"]
         lines.append(f"last_retry_event: {row_id} {kind}")

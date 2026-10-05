@@ -34,52 +34,50 @@ import subprocess
 from pathlib import Path
 
 # 目录前缀：这些子树不承载科学行为。
+# 注意：**不**把 .agents/、.pi/、.codex/ 整体排除——其中存在真实的项目 adapter、
+# 结果归属与安全相关代码，排除它们会放过真实行为变更。那里面的非行为文件由
+# 后缀与路径组件规则覆盖（如 SKILL.md / tests/ / __pycache__）。
 EXCLUDED_DIR_PREFIXES = (
     "docs/",
     "issues/",
-    "tests/",
-    "test/",
     "remote_artifacts/",
     "research_workspace/",
-    ".agents/",
-    ".pi/",
-    ".codex/",
-    ".claude/",
 )
 
-# 文件名后缀：测试、文档、生成物。
+# 路径组件：出现以下任一组件的路径不承载科学行为。
+EXCLUDED_PATH_SEGMENTS = frozenset(
+    {
+        "__pycache__",
+        "test",
+        "tests",
+    }
+)
+
+# 文件后缀：仅排除明确为散文、文档或编译产物的格式。
+# **不**排除 .txt / .jsonl / .log：它们完全可能是 prompt、数据清单或输入，
+# 按 fail-closed 应算作行为相关。
 EXCLUDED_SUFFIXES = (
     ".md",
     ".rst",
-    ".txt",
     ".pyc",
     ".pyo",
-    ".log",
-    ".jsonl",
-    ".tmp",
-)
-
-# 文件名通配：Python 缓存与常见生成物。
-EXCLUDED_NAME_PARTS = (
-    "__pycache__",
-    ".pyc",
-    ".pyo",
-)
-
-# 生成物文件名（不带目录），这些是运行副产品，不是源码身份。
-EXCLUDED_FILENAMES = frozenset(
-    {
-        "progress.jsonl",
-        "progress.md",
-        "summary.json",
-        "smoke_summary.json",
-        "artifact-index.json",
-    }
 )
 
 
 class FingerprintError(RuntimeError):
     """无法确定某个 commit 的行为指纹。"""
+
+
+def normalize_path(path: str) -> str:
+    """仓库相对路径规范化。
+
+    只去掉真正的当前目录前缀 "`./`"，**不**用 `lstrip`：后者会把 `.env`、`.gitignore`
+    这类隐藏路径的前导点也吃掉。
+    """
+    normalized = path.replace("\\", "/")
+    while normalized.startswith("./"):
+        normalized = normalized[2:]
+    return normalized
 
 
 def is_behavior_path(path: str) -> bool:
@@ -89,17 +87,21 @@ def is_behavior_path(path: str) -> bool:
     """
     if not path:
         return False
-    normalized = path.replace("\\", "/").lstrip("./")
-    name = normalized.rsplit("/", 1)[-1]
-    if name in EXCLUDED_FILENAMES:
+    normalized = normalize_path(path)
+    if not normalized:
         return False
-    if any(part in normalized for part in EXCLUDED_NAME_PARTS):
+    name = normalized.rsplit("/", 1)[-1]
+    if not name or name in {".", ".."}:
         return False
     if normalized.startswith(EXCLUDED_DIR_PREFIXES):
         return False
-    if name.startswith(".") and name.endswith((".md", ".jsonl", ".json")):
+    segments = normalized.split("/")
+    if any(segment in EXCLUDED_PATH_SEGMENTS for segment in segments[:-1]):
         return False
-    return not normalized.endswith(EXCLUDED_SUFFIXES)
+    # 末尾的 tests/test 目录（如 src/tests）同样是测试代码。
+    if len(segments) > 1 and segments[-2] in EXCLUDED_PATH_SEGMENTS:
+        return False
+    return not name.endswith(EXCLUDED_SUFFIXES)
 
 
 def _git(repo_root: Path, *args: str) -> subprocess.CompletedProcess[str]:
@@ -112,7 +114,11 @@ def _git(repo_root: Path, *args: str) -> subprocess.CompletedProcess[str]:
 
 
 def commit_entries(repo_root: Path, commit: str) -> dict[str, str]:
-    """返回 commit 下 ``{path: blob_sha}``（全部被跟踪文件）。"""
+    """返回 commit 下的 ``{path: identity}``。
+
+    identity 包含 blob 哈希与文件模式：**可执行位变化也是行为变化**。子模块
+    （gitlink）不忽略，其 identity 记录目标提交，因此子模块指针移动会被正确识别。
+    """
     result = _git(repo_root, "ls-tree", "-r", "-z", commit)
     if result.returncode != 0:
         raise FingerprintError(
@@ -126,10 +132,12 @@ def commit_entries(repo_root: Path, commit: str) -> dict[str, str]:
         fields = meta.split()
         if len(fields) < 3 or not path:
             continue
-        # 只取 blob；gitlink/submodule 不参与行为指纹。
-        if fields[1] != "blob":
-            continue
-        entries[path] = fields[2]
+        mode, object_type, sha = fields[0], fields[1], fields[2]
+        if object_type == "blob":
+            entries[path] = f"{mode}:{sha}"
+        elif object_type == "commit":
+            # 子模块：目标提交变了就是行为变了。
+            entries[path] = f"{mode}:commit:{sha}"
     return entries
 
 
@@ -147,6 +155,18 @@ def behavior_fingerprint(repo_root: Path, commit: str) -> str:
     entries = behavior_entries(repo_root, commit)
     payload = "".join(f"{path}\0{entries[path]}\n" for path in sorted(entries))
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def coverage_note() -> str:
+    """指纹能保证什么的准确描述，供错误信息与文档引用。
+
+    它证明的是「这些路径的文件内容与模式一致」，**不**等于「科学行为必然相同」：
+    行为还可能依赖环境、数据、外部服务与未纳入版本控制的状态。
+    """
+    return (
+        "行为指纹只保证被覆盖路径的文件内容与模式一致，"
+        "不保证科学行为必然相同（环境、数据与外部状态不在其中）"
+    )
 
 
 def behavior_delta(repo_root: Path, base_commit: str, head_commit: str) -> list[str]:

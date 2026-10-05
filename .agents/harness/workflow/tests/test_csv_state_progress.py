@@ -94,7 +94,8 @@ class ProgressAndCommitAdviceTests(unittest.TestCase):
         self.assertIn("last_scientific_completion: none", text)
         self.assertIn("last_retry_event: ISSUE-01 retry_reconciliation", text)
 
-    def test_progress_tracks_last_completion_row(self):
+    def test_progress_tracks_terminal_event_as_heuristic(self):
+        """事件名只作启发式线索，权威完成数来自 CSV 的 ingested 状态。"""
         self._update(
             row_id="ISSUE-02", set={"remote_state": "running_remote"}, commit_boundary="none"
         )
@@ -105,9 +106,28 @@ class ProgressAndCommitAdviceTests(unittest.TestCase):
             commit_boundary="terminal",
         )
         text = self._progress_text()
-        self.assertIn("scientific_completions: 1", text)
-        self.assertIn("last_scientific_completion: ISSUE-02 remote_completed run-42", text)
+        self.assertIn("heuristic_terminal_events: 1", text)
+        self.assertIn("last_terminal_event: ISSUE-02 remote_completed run-42", text)
+        # completed 不等于 ingested：未 ingest 时权威计数仍为 0。
+        self.assertIn("scientific_completions: 0", text)
         self.assertIn("open_remote_rows: ISSUE-02", text)
+
+    def test_progress_authoritative_count_comes_from_ingested(self):
+        """权威计数只看 CSV 的 remote_state=ingested（不必走完整 ingest 校验）。"""
+        self._write([
+            self._row("ISSUE-01", remote_state="", run_id="r0"),
+            self._row("ISSUE-02", remote_state="ingested", run_id="run-42"),
+        ])
+        self._update(set={"dev_state": "进行中"}, commit_boundary="none")
+        text = self._progress_text()
+        self.assertIn("scientific_completions: 1（权威：remote_state=ingested）", text)
+        self.assertIn("last_scientific_completion: ISSUE-02", text)
+
+    def test_progress_says_unknown_when_no_remote_lifecycle(self):
+        self._update(set={"dev_state": "进行中"}, commit_boundary="none")
+        text = self._progress_text()
+        self.assertIn("scientific_completions: unknown", text)
+        self.assertIn("last_scientific_completion: unknown", text)
 
     def test_progress_is_derived_and_rebuildable(self):
         self._update(set={"dev_state": "进行中"}, commit_boundary="none")

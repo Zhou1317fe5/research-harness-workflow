@@ -66,7 +66,7 @@
 
    **控制契约必须在本地 fixture 上收敛完，再上真机。** 监控 adapter 的下列内容与 GPU 无任何关系，必须在假 workload 上一次改完：`progress_path`/`summary_path` 取值、`progress_format`、`first_step_min_count` 等计数语义、`progress_identity_fields`/`summary_identity_fields`、`summary_required_fields`、序列化与 `complete:true` 写出、退出码与 cleanup 字段。
 
-   **归因规则**：若首步失败原因是路径、计数、字段缺失或序列化（即上段任一取值），不把它当作需要 GPU 的科学问题——在本地 fixture 上修好后重跑，**不另开新 RunID 做同类尝试**。同一类契约失败在同一行出现第二次时，停止重跑并在本地把整张契约表定义清楚。历史教训：只改 `summary_path` → `progress` 首步计数 → `progress_path=null` → 序列化，共耗了 4 个 RunID，全部本来可在本地 10 秒内完成。
+   **归因规则**：若首步失败原因是路径、计数、字段缺失或序列化（即上段任一取值），不把它当作需要 GPU 的科学问题——在本地 fixture 上修好后重跑，**不另开新 RunID 做同类尝试**。同一类契约失败在同一行出现第二次时，停止重跑并在本地把整张契约表定义清楚。历史教训：只改 `summary_path` → `progress` 首步计数 → `progress_path=null` → 序列化，共耗了 4 个 RunID，全部本来可在本地 10 秒内完成。**归因口径**：只有会改变结论的未解决疑点才阻止受影响的实验；远处的 wiring、日志、清理与打包改动只需跑对应的相关检查，不因此停掉科学对照。
 
    **严格边界**：fixture 只用于证明「监控适配器能正确读到已知格式的文件」，**不得用于证明任何 GPU 或科学行为**。真实 smoke 仍必须走真实运行，其 first-step gate、显存占用、loss/log、checkpoint 存在性不能由 fixture 替代。fixture 输出目录不得进入 Mission 的科研证据路径，也不得作为任何 gate 的通过依据。
 

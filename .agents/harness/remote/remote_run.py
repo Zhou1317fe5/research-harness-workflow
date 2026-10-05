@@ -95,8 +95,14 @@ def validate_mission_launch(spec: dict, *, resume: bool = False, spec_path: Path
         if row[field] != expected:
             raise ValueError(f"mission RunSpec identity mismatch: {field}")
     row_commit = tags.get("pre_run_code_commit") if separate_results else row["commit_hash"]
-    if row_commit != commit:
-        raise ValueError("mission RunSpec identity mismatch: commit_hash")
+    # 行绑定的候选与 RunSpec 的 source 只需**科学行为**一致：补文档/台账/测试提交
+    # 后，已绑定的运行仍然合法。否则同一个回路会在行与 RunSpec 之间再出现一次。
+    if row_commit and not same_scientific_behavior(repo, row_commit, commit):
+        raise ValueError(
+            "mission RunSpec identity mismatch: commit_hash has different "
+            "scientific behavior"
+            + behavior_scope_hint(repo, row_commit, commit)
+        )
     if row["run_id"] and row["run_id"] != spec["run_id"]:
         raise ValueError("mission RunSpec identity mismatch: run_id")
     if row["branch"] and row["branch"] != spec["source"]["branch"]:

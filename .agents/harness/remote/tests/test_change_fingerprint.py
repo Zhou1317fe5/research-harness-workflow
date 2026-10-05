@@ -48,12 +48,44 @@ class BehaviorPathTests(unittest.TestCase):
         for path in (
             "src/pkg/__pycache__/runtime.cpython-311.pyc",
             "src/pkg/runtime.pyc",
-            "run/progress.jsonl",
-            "run/smoke_summary.json",
-            "run/artifact-index.json",
+            "src/pkg/runtime.pyo",
         ):
             with self.subTest(path=path):
                 self.assertFalse(is_behavior_path(path))
+
+    def test_ambiguous_filenames_stay_fail_closed(self):
+        """同名生成物与同名源输入无法按文件名区分，因此算作行为相关。
+
+        `progress.jsonl` 可能是运行产物，也可能是离线 manifest；`summary.json` 可能是
+        生成摘要，也可能是源输入。按目录排除（issues/、remote_artifacts/）才是安全的
+        方式；靠文件名宽恕会放过真实变更。
+        """
+        for path in (
+            "run/progress.jsonl",
+            "run/summary.json",
+            "run/smoke_summary.json",
+            "configs/prompts/model.txt",
+            "data/manifest.jsonl",
+        ):
+            with self.subTest(path=path):
+                self.assertTrue(is_behavior_path(path))
+
+    def test_workflow_and_project_config_are_behavior(self):
+        """工作流与项目适配器里存在真实行为代码，不得整体排除。"""
+        for path in (
+            ".agents/harness/remote/project_adapters.py",
+            ".agents/harness/config/project.toml",
+            ".codex/skills/mission-csv-execute/scripts/csv_state.py",
+            ".pi/skills/pre-run-implementation-review/scripts/prerun_route.py",
+        ):
+            with self.subTest(path=path):
+                self.assertTrue(is_behavior_path(path))
+
+    def test_test_directories_excluded_but_hidden_paths_kept(self):
+        self.assertFalse(is_behavior_path(".codex/skills/x/tests/test_a.py"))
+        self.assertFalse(is_behavior_path("src/tests/test_b.py"))
+        self.assertTrue(is_behavior_path(".env"))
+        self.assertTrue(is_behavior_path(".github/workflows/ci.yml")),
 
     def test_unknown_paths_default_to_behavior(self):
         """fail-closed：未识别的路径算作行为相关。"""
