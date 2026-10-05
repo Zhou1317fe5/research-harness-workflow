@@ -37,6 +37,19 @@ COMMIT_BOUNDARIES = {
     "terminal",
     "final_review",
 }
+# 只有这些事件代表「远端真的产出过结果」。plumbing 事件（绑定/重试/pre-review
+# smoke 完成）不进这一集合：它们证明流程在动，不证明科学在动。
+SCIENTIFIC_COMPLETION_KINDS = frozenset({
+    "remote_completed",
+    "remote_run_terminal",
+    "remote_terminal",
+    "milestone_completed",
+})
+RETRY_EVENT_PREFIXES = ("retry_", "rebind", "supersession", "prebind")
+# 受限用途运行：由 pre_review_smoke / preregistered_read_only_probe 产生的运行。
+RESTRICTED_RUN_EVENT_PREFIXES = ("pre_review_smoke",)
+STATE_NARRATION_BOUNDARIES = frozenset({"none"})
+PROGRESS_SCHEMA = "mission.progress.v1"
 NOTE_ITEM_LIMIT = 512
 NOTE_APPEND_LIMIT = 1024
 
@@ -357,6 +370,84 @@ def _atomic_replace_bytes(
         raise
 
 
+def _write_progress_summary(csv_path: Path, rows: list[dict[str, str]], replace) -> Path | None:
+    """把「科学在不在动」变成一眼可读的派生物。
+
+    动机：CSV 与 events.json 记录的是**证据**，读它们需要重建状态。历史会话里人
+    反复问「卡点在哪」「多久能完」，说明现有信号不可读；而 rrctl 的 attention
+    唤醒又不等于科学进展。本文件把两者分开：只有远端真的产出结果的事件才算
+    「科学在动」；绑定/重试/pre-review smoke 单独计数。
+
+    本文件是派生视图：不参与任何闭环判定，不替代 CSV 或 events.json，删除后可由
+    下一次写回重建。任何以「文件存在」为条件的校验都不要引用它。
+    """
+    events: list[Any] = []
+    sidecar_path = csv_path.with_suffix(".events.json")
+    if sidecar_path.exists():
+        try:
+            payload = json.loads(sidecar_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError):
+            payload = None
+        if isinstance(payload, list):
+            events = payload
+    latest: dict[str, tuple[str, str]] = {}
+    counts = {"completion": 0, "retry": 0, "restricted": 0}
+    for item in events:
+        if not isinstance(item, dict):
+            continue
+        event = item.get("event")
+        if not isinstance(event, dict):
+            continue
+        kind = event.get("kind")
+        if not isinstance(kind, str) or not kind:
+            continue
+        row_id = str(item.get("row_id") or "")
+        if kind in SCIENTIFIC_COMPLETION_KINDS:
+            counts["completion"] += 1
+            latest["completion"] = (
+                row_id,
+                f"{kind} {event.get('run_id') or event.get('new_run_id') or event.get('row_run_id') or '-'}",
+            )
+        elif kind.startswith(RETRY_EVENT_PREFIXES):
+            counts["retry"] += 1
+            latest["retry"] = (row_id, kind)
+        if kind.startswith(RESTRICTED_RUN_EVENT_PREFIXES):
+            counts["restricted"] += 1
+    closed = sum(1 for row in rows if _is_closed(row))
+    ingested = sum(1 for row in rows if row.get("remote_state") == "ingested")
+    open_remote = [
+        row["id"]
+        for row in rows
+        if row.get("remote_state") in {"running_remote", "completed", "artifacts_pulled"}
+    ]
+    lines = [
+        "# Mission 进度（由 csv_state.py 自动生成，请勿手工编辑）",
+        "",
+        f"schema: {PROGRESS_SCHEMA}",
+        f"csv: {csv_path.name}",
+        f"rows: {len(rows)}",
+        f"closed_rows: {closed}",
+        f"ingested_rows: {ingested}",
+        f"scientific_completions: {counts['completion']}",
+        f"retry_events: {counts['retry']}",
+        f"restricted_run_events: {counts['restricted']}",
+    ]
+    if "completion" in latest:
+        row_id, detail = latest["completion"]
+        lines.append(f"last_scientific_completion: {row_id} {detail}")
+    else:
+        lines.append("last_scientific_completion: none")
+    if "retry" in latest:
+        row_id, kind = latest["retry"]
+        lines.append(f"last_retry_event: {row_id} {kind}")
+    lines.append("open_remote_rows: " + (", ".join(open_remote) if open_remote else "none"))
+    lines.append("")
+    lines.append("（派生视图：不参与闭环判定，也不替代 CSV 或 events.json。）")
+    progress_path = csv_path.with_suffix(".progress.md")
+    _atomic_replace_bytes(progress_path, ("\n".join(lines) + "\n").encode("utf-8"), replace)
+    return progress_path
+
+
 def _git(args: list[str], cwd: Path) -> str | None:
     """执行 git 并返回单行输出；非仓库或 git 不可用时返回 None。"""
     try:
@@ -575,6 +666,21 @@ def _apply_update_locked(csv_path, request, *, replace):
         _atomic_replace_bytes(sidecar_path, sidecar_bytes, replace)
 
     _atomic_replace_bytes(csv_path, csv_bytes, replace)
+    progress_path = _write_progress_summary(csv_path, rows, replace)
+    # 规则 2 已经要求「按逻辑边界提交」：readiness、unchanged poll、结果绑定和
+    # closing preparation 不单独提交。历史 Mission 仍然产出大量单事件提交
+    # （fss phase2 期间 45% 的提交只动 issues/ 与 docs/）。这里不新增门禁，只把
+    # 「这次写回是否只叙述了状态」变成可观测量，让漂移可见而不是靠自觉。
+    narration_only = boundary in STATE_NARRATION_BOUNDARIES and event is None
+    if narration_only:
+        commit_advice = (
+            "状态叙述写回（commit_boundary=none，无新事件）：按规则 2 不单独提交，"
+            "并入下一个逻辑边界提交。"
+        )
+    elif boundary in STATE_NARRATION_BOUNDARIES:
+        commit_advice = "仅事件追加：与同一逻辑变更合并提交，不按单条事件提交。"
+    else:
+        commit_advice = "到达逻辑边界，可以提交。"
     return {
         "ok": True,
         "row_id": row_id,
@@ -582,6 +688,8 @@ def _apply_update_locked(csv_path, request, *, replace):
         "sidecar": str(sidecar_path) if event is not None else "",
         "commit_boundary": boundary,
         "git_commit_recommended": boundary != "none",
+        "commit_advice": commit_advice,
+        "progress": str(progress_path) if progress_path is not None else "",
         # Authoritative post-write state. The caller must not re-read the CSV to
         # confirm a successful write; doing so was the single largest source of
         # redundant bookkeeping calls.

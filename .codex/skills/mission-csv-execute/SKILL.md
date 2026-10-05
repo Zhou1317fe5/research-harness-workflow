@@ -65,6 +65,13 @@ CSV 更新统一使用 `scripts/csv_state.py`，它锁住整段读改写和 even
 
 **写入前先跑 `scripts/preflight.py <csv> [request.json ...]`**（只读）：把 `csv_state.py` 的请求面校验（schema、commit_boundary、set_note_tags、PRERUN 枚举）、分支上下文与 claim 引用在首次写入前一次性静态检查，避免在关键路径上逐个踩运行期错误。preflight 不代替 `csv_state.py` 的权威校验，只把可预见的失败前移。
 
+写回返回两个人读信号，用来防止上面第 2 条的提交边界规则被无声漂移：
+
+- `commit_advice`：当本次写回只叙述状态（`commit_boundary=none`、无新事件）时，它明确告知不单独提交；到达 `implementation`/`terminal`/`final_review` 等逻辑边界时才给出可提交。按它合并，不要逐条事件提交。
+- `<stem>.progress.md`：`csv_state.py` 自动重建的派生视图，四类计数分开：`scientific_completions`（只在远端真的产出结果的事件上 +1）、`retry_events`（绑定/重试/候选更新）、`restricted_run_events`（pre-review smoke / 只读探针）、`open_remote_rows`。它回答「科学在不在动」，而 rrctl attention 只回答「进程有没有动静」。
+
+`<stem>.progress.md` **不参与任何闭环判定**，也不替代 CSV 或 events.json；删掉可由下一次写回重建。不要以它的存在作为任何完成条件，也不要手工编辑。同一 Mission 里 `retry_events` 远大于 `scientific_completions` 时，按规则转向集中根因诊断，而不是继续换候选 commit 重跑。
+
 # 闭环完成判定
 
 `csv_completion_errors()` 是唯一最终闭环判断，核验实际 Git、ingest、claim、post-run result analysis 和 handoff；恢复与生命周期 completed 共用它。`final_ready.py` 只检查 closing 前置条件，通过不代表 Mission 已完成。用户要求不提交时，保留真实未提交状态和剩余项。
