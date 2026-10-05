@@ -26,8 +26,8 @@
 
 | 位置 | 内容 |
 |---|---|
-| .codex/skills/、.claude/skills/ | Codex 技能及其完整 Claude 镜像，共用相同执行协议 |
-| .agents/skills | 指向 .codex/skills 的发现入口 |
+| .codex/skills/ | canonical 技能源，唯一需要手工编辑的一份 |
+| .claude/skills/、.agents/skills/ | 指向 .codex/skills 的符号链接（发现入口，不是副本） |
 | .pi/ | Pi 项目配置、扩展与 Reviewer 入口 |
 | .agents/harness/ | 程序实现、配置与模板 |
 | scripts/train.sh、scripts/eval.sh | 项目训练、评估脚本模板，集中维护各自命令和参数 |
@@ -35,6 +35,6 @@
 | research_workspace/ | 科研状态、结论和实验分析 |
 | remote_artifacts/ | 原始运行证据 |
 
-技能统一在 `.codex/skills/` 维护，完整同步到 `.claude/skills/`，包括审查启动指引。Pi 通过共享入口读取这些技能，科学审查使用 `.pi/skills/` 中的启动适配。
+技能统一在 `.codex/skills/` 维护，`.claude/skills/` 与 `.agents/skills/` 均是指向它的符号链接（发现入口，不是副本）。Pi 通过共享入口读取这些技能，只有列为 Pi 适配的 skill（当前是 `pre-run-implementation-review`）读 `.pi/skills/` 下的真实副本，且与 canonical 的差异只允许落在标记的宿主块内。该约束由 `python3 .agents/harness/workflow/check_skill_mirrors.py` 机器校验，避免同一 Mission 前后段读到两套规则。
 
 本仓库基于 [Missions](https://github.com/flowing-water1/Missions) 整理科研执行流程。

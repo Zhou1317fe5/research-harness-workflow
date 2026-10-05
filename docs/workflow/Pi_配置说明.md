@@ -35,7 +35,7 @@ pi install npm:@cortexkit/pi-magic-context
 
 安装后重启 Pi，用 `pi list` 确认 packages 已注册。
 
-项目侧需要保留模板中的 `.codex/skills`、`.agents/skills` 和 `.pi/`。即使选择 Pi，普通科研 skills 仍通过 `.agents/skills` 读取共享内容。按通用接入教程复制基础文件后，再复制 Pi 项目文件：
+项目侧需要保留模板中的 `.codex/skills`、`.agents/skills` 和 `.pi/`。按通用接入教程复制基础文件后，再复制 Pi 项目文件：
 
 ```bash
 cp -Rn /tmp/research-harness-template/.pi /path/to/your-project/
@@ -44,6 +44,29 @@ pi
 ```
 
 已有同名配置时合并需要的字段，保留模板的软链接。后续的 Pi 交互命令都在这个项目会话中执行。
+
+### 技能从哪一份读（唯一事实源）
+
+同一个 skill 在仓库里可能有不止一份文本，**宿主实际读哪一份是固定的**：
+
+| 宿主 | 读取路径 | 性质 |
+|---|---|---|
+| Codex | `.codex/skills/<name>/SKILL.md` | canonical 源，唯一需要手工编辑的一份 |
+| Claude Code | `.claude/skills/` | 软链接到 `.codex/skills`，不是副本 |
+| 任何经共享入口发现的宿主 | `.agents/skills/` | 软链接到 `.codex/skills`，不是副本 |
+| Pi | `.pi/skills/<name>/SKILL.md`（存在时） | 真实副本；不存在则回落到 `.agents/skills` |
+
+因此 **Pi 会话里 `mission-*` 等 skill 仍读 `.codex/skills` 的内容**（经 `.agents/skills` 链接），只有列为 Pi 适配的 skill（当前是 `pre-run-implementation-review`）读 `.pi/skills/` 下的副本。改 skill 只改 `.codex/skills`；`.pi/skills` 副本只在需要宿主专属启动命令时才存在。
+
+两份文本允许不同的**唯一**位置是被标记的宿主块：
+
+```markdown
+<!-- reviewer-launcher:start -->
+（这里放本宿主的启动命令）
+<!-- reviewer-launcher:end -->
+```
+
+块之外必须逐字一致。这一条由 `python3 .agents/harness/workflow/check_skill_mirrors.py` 机器校验，并已包含在 `workflow_sync.py --run-tests` 的回归里。同步公共文件后请运行它；报错就说明同一 Mission 的前后段会读到两套规则。
 
 先用 `/login` 配好 provider，再用 `/model` 选择主 Executor。日常执行可以选择便宜或高额度模型。使用 `newapi` 之类的自定义 provider 时，先按 [Pi 模型配置文档](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/models.md) 配置 `~/.pi/agent/models.json`，确认模型出现在 `/model` 列表中。密钥使用环境变量引用，不写入项目文件。
 
