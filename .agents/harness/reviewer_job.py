@@ -1065,6 +1065,20 @@ def execute(args: argparse.Namespace) -> int:
             atomic_json(state_path, state)
 
             if category == "config_error":
+                # Write attempts.log before break (config error must be logged for audit).
+                attempts_path = job_dir / "attempts.log"
+                with attempts_path.open("a", encoding="utf-8") as attempts:
+                    attempts.write(json.dumps({
+                        "at": now(),
+                        "execution": execution,
+                        "sequence": sequence,
+                        "exit_code": returncode,
+                        "timed_out": timed_out,
+                        "category": category,
+                        "detail": detail,
+                        "stdout_bytes": len(stdout.encode("utf-8")),
+                        "stderr_bytes": len(stderr_delta.encode("utf-8")),
+                    }, ensure_ascii=False) + "\n")
                 break
 
             if category == "quota_exhausted":
