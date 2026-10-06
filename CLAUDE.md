@@ -77,10 +77,6 @@ research_workspace/
 - 不终止非当前任务启动的进程。长生命周期进程尽量少开，启动前检查可复用实例，结束即回收。
 - **命令超时优先用工具自带参数**：`ssh -o ConnectTimeout=`、`rrctl --max-wait-seconds`、工具内部预算；shell 层 `timeout` 只是额外一层，不改变权限判定。解释器内联代码里的删除 API（如 `shutil` 的 `rmtree`）由本地 `pi-interpreter-guard` 扩展按内容拦截；cc-safety-net 在 `standard` 级别放行它们，而改用其 `paranoid_interpreters` 会误伤大量正常内联命令。
 
-# 搜索分工
-
-按“要找什么”选工具（`fast_context_search` / `fffind` / `ffgrep` / `smart-search`）。**完整规则与参数取向见全局用户指令 `~/.pi/agent/AGENTS.md`**，此处不重复，避免全局与项目两份漂移。
-
 # Git 与提交
 
 - 开始任务先记录 `git status` 和已暂存 patch，只 add 本任务路径。
