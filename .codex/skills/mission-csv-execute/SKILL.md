@@ -56,8 +56,8 @@ CSV 的 artifact root 按以下顺序确定：
 29. **每个 CSV 都必须有 closing review，但不默认重复独立审查**：加载合法 CSV 后若没有 `REVIEW-*` 行，先追加 `REVIEW-01`。若同一 scientific commit 已完成独立 PRERUN、此后 scientific contract/dataflow/sink 未改变且机械证据无冲突，closing 直接走 `evidence-close`；只有未经过等价独立审查的高风险交付、证据冲突或疑似 current-scope gap 才走独立 capability ladder。
 30. **保护用户 index**：开始时记录 `git diff --cached` 的路径与 patch。提交只命名本任务路径；已暂存的无关改动保持原样且不得进入提交。同一路径存在用户已暂存 patch、或无法精确隔离 index delta 时，记录 human-required blocker。禁止用 `git stash`、reset、移动或隐藏用户工作来简化提交。
 31. **判据分类与阶段顺序**：按批准 spec 的 Research Contract（§9.0）标注每个判据属于前提（机制是否到达输出、有无泄漏、baseline/采样/指标是否公平、结果归属、算子是否与理论一致）还是诊断（精度、完备性、工程规范、无关边界）。前提未过才阻止受影响的运行；诊断只记入 validation gaps 并继续。同一前提不得由多条判据重复阻塞——权威判据通过后，附属判据降级为诊断。门禁报未通过时必须写明是哪条判据、哪一类，不能只给布尔值。
-32. **先问机制，再证正确**：每个 Mission 的第一笔远程投入是最便宜的机制 screen，不是精度校验。先用最小设置确认“机制到底有没有改变输出”，再决定是否投入精度校验与完整矩阵。分开两种失败：输出完全没变是接线问题（前提类，先修代码，与 idea 无关）；输出变了但指标没改善才需要判断是精度还是机制问题。省的是诊断，不是前提。
-33. **“无信号”是合法终态**：允许以“Hypothesis 被否 / 信号不达预注册阈值”正常关闭 Mission，记为有效结论而非失败。粗看结果不得作为论文证据；看到正向信号也不等于 idea 已验证，只说明值得投后续校验。此规则不阻止任何运行，只给“停下来”一个合法出口。
+32. **先问机制，再证正确**：每个 Mission 的第一笔远程投入是最便宜的机制 screen，不是精度校验。先用最小设置确认机制是否真的改变了输出，再决定是否投入精度校验与完整矩阵。判据属于前提还是诊断按批准 spec（§9.0）在运行前冻结：会影响结论的精度问题（候选排序、符号、方向、稳定性）同样属于前提。输出未变优先查接线，但输出未变也可能是合法拒绝、回退或决策不敏感，须看机制内部是否消费了候选而不是只看最终指标。
+33. **“无信号”是合法终态**：允许将“本次未观察到预注册收益”作为正常收工结论关闭 Mission，不必当作失败或未完成。但只有样本量 / 重复足够、实现已验证、且真正达到预注册 Failure Signal 时才写“Hypothesis 被否”；否则写“inconclusive，原因待查”。小样本结果能否用于论文取决于实际协议与证据质量，不取决于走完某个固定步骤；看到正向信号也不等于 idea 已验证。此规则不阻止任何运行，只给“停下来”一个合法出口。
 34. **最小工件直接落盘**：新 Mission 从一开始只写终态所需工件，不创建一次性 request/state/inspect/ready/launch/pull JSON，不在 closing 阶段运行压缩或生成 `artifact-index.json`。CSV + events 是状态记录；每个实际启动的 RunID 最多保留一个 canonical RunSpec；PRERUN 与 closing 各最多保留一个最终结构化结论。`compact_artifacts.py` 仅用于 legacy Mission 的人工归档/GC，不是 closing 步骤。
 
 下文 `<skill-dir>` 指本 Skill 所在目录，命令显式使用该路径，不假设 cwd 是 Skill 目录。接收 CSV 后，若 canonical CSV 缺少结果分析行，先运行 `python3 <skill-dir>/scripts/ensure_result_analysis_row.py <csv-path>`；再运行 `python3 <skill-dir>/scripts/ensure_review_row.py <csv-path>`。提交使用 `scripts/git_isolation.py` 的 `commit_paths`；它会拒绝同路径 staged 冲突并核对提交前后的 index patch。
