@@ -173,6 +173,18 @@ class FixtureContractTests(unittest.TestCase):
             )
         self.assertFalse((target / "summary.json").exists())
 
+    def test_non_empty_output_root_is_rejected(self):
+        """非空目录会被拒绝，绝不覆盖用户已有文件。"""
+        out = self.root / "userdir"
+        out.mkdir()
+        precious = out / "summary.json"
+        precious.write_text("USER DATA\n", encoding="utf-8")
+        with self.assertRaises(FixtureError):
+            synthesize(
+                json.loads(self._runspec(GOOD_ADAPTER).read_text(encoding="utf-8")), out
+            )
+        self.assertEqual(precious.read_text(encoding="utf-8"), "USER DATA\n")
+
     def test_output_root_inside_repo_is_rejected_by_cli(self):
         completed = subprocess.run(
             [sys.executable, str(ROOT / ".agents/harness/remote/fixture_contract.py"),

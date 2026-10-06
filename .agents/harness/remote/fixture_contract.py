@@ -91,6 +91,24 @@ def _finite_fields(contract: dict[str, Any], key: str) -> list[str]:
     return fields
 
 
+def sanitize_output_root(output_root: Path) -> Path:
+    """确定可写的 fixture 输出目录。
+
+    拒绝非空目录：fixture 会写入契约声明的文件名（如 summary.json），若目标目录已有
+    用户文件就会被静默覆盖。默认路径是新临时目录，不影响正常使用。
+    """
+    root = output_root.expanduser()
+    if root.exists():
+        if not root.is_dir():
+            raise FixtureError(f"output root is not a directory: {root}")
+        if any(root.iterdir()):
+            raise FixtureError(
+                f"output root is not empty, refusing to overwrite: {root}"
+            )
+    root.mkdir(parents=True, exist_ok=True)
+    return root
+
+
 def _confined_target(output_root: Path, relative: str) -> Path:
     """把契约里的相对路径安全地落到 output_root 内。
 
@@ -121,8 +139,7 @@ def synthesize(runspec: dict[str, Any], output_root: Path) -> dict[str, Any]:
     所有写入都被限制在 `output_root` 内；不在仓库内写任何东西。
     """
     contract = _contract(runspec)
-    output_root = output_root.expanduser()
-    output_root.mkdir(parents=True, exist_ok=True)
+    output_root = sanitize_output_root(output_root)
     context = {
         "run_id": runspec.get("run_id"),
         "project": runspec.get("project"),
