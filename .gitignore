@@ -37,3 +37,12 @@ issues/.missions.json
 
 # 本地工作流同步工具，不纳入追踪。
 /.agents/harness/workflow/workflow_sync.py
+
+# 各项目 mission 过程快照目录，不入模板版本控制。
+.final-source/
+.fix-source/
+.official-source/
+.probe-source/
+.rrctl-hsl-observe/
+.smoke-*/
+.local/
