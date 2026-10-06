@@ -194,6 +194,7 @@ printf '%s' '<mission.csv-state-update.v1 JSON>' \
 - `-` 表示从 stdin 读取；这是正常路径，不生成一次性 `state-*.json`。仅在调试失败输入或需要人工转交未应用请求时使用兼容的 `<request.json>` 文件参数。
 - CLI 校验 canonical 28 列或显式外部兼容 19 列、唯一 row id、状态枚举、notes 与 claim 引用；写已提交或 ingested 时同时核验适用事实。单文件使用同目录临时文件 + `os.replace` 原子替换；CSV 与 events 不构成跨文件事务。
 - **写入成功的返回值就是权威后态**：`ok/row/rows_total/columns` 已包含写入后的整行、总行数与列数。禁止在 `ok:true` 之后再 `cat`/`grep`/`DictReader` 读回同一份 CSV 去"确认写进去了"——这是记账调用量最大的单一来源。只有写入失败或需要读取**其他行**时才重新读文件。
+- **记账中断后先认领，不要凭记忆改状态**：rrctl 已启动但记账未落盘（额度中断、崩溃、上下文丢失、GPU 被占）时，行会停在 `not_applicable`，而远端已有活的 RunID。此时用 `reconcile_remote_binding.py` 以 **rrctl inspect 证据**核对身份后认领：它逐项比对 `run_id`/`commit`/`run_spec_sha256`、要求 `backend=process`、活状态下 `executor_alive`/`process_alive`/`workload_alive` 必须全为 true，并拒绝逃逸仓库或缺失的证据文件。**不得**直接改 `remote_state` 绕过它——那等于绕过启动前置条件；也不得重新启动（会与远端撞车）。
 - **进度快照不写 CSV**：`X/44`、episode 计数、GPU 利用率、ETA 的权威源是 `rrctl inspect` 与远端 `matrix_status.json`，写进 CSV 既不增加可恢复性又立刻过时。CSV 只记状态**转换**（`dev_state` 变化、`remote_state` 变化、首步 gate 结论、终态证据）。周期巡检默认不写 CSV，除非触发 Stop Trigger 或状态转换。
 - 详细事件进入 `<csv-stem>.events.json` sidecar，CSV notes 只保留 event digest。不要把重复日志或长审查文本塞入 notes。
 - `commit_boundary:none` 用于 readiness retry、poll、reviewer wait 和 unchanged inspect，输出 `git_commit_recommended:false`；仅 implementation/review/launch/terminal/final_review 阶段边界建议提交。
@@ -212,6 +213,7 @@ printf '%s' '<mission.csv-state-update.v1 JSON>' \
 | 查看记忆状态 | `python3 .agents/harness/memory/research_memory.py --repo-root . status` |
 | 本地 adapter 契约自检 | `python3 .agents/harness/remote/fixture_contract.py <runspec>` |
 | 行为指纹对比 | `python3 .agents/harness/remote/change_fingerprint.py <commit> --compare <commit> --repo .` |
+| 认领已有运行 | `python3 .agents/skills/mission-csv-execute/scripts/reconcile_remote_binding.py <csv> <row_id> <runspec> <inspect.json> --next-action "<下一步>"` |
 | 离线完成复查 | `python3 .agents/harness/remote/validate_adapter.py <runspec> <pull 返回的 destination> --phase completion` |
 
 正式 pull 的 destination 直接包含声明的文件；只有 diagnostic snapshot 才包含 control/output 子目录。默认摘要中的 details_path 指向完整响应，可按字段或行读取，不把整段日志反复放入会话。

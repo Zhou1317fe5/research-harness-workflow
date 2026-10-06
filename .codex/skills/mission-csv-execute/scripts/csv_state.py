@@ -295,11 +295,77 @@ def _validate_retry_binding(
     return True
 
 
+def _validate_remote_binding_reconciliation(
+    original: dict[str, str],
+    updated: dict[str, str],
+    binding: Any,
+    event: Any,
+    csv_path: Path,
+) -> bool:
+    if binding is None:
+        return False
+    required = {'run_id', 'commit', 'run_spec_sha256', 'remote_state', 'evidence_path', 'reason'}
+    if not isinstance(binding, dict) or set(binding) != required:
+        raise StateUpdateError('remote_binding_invalid: expected run_id,commit,run_spec_sha256,remote_state,evidence_path,reason')
+    if not all(isinstance(value, str) and value for value in binding.values()):
+        raise StateUpdateError('remote_binding_invalid: values must be non-empty strings')
+    if original.get('remote_state') not in {'not_applicable', 'running_remote'}:
+        raise StateUpdateError('remote_binding_invalid: row is not reconcilable')
+    if updated.get('remote_state') not in {'running_remote', 'failed', 'completed'}:
+        raise StateUpdateError('remote_binding_invalid: target state must be running_remote, failed, or completed')
+    if original.get('run_id') != binding['run_id'] or updated.get('run_id') != binding['run_id']:
+        raise StateUpdateError('remote_binding_invalid: RunID mismatch')
+    if original.get('commit_hash') != binding['commit'] or updated.get('commit_hash') != binding['commit']:
+        raise StateUpdateError('remote_binding_invalid: commit mismatch')
+    if binding['remote_state'] not in {'launched', 'running', 'first_step_passed', 'failed', 'completed'}:
+        raise StateUpdateError('remote_binding_invalid: unsupported inspect state')
+    if not re.fullmatch(r'[0-9a-f]{64}', binding['run_spec_sha256']):
+        raise StateUpdateError('remote_binding_invalid: run_spec_sha256 must be 64 lowercase hex')
+    repo_root = Path(_git(['rev-parse', '--show-toplevel'], csv_path.parent) or csv_path.parent)
+    evidence = (repo_root / binding['evidence_path']).resolve()
+    if not evidence.is_relative_to(repo_root) or not evidence.is_file():
+        raise StateUpdateError('remote_binding_invalid: inspect evidence missing or escapes repository')
+    try:
+        inspect = json.loads(evidence.read_text(encoding='utf-8'))
+    except (OSError, UnicodeError, json.JSONDecodeError) as error:
+        raise StateUpdateError(f'remote_binding_invalid: inspect evidence unreadable: {error}') from error
+    inspect_result = inspect.get('result') if isinstance(inspect, dict) else None
+    inspect_binding = inspect_result.get('binding') if isinstance(inspect_result, dict) else None
+    inspect_status = inspect_result.get('status') if isinstance(inspect_result, dict) else None
+    monitor = inspect_result.get('monitor') if isinstance(inspect_result, dict) else None
+    observations = monitor.get('observations') if isinstance(monitor, dict) else None
+    if inspect.get('status') != 'succeeded' or not isinstance(inspect_binding, dict) or not isinstance(inspect_status, dict):
+        raise StateUpdateError('remote_binding_invalid: inspect status/binding missing')
+    if inspect_status.get('state') != binding['remote_state']:
+        raise StateUpdateError('remote_binding_invalid: inspect state mismatch')
+    if any(inspect_binding.get(key) != binding_value for key, binding_value in {
+        'run_id': binding['run_id'], 'commit': binding['commit'],
+        'run_spec_sha256': binding['run_spec_sha256'],
+    }.items()):
+        raise StateUpdateError('remote_binding_invalid: inspect identity mismatch')
+    if inspect_binding.get('backend') != 'process':
+        raise StateUpdateError('remote_binding_invalid: backend is not process')
+    if not isinstance(observations, dict):
+        raise StateUpdateError('remote_binding_invalid: process observations missing')
+    if binding['remote_state'] in {'launched', 'running', 'first_step_passed'} and any(
+        observations.get(key) is not True
+        for key in ('executor_alive', 'process_alive', 'workload_alive')
+    ):
+        raise StateUpdateError('remote_binding_invalid: live process observations missing')
+    if not isinstance(event, dict) or event.get('kind') != 'remote_binding_reconciliation':
+        raise StateUpdateError('remote_binding_event_required: kind=remote_binding_reconciliation')
+    for key in required - {'reason'}:
+        if event.get(key) != binding[key]:
+            raise StateUpdateError(f'remote_binding_event_mismatch:{key}')
+    return True
+
+
 def _validate_row_transition(
     original: dict[str, str],
     updated: dict[str, str],
     *,
     retry_binding: bool = False,
+    remote_binding_reconciliation: bool = False,
 ) -> None:
     """写后单调性/junction 校验：original 为读入 CSV 的原值，updated 为写后 row。
 
@@ -323,6 +389,12 @@ def _validate_row_transition(
     if retry_binding and o in {"failed", "artifacts_pulled"}:
         allowed_remote = allowed_remote | {
             "failed", "running_remote", "completed", "artifacts_pulled",
+        }
+    if remote_binding_reconciliation and o in {"not_applicable", "running_remote"}:
+        # 认领：rrctl 已启动但记账未落盘（额度中断/崩溃/上下文丢失）时，把 CSV 拉回
+        # 真实状态。允许 not_applicable->running_remote，因此比 _REMOTE_FORWARD 宽。
+        allowed_remote = allowed_remote | {
+            "not_applicable", "running_remote", "failed", "completed",
         }
     if o == "artifacts_pulled" and u == "not_applicable":
         # 预审 smoke 的产物是门禁证据，不是要 ingest 的科学结果；它的
@@ -558,6 +630,7 @@ def _apply_update_locked(csv_path, request, *, replace):
         "commit_boundary",
         "expected_sha256",
         "retry_binding",
+        "remote_binding_reconciliation",
     }
     unknown = sorted(set(request) - allowed)
     if unknown:
@@ -597,6 +670,7 @@ def _apply_update_locked(csv_path, request, *, replace):
     if event is not None and not isinstance(event, dict):
         raise StateUpdateError("event_invalid: expected object or null")
     retry_binding = request.get("retry_binding")
+    remote_binding_reconciliation = request.get("remote_binding_reconciliation")
 
     original_hash = hashlib.sha256(csv_path.read_bytes()).hexdigest()
     expected_hash = request.get("expected_sha256")
@@ -652,7 +726,15 @@ def _apply_update_locked(csv_path, request, *, replace):
 
     _validate_rows(rows)
     retry_reconciled = _validate_retry_binding(original_row, target, retry_binding, event)
-    _validate_row_transition(original_row, target, retry_binding=retry_reconciled)
+    reconciled_binding = _validate_remote_binding_reconciliation(
+        original_row, target, remote_binding_reconciliation, event, csv_path
+    )
+    _validate_row_transition(
+        original_row,
+        target,
+        retry_binding=retry_reconciled,
+        remote_binding_reconciliation=reconciled_binding,
+    )
     try:
         for row in rows:
             parse_note_tags(row["notes"])
