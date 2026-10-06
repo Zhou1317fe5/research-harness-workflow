@@ -477,29 +477,37 @@ git rm -r --cached -- research_workspace
 
 ### 同步共用工作流文件
 
-模板仓与各项目共用同一份文件：`.agents/harness/`、`.codex/skills/`、
+模板仓与各项目共用同一份文件：`.agents/harness/`、`.agents/skills/`、`.codex/skills/`、
 `.claude/skills/`、`.pi/`，以及 `AGENTS.md`、`CLAUDE.md` 的公共段
-（`# 本项目补充` 之前）。`project.toml`、`.env*`、`profiles.json`、
+（`# 本项目补充` 之前）。`project.toml`、`review_contract.toml`、`.env*`、`profiles.json`、
 `research-memory.json` 与本地运行态属于项目自己，不参与同步。
 
-同步用模板仓里的本地工具（未纳入 Git 追踪）：
+同步工具不属于模板，使用者 clone 模板时没有它；它由维护者在本地调用：
 
 ```bash
-python3 ~/research-harness-workflow/.agents/harness/workflow/workflow_sync.py status --target <项目> --ref <分支>
-python3 ~/research-harness-workflow/.agents/harness/workflow/workflow_sync.py pull --target <项目> --run-tests
-python3 ~/research-harness-workflow/.agents/harness/workflow/workflow_sync.py push --target <项目>
+# 只读核对：每个分支的公共文件与模板的差距（不写入任何东西）
+python3 <工具目录>/workflow_sync.py verify --project <项目> --all-branches --verbose
+
+# 只读预览：模板某个提交区间影响哪些公共文件，各分支还差哪些
+python3 <工具目录>/workflow_sync.py plan --project <项目> --all-branches --since <模板commit>
+
+# 写入：把模板区间搬成补丁，在临时 worktree 里逐个分支应用
+python3 <工具目录>/workflow_sync.py apply --project <项目> --all-branches --since <模板commit> --run-tests
+
+# 账本：每个 项目×分支 已同步到哪个模板提交
+python3 <工具目录>/workflow_sync.py status
 ```
 
-`status` 按两边 Git 历史给每个文件定方向：`template_ahead` 可以 `pull`，
-`target_ahead` 可以 `push`，`diverged` 必须人工判断，工具不做整目录覆盖。
+它以**模板提交区间**为单位搬运补丁，不按单个文件覆盖：`behind` 可以自动补，`diverged`
+必须人工判断，冲突会停在该分支并继续其他分支。`apply` 默认只在临时工作树里产生提交，
+真实分支不动；加 `--merge` 才 fast-forward，且要求分支没有移动过。
 
 两条纪律：
 
-- 在模板里改：先把模板提交并推送，再到项目 `pull --run-tests`，通过后提交项目。
-- 在项目分支里改：先在项目里 `push` 回模板，模板提交推送后，其余分支再 `pull`，
+- 在模板里改：先提交模板，再对项目 `apply`，通过回归后项目侧再提交。
+- 在项目分支里改：先在项目里提交，人工判断后回沉模板，再让其余分支跟进，
   不要让分支之间各自漂移。
 
 整目录覆盖式同步会静默删除项目侧修复：曾有一次同步用模板文件盖掉
-`remote_route.py`，项目里的用户授权审查例外实现整段消失。所以 `pull`
-之后至少跑一次回归测试，用 `remote/tests`、`workflow/tests` 和 `.pi/tests`
-的结果作为提交前提。
+`remote_route.py`，项目里的用户授权审查例外实现整段消失。所以每次同步后至少跑一次回归，
+用 `check_skill_mirrors.py`、`remote/tests`、`workflow/tests` 的结果作为提交前提。

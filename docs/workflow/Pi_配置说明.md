@@ -66,7 +66,7 @@ pi
 <!-- reviewer-launcher:end -->
 ```
 
-块之外必须逐字一致。这一条由 `python3 .agents/harness/workflow/check_skill_mirrors.py` 机器校验，并已包含在 `workflow_sync.py --run-tests` 的回归里。同步公共文件后请运行它；报错就说明同一 Mission 的前后段会读到两套规则。
+块之外必须逐字一致。这一条由 `python3 .agents/harness/workflow/check_skill_mirrors.py` 机器校验。同步公共文件后请运行它；报错就说明同一 Mission 的前后段会读到两套规则。
 
 先用 `/login` 配好 provider，再用 `/model` 选择主 Executor。日常执行可以选择便宜或高额度模型。使用 `newapi` 之类的自定义 provider 时，先按 [Pi 模型配置文档](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/models.md) 配置 `~/.pi/agent/models.json`，确认模型出现在 `/model` 列表中。密钥使用环境变量引用，不写入项目文件。
 
