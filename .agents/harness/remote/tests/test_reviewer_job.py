@@ -303,6 +303,46 @@ class ReviewerJobTests(unittest.TestCase):
         self.assertEqual(verdict["replacement_count"], 0)
 
 
+    def test_result_analysis_verdict_keeps_response_aliases(self):
+        packet = {
+            "schema_version": "post-run.result-analysis.v1",
+            "exp_id": "fixture-exp",
+            "run_ids": ["fixture-run"],
+            "csv_path": str(self.root / "mission.csv"),
+            "repo_root": str(self.root),
+        }
+        packet_path = self.root / "result-packet.json"
+        packet_path.write_text(json.dumps(packet), encoding="utf-8")
+        args = self.args()
+        args.backend = "pi"
+        args.packet = packet_path
+        args.review_kind = "result-analysis"
+
+        response = {
+            "exp_id": "fixture-exp",
+            "run_ids": ["fixture-run"],
+            "analysis_markdown": "## Change\\nchange\\n\\n## Result\\nresult\\n\\n## Finding\\nfinding\\n\\n## Next\\nnext\\n",
+            "scientific_outcome": "inconclusive",
+            "limitations": ["fixture limitation"],
+            "validation_gaps": ["fixture gap"],
+        }
+
+        def run(argv, _prompt, _events, _stderr, _timeout, on_session, cwd, *_args):
+            on_session("pi-session-fixture")
+            return 0, json.dumps(response), False, ""
+
+        with (
+            patch.object(reviewer_job, "validate_packet", return_value=(packet, "f" * 64)),
+            patch.object(reviewer_job.shutil, "which", return_value="/fixture/pi"),
+            patch.object(reviewer_job, "run_process", side_effect=run),
+        ):
+            self.assertEqual(reviewer_job.execute(args), 0)
+
+        verdict = json.loads((self.job / "verdict.json").read_text())
+        self.assertEqual(verdict["response_path"], verdict["raw_response_path"])
+        self.assertEqual(verdict["response_sha256"], verdict["raw_response_sha256"])
+
+
 if __name__ == "__main__":
     unittest.main()
 
