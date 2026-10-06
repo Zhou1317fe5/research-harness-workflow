@@ -232,10 +232,19 @@ For the codex backend, the runner extracts `observed_model` from the stdout even
 
 ## Blocker Repair
 
+Classify every blocker before repairing it, using the criterion split from the approved spec's
+Research Contract (§9.0). A **precondition** blocker is one whose failure would make the run's
+conclusion untrustworthy: the mechanism does not reach the output (source-to-sink), a leak exists,
+baseline/sampling/metric comparison is unfair, result attribution is wrong, or the operator
+implementation disagrees with theory. A **diagnostic** blocker covers precision, completeness,
+engineering polish, or boundaries unrelated to this conclusion; record it as a validation gap in
+the same row and continue.
+
 When the result is `scientifically_incorrect`:
 
 1. keep the official run blocked;
-2. repair all listed blockers in the original implementation row;
+2. repair all listed precondition blockers in the original implementation row;
+   do not hold the run for diagnostic-only gaps;
 3. run a production-reaching probe for each affected source-to-sink path;
 4. rerun GPU smoke when scientific code, data flow, or a sink changed;
 5. have the main agent record blocker-to-fix-to-evidence closure;
@@ -264,6 +273,7 @@ Do not create a second formal reviewer, Attempt 2, resolution review, new lineag
 - Local validation: <commands and literal outcomes>
 - GPU smoke: <RunID, command, steps, result, evidence>
 - Blockers: <none or source/evidence/why/fix target>
+- Blocker class: <precondition | diagnostic | none>  (precondition blocks the run; diagnostic is recorded only)
 - Validation gaps: <none or exact missing evidence>
 ```
 
