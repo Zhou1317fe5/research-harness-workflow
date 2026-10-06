@@ -24,7 +24,7 @@
 
 # 实施纪律
 
-- 改动紧贴批准范围和现有代码模式，不混入无关重构、格式化或调试痕迹。
+- 改动紧贴批准范围和现有代码模式，不混入无关重构、格式化或调试痕迹。**不为“结构上不可能出错”而增加防御代码**：只在外部输入边界与实际出过问题的路径上校验，其余处保持简单（适用范围见 `systematic-debugging/defense-in-depth.md`）。
 - 先读即将修改的代码；使用结构化解析器处理 CSV、JSON、TOML 等格式。
 - 系统边界校验外部输入；shell、SQL 使用安全参数传递。
 - 不用 case 特化、固定答案或输出修补伪装 prompt、模型和测试能力。
@@ -43,7 +43,7 @@
 
 **不做 TDD / test-first / RED。** 科研代码的正确性由科学契约与数值证据判定，不由先写测试判定。这一条覆盖 skill 中任何 test-first 表述。
 
-**本地**负责代码正确性、单元测试、编译、参数链路与配置解析；**真实训练启动、step 级验证、GPU 显存、loss/log/checkpoint 必须走远程**。
+**本地**负责代码正确性、单元测试、编译、参数链路与配置解析；**真实训练启动、step 级验证、GPU 显存、loss/log/checkpoint 必须走远程**。本地验证范围按改动影响面确定，不追求“把能跑的都跑一遍”。
 
 远程执行统一经 **rrctl 的 process 后端**，`fallback_allowed` 必须为 `false`：rrctl 不可用、readiness 失败或 launch 失败时停在当前 row，**不得回退临时 SSH/nohup 拼接冒充同一控制面**。GPU 运行取得资源归属后才启动；观察超时沿用原 RunID 恢复。生命周期、首步 gate、巡检口径与拉取策略见 `mission-csv-execute/references/remote-run.md`。
 
