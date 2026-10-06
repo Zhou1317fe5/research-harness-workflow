@@ -104,8 +104,8 @@ def source_name(value):
     if not isinstance(value, str) or "\\" in value or any(c in value for c in "\r\n\0"):
         raise MemoryError("来源必须使用项目相对路径")
     path = PurePosixPath(value)
-    if path.is_absolute() or ".." in path.parts or not value.startswith(("research_workspace/", "docs/reviews/")):
-        raise MemoryError("来源必须位于 research_workspace 或明确登记的 docs/reviews")
+    if path.is_absolute() or ".." in path.parts or not path.parts or path.parts[0] != "research_workspace":
+        raise MemoryError("来源必须位于 research_workspace")
     if "remote_artifacts" in path.parts or "**" in value or ".git" in path.parts:
         raise MemoryError("不递归采集原始证据或 Git 内部文件")
     if path.suffix != ".md" and path.name != "record.json":
@@ -321,8 +321,7 @@ class Memory:
         def allowed(path):
             parts = path.parts
             return (not path.is_absolute() and ".." not in parts and bool(parts)
-                    and (parts[0] in {"research_workspace", "remote_artifacts", "issues"}
-                         or parts[:2] == ("docs", "reviews"))
+                    and parts[0] in {"research_workspace", "remote_artifacts", "issues"}
                     and not any(part == ".git" or part == ".env" or part.startswith(".env.")
                                 for part in parts))
 

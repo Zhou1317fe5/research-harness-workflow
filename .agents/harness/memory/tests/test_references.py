@@ -29,10 +29,14 @@ class ReferenceTests(unittest.TestCase):
         for relative in ('research_workspace/analysis/comparison.json',
                          'issues/example/validation/metrics.json',
                          'remote_artifacts/EXAMPLE/run/summary.json',
-                         'research_workspace/figures/plot.svg',
-                         'docs/reviews/checks.csv'):
+                         'research_workspace/figures/plot.svg'):
             self.make_file(relative)
             self.assertEqual(self.memory.reference(relative), relative)
+
+    def test_review_documents_are_not_referenceable(self):
+        self.make_file('docs/reviews/checks.csv')
+        with self.assertRaises(MemoryError):
+            self.memory.reference('docs/reviews/checks.csv')
 
     def test_reference_does_not_read_or_register_contents(self):
         relative = 'research_workspace/analysis/comparison.json'

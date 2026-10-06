@@ -88,8 +88,8 @@ ACTIVE decision 必须关联用户来源，并提供原文子串 `authorization_
 SUPPORTED、MIXED finding 提供 `evidence` 文件引用。scope 与 summary 写单段文本，
 需要指定生效时间时使用带时区的 `effective_at`。
 
-`evidence` 与 `references` 可引用 research_workspace、remote_artifacts、issues 或
-docs/reviews 中已有的 JSON、CSV、图像等科研文件。引用只检查路径与存在性，不读取
+`evidence` 与 `references` 可引用 research_workspace、remote_artifacts 或 issues 中已有的
+JSON、CSV、图像等科研文件。引用只检查路径与存在性，不读取
 或自动采集文件内容；自动登记来源仍限 Markdown 和 record.json。
 
 `supersedes` 指向相同类型、scope、protocol、task_id 的旧条目；不同评估协议可以分别生效。

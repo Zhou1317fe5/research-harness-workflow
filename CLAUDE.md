@@ -126,8 +126,10 @@ research_workspace/
 - `systematic-debugging`：可选的故障定位辅助；根因不明或跨模块排查时按需使用，不是执行或提交的前置条件。
 - `humanizer-zh`：必装的自然语言处理 skill。
 - `smart-search-cli`：外部资料、论文与文档检索。
+- `research-memory`：科研结论、决定与状态槽的登记与召回（STATE / CONCLUSIONS / record）。
 - `remote-run-snippet`：从 intent 解析远程 train/eval 命令。
 - `research-result-commit`：当前 ExpID 研究产物的合并提交。
+- `post-run-result-analysis`：运行后由独立 reviewer 读原始证据产出 `RESULT-ANALYSIS-01` 结论。
 - `lite-arch` / `lite-arch-recall`：建议安装的 ADR 记录与召回 skills。
 
 ---
