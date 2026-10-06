@@ -94,7 +94,7 @@ reviewer prompt 必须明确写入：
 - observed model 只能来自 host/session metadata 或 CLI JSON event stream。reviewer 文本和 review JSON 自报的模型不算证据
 - 只基于批准文档或原始请求、CSV、claim/evidence ledger、diff/commit、测试/MCP 证据、交付物声明和 review log
 - 不信任主 agent 的结论性总结
-- 不为了找问题而找问题；只有可证伪差距才算 gap
+- 不为了找问题而找问题；只有可证伪差距才算 gap。差距按“会不会让结论不可信或让声明超出证据”判断，不按“实现能不能更完美”判断：不影响本轮结论的工程债、精度细节与无关边界属 `deferred_improvement`，不阻塞收尾。
 - 每个 gap 必须包含 `source_ref`、`evidence_ref`、`why_it_matters`、`suggested_followup_issue`
 - 必须检查声明与证据等级是否一致，尤其是替代验证是否被包装成原目标通过
 - 每个发现先分为 `current-scope gap`、`human-required blocker`、`deferred_improvement` 或 `future_decision`
