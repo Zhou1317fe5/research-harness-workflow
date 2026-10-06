@@ -39,7 +39,7 @@ def _check_request(request: dict, label: str, rows: list[dict[str, str]]) -> lis
     errors: list[str] = []
     allowed = {
         "schema_version", "row_id", "set", "append_notes", "set_note_tags",
-        "event", "commit_boundary", "expected_sha256",
+        "event", "retry_binding", "commit_boundary", "expected_sha256",
     }
     unknown = sorted(set(request) - allowed)
     if unknown:
@@ -77,6 +77,9 @@ def _check_request(request: dict, label: str, rows: list[dict[str, str]]) -> lis
         errors.append(
             f"{label}: commit_boundary_invalid: expected {','.join(sorted(csv_state.COMMIT_BOUNDARIES))}"
         )
+    retry_binding = request.get("retry_binding")
+    if retry_binding is not None and not isinstance(retry_binding, dict):
+        errors.append(f"{label}: retry_binding_invalid: expected object")
     matches = [row for row in rows if row["id"] == row_id]
     if len(matches) != 1:
         errors.append(f"{label}: row_lookup_invalid: {row_id} matched {len(matches)} rows")

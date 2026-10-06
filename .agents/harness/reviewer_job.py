@@ -1010,6 +1010,10 @@ def execute(args: argparse.Namespace) -> int:
                     "task_sha256": task_sha,
                     "raw_response_path": str(raw_path),
                     "raw_response_sha256": raw_sha,
+                    # 保留 response 别名：兼容在 raw_response_* 成为规范字段之前产出的
+                    # 校验器与已归档 verdict。
+                    "response_path": str(raw_path),
+                    "response_sha256": raw_sha,
                     "replacement_count": state["replacement"],
                     "resume_count": state["resumes_used"],
                     "transport_exit_code": returncode,

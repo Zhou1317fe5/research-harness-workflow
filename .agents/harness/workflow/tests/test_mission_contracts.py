@@ -1468,5 +1468,90 @@ class CsvStateTransitionMatrixTests(unittest.TestCase):
             _validate_rows([make_row(dev_state="")])
 
 
+    def test_retry_reconciliation_allows_new_runid_after_artifacts_pulled(self):
+        """结果已拉回但判定不可用时，必须有换新 RunID 重开的路径。
+
+        否则只能新开一行，台账会膨胀；这是 fss 与 cdfss 各自独立扩展出来的语义。
+        """
+        self.write_csv([self.row(remote_state="artifacts_pulled", run_id="old-run")])
+        result = apply_update(self.path, {
+            "schema_version": SCHEMA,
+            "row_id": "I-1",
+            "set": {"run_id": "new-run", "remote_state": "failed"},
+            "retry_binding": {
+                "prior_run_id": "old-run",
+                "new_run_id": "new-run",
+                "reason": "new sink commit requires a fresh production smoke",
+            },
+            "event": {
+                "kind": "retry_reconciliation",
+                "prior_run_id": "old-run",
+                "new_run_id": "new-run",
+            },
+        })
+        self.assertEqual(result["row"]["remote_state"], "failed")
+        self.assertEqual(result["row"]["run_id"], "new-run")
+
+    def test_retry_reconciliation_allows_bound_run_to_continue(self):
+        """已绑定的重试行可以直接继续跑（不必再走一次 failed 中间态）。"""
+        self.write_csv([self.row(remote_state="failed", run_id="new-run", notes="prior_run:old-run:retry")])
+        result = apply_update(self.path, {
+            "schema_version": SCHEMA,
+            "row_id": "I-1",
+            "set": {"remote_state": "running_remote"},
+            "retry_binding": {
+                "prior_run_id": "old-run",
+                "new_run_id": "new-run",
+                "reason": "continue bound retry workload",
+            },
+            "event": {
+                "kind": "retry_reconciliation",
+                "prior_run_id": "old-run",
+                "new_run_id": "new-run",
+                "row_run_id": "new-run",
+            },
+        })
+        self.assertEqual(result["row"]["remote_state"], "running_remote")
+
+    def test_accepted_pre_review_smoke_artifacts_to_not_applicable(self):
+        """预审 smoke 的产物是门禁证据，不是要 ingest 的科学结果。
+
+        因此允许 pulled→not_applicable；但没有 artifact_policy 声明的普通
+        pulled 行仍必须被拒绝，不能借这条路径跳过 ingest。
+        """
+        self.write_csv([self.row(remote_state="artifacts_pulled", notes="artifact_policy:pre_review_smoke_only")])
+        result = apply_update(self.path, {"schema_version": SCHEMA, "row_id": "I-1",
+                                          "set": {"remote_state": "not_applicable"}})
+        self.assertEqual(result["row"]["remote_state"], "not_applicable")
+        self.write_csv([self.row(remote_state="artifacts_pulled")])
+        with self.assertRaisesRegex(StateUpdateError, "remote_regression"):
+            apply_update(self.path, {"schema_version": SCHEMA, "row_id": "I-1",
+                                     "set": {"remote_state": "not_applicable"}})
+
+    def test_retry_without_binding_is_still_rejected(self):
+        """扩展后 fail-closed 不变：换 RunID 而不带 retry_binding 仍必须被拒。"""
+        self.write_csv([self.row(remote_state="artifacts_pulled", run_id="old-run")])
+        with self.assertRaisesRegex(StateUpdateError, "retry_binding_required"):
+            apply_update(self.path, {"schema_version": SCHEMA, "row_id": "I-1",
+                                     "set": {"run_id": "new-run", "remote_state": "running_remote"}})
+
+    def test_pre_review_smoke_cannot_fake_ingest(self):
+        """预审 smoke 不得被当成科学结果 ingest。
+
+        即使带上 ingest 证据，artifact_policy 声明的 smoke 产物也不会被放行。
+        """
+        self.write_csv([self.row(remote_state="artifacts_pulled",
+                                 notes="artifact_policy:pre_review_smoke_only; "
+                                       "artifact_path:ev.json; artifact_sha256:abc")])
+        with self.assertRaises(StateUpdateError):
+            apply_update(self.path, {"schema_version": SCHEMA, "row_id": "I-1",
+                                     "set": {"remote_state": "ingested"}})
+        # 关键性质：无论哪一道守卫先触发，该行都不得变成 ingested。
+        import csv as _csv
+        with self.path.open(encoding="utf-8-sig", newline="") as stream:
+            rows = list(_csv.DictReader(stream))
+        self.assertNotEqual(rows[0]["remote_state"], "ingested")
+
+
 if __name__ == "__main__":
     unittest.main()

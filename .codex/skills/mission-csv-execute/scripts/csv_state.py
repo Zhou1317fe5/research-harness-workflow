@@ -252,10 +252,15 @@ def _validate_retry_binding(
 ) -> bool:
     """Validate an explicit new-RunID retry reconciliation."""
     changed_run = original.get("run_id", "") != updated.get("run_id", "")
-    retry_state = original.get("remote_state") == "failed" and changed_run
+    # 除了 failed，`artifacts_pulled` 的行也允许换新 RunID 重开：结果已拉回但被判定不可用
+    # （sink 变更、候选更新、证据不足）时必须有重试路径，否则只能新开一行，台账会膨胀。
+    # fss 与 cdfss 各自独立地扩展到了同一语义。
+    retry_state = original.get("remote_state") in {"failed", "artifacts_pulled"} and changed_run
     if binding is None:
-        if retry_state and updated.get("remote_state") != "failed":
-            raise StateUpdateError("retry_binding_required: failed row changed to a new RunID")
+        if retry_state and updated.get("remote_state") != original.get("remote_state"):
+            raise StateUpdateError(
+                "retry_binding_required: failed or artifacts_pulled row changed to a new RunID"
+            )
         return False
     if not isinstance(binding, dict):
         raise StateUpdateError("retry_binding_invalid: expected object")
@@ -266,8 +271,10 @@ def _validate_retry_binding(
     reason = binding["reason"]
     if not all(isinstance(value, str) and value for value in (prior, new, reason)):
         raise StateUpdateError("retry_binding_invalid: values must be non-empty strings")
-    if original.get("remote_state") != "failed":
-        raise StateUpdateError("retry_binding_invalid: prior remote_state must be failed")
+    if original.get("remote_state") not in {"failed", "artifacts_pulled"}:
+        raise StateUpdateError(
+            "retry_binding_invalid: prior remote_state must be failed or artifacts_pulled"
+        )
     row_already_bound = (
         original.get("run_id") == new
         and isinstance(event, dict)
@@ -279,7 +286,7 @@ def _validate_retry_binding(
     )
     if (original.get("run_id") != prior and not row_already_bound) or updated.get("run_id") != new or prior == new:
         raise StateUpdateError("retry_binding_invalid: RunID does not match row transition")
-    if updated.get("remote_state") not in {"running_remote", "completed", "artifacts_pulled"}:
+    if updated.get("remote_state") not in {"failed", "running_remote", "completed", "artifacts_pulled"}:
         raise StateUpdateError("retry_binding_invalid: target remote_state is not a retry outcome")
     if not isinstance(event, dict) or event.get("kind") != "retry_reconciliation":
         raise StateUpdateError("retry_binding_event_required: kind=retry_reconciliation")
@@ -311,8 +318,18 @@ def _validate_row_transition(
     o = original.get("remote_state", "")
     u = updated.get("remote_state", "")
     allowed_remote = _REMOTE_FORWARD.get(o, {o})
-    if retry_binding and o == "failed" and original.get("run_id") != updated.get("run_id"):
-        allowed_remote = allowed_remote | {"running_remote", "completed", "artifacts_pulled"}
+    # 重试绑定需要跨过 failed <-> artifacts_pulled 这个中间态：行可能在“结果已拉回”
+    # 时被判定不可用，也可能已绑定新 RunID 后直接继续跑（无需先停在 failed）。
+    if retry_binding and o in {"failed", "artifacts_pulled"}:
+        allowed_remote = allowed_remote | {
+            "failed", "running_remote", "completed", "artifacts_pulled",
+        }
+    if o == "artifacts_pulled" and u == "not_applicable":
+        # 预审 smoke 的产物是门禁证据，不是要 ingest 的科学结果；它的
+        # artifact_policy 已在 notes 里声明，因此允许直接收口为 not_applicable。
+        tags = parse_note_tags(updated.get("notes", ""))
+        if tags.get("artifact_policy") == "pre_review_smoke_only":
+            allowed_remote = allowed_remote | {"not_applicable"}
     if u not in allowed_remote:
         raise StateUpdateError(f"remote_regression:{o}->{u}")
     if updated.get("git_state") == "已提交":

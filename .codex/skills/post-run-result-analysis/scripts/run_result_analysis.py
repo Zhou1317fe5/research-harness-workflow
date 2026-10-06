@@ -192,7 +192,9 @@ def run(args: argparse.Namespace) -> int:
         raise ValueError("existing_verdict_belongs_to_different_inputs")
 
     _write_if_changed(task_path, task_bytes)
-    _write_if_changed(packet_path, packet_bytes + b"\n")
+    # 写入盘上的就是被 hash 的字节：不要额外追加未被 hash 的尾换行，
+    # 否则文件内容与 verdict 记录的 packet_sha256 不一致，审查结论无法复核。
+    _write_if_changed(packet_path, packet_bytes)
 
     executable = _reviewer_job_script(workdir)
     cmd = [

@@ -262,8 +262,22 @@ def _record_completion_errors(csv_path: Path, row: dict[str, str], *, workdir: P
         for key, value in expected["source"].items():
             if source.get(key) != value:
                 raise ValueError(f"ingest_record_source_mismatch:{key}")
+        # RESULT-ANALYSIS-01 会把 ingest 投影出来的待定 outcome 原子替换为已校验的科学结论。
+        # 之后的 CSV 生命周期更新必须继续接受该记录，而不是把分析结果当作过期的 ingest 投影。
+        pending_expected = list(expected["_pending"])
+        pending_actual = list(record.get("_pending", []))
+        if (
+            "outcome" in pending_expected
+            and "outcome" not in pending_actual
+            and record.get("outcome") in {
+                "hypothesis_supported", "hypothesis_not_supported", "gate_failed",
+                "inconclusive", "not_applicable",
+            }
+            and isinstance(record.get("outcome_meta"), dict)
+        ):
+            pending_expected.remove("outcome")
         if (any(record.get("metrics", {}).get(key) != expected["metrics"][key]
-                for key in ("protocol", "ours_metric")) or record.get("_pending") != expected["_pending"]):
+                for key in ("protocol", "ours_metric")) or pending_actual != pending_expected):
             raise ValueError("ingest_record_projection_mismatch")
         with (workdir / "research_workspace/EXPERIMENTS.csv").open(encoding="utf-8-sig", newline="") as stream:
             index = [item for item in csv.DictReader(stream) if item.get("ExpID") == exp_id]
