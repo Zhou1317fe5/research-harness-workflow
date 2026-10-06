@@ -2,6 +2,10 @@
 
 ## Overview
 
+> **适用范围**：本文是故障定位的辅助手段，不是每处改动都要照做的标准。分层验证的成本应按**失败后果**确定：
+> 数据错误会静默污染科研结论时，多层防护值得；只是内部整洁、或与结论无关的路径，一层足够，不要为“结构上不可能出错”
+> 付出与结论无关的成本。见 `AGENTS.md` 验证节：门槛匹配声称，不追求内部完美。
+
 When you fix a bug caused by invalid data, adding validation at one place feels sufficient. But that single check can be bypassed by different code paths, refactoring, or mocks.
 
 **Core principle:** Validate at EVERY layer data passes through. Make the bug structurally impossible.
