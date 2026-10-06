@@ -84,10 +84,19 @@ def validate_mission_launch(spec: dict, *, resume: bool = False, spec_path: Path
     row_id = row["id"]
     tags = parse_note_tags(row["notes"])
     separate_results = tags.get("git_repo") and (repo / tags["git_repo"]).resolve() != repo
+    purpose = metadata.get("execution_purpose", "official")
+    diagnostic_probe = (
+        not resume
+        and purpose == "preregistered_read_only_probe"
+        and isinstance(metadata.get("diagnostic_parent_run_id"), str)
+        and metadata.get("diagnostic_parent_run_id") == row.get("run_id")
+    )
     if separate_results and not resume:
         raise ValueError("mission run commit must belong to the source repository")
-    if not resume and row["remote_state"] not in ("", "not_applicable", "failed"):
+    if not resume and not diagnostic_probe and row["remote_state"] not in ("", "not_applicable", "failed"):
         raise ValueError("mission run already started; inspect/resume the existing RunID")
+    if diagnostic_probe and row["remote_state"] not in {"completed", "artifacts_pulled", "ingested"}:
+        raise ValueError("read-only probe requires a completed or ingested parent RunID")
     if tags.get("command_owner", "rrctl") != "rrctl":
         raise ValueError("Mission rrctl entry cannot change a legacy run's control owner")
     commit = spec["source"]["commit"]
@@ -95,15 +104,26 @@ def validate_mission_launch(spec: dict, *, resume: bool = False, spec_path: Path
         if row[field] != expected:
             raise ValueError(f"mission RunSpec identity mismatch: {field}")
     row_commit = tags.get("pre_run_code_commit") if separate_results else row["commit_hash"]
-    # 行绑定的候选与 RunSpec 的 source 只需**科学行为**一致：补文档/台账/测试提交
-    # 后，已绑定的运行仍然合法。否则同一个回路会在行与 RunSpec 之间再出现一次。
-    if row_commit and not same_scientific_behavior(repo, row_commit, commit):
+    # 只读诊断探针（`preregistered_read_only_probe`）在**已完成的父 RunID** 上做只读分析，
+    # 不重新跑 workload；它不要求与父运行同一 commit，只要求候选是父 commit 的后代，
+    # 因此仍处于同一研究谱系内。其它情形一律要求**科学行为**一致：补文档/台账/测试提交
+    # 后，已绑定的运行仍然合法，否则同一个回路会在行与 RunSpec 之间再出现一次。
+    if diagnostic_probe:
+        if not row_commit or not re.fullmatch(r"[0-9a-f]{40}", row_commit):
+            raise ValueError("read-only probe parent commit is not a full Git commit")
+        ancestor = subprocess.run(
+            ["git", "merge-base", "--is-ancestor", row_commit, commit],
+            cwd=repo, capture_output=True,
+        )
+        if ancestor.returncode != 0:
+            raise ValueError("read-only probe candidate must descend from the ingested parent commit")
+    elif row_commit and not same_scientific_behavior(repo, row_commit, commit):
         raise ValueError(
             "mission RunSpec identity mismatch: commit_hash has different "
             "scientific behavior"
             + behavior_scope_hint(repo, row_commit, commit)
         )
-    if row["run_id"] and row["run_id"] != spec["run_id"]:
+    if row["run_id"] and row["run_id"] != spec["run_id"] and not diagnostic_probe:
         raise ValueError("mission RunSpec identity mismatch: run_id")
     if row["branch"] and row["branch"] != spec["source"]["branch"]:
         raise ValueError("mission RunSpec identity mismatch: branch")
