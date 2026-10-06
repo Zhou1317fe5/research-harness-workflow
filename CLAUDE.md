@@ -93,7 +93,7 @@ research_workspace/
 
 - 未获授权不运行破坏性命令，不覆盖或丢弃用户改动，不使用 `git reset --hard`。（`git reset --hard`、`git clean -f`、`git checkout -- <path>`、`git push --force`、越界的 `rm -rf`，以及 `~/.ssh`、`~/.aws` 读取，已由全局 cc-safety-net 的语义分析拦截，**无需在此重复**；本节只保留它拦不住的部分。）
 - **凭据只传变量名或变量引用，永不传值**：`set -a; source <env file>; set +a` 后引用变量；控制面用 `password_env` 传变量名。不硬编码、提交或输出密钥、凭证、API Key。
-- **禁止整体打印含凭据的文件**（`cat`/`head`/`tail`/`sed -n`/`nl`）。**实测 cc-safety-net 不拦** `cat .env`、`cat .agents/harness/config/.env` 或 `echo "$PASSWORD"`（它拦的是 `~/.ssh`、`~/.aws` 这类敏感路径），所以这条必须自己守。会话记录把 stdout 永久落盘，一次打印即等于永久泄露；自制脱敏不算防护。确认存在性用 `echo "KEY=${KEY:+set}"`，看结构用 `grep -oE '^[A-Za-z_]+='`。
+- **禁止整体打印含凭据的文件**（`cat`/`head`/`tail`/`sed -n`/`nl`）。**实测 cc-safety-net 不拦**直接读取凭据文件、也不拦回显密钥变量值（`echo "$SSH_PASSWORD"`）——它拦的是 `~/.ssh`、`~/.aws` 这类敏感路径，所以这条必须自己守。会话记录把 stdout 永久落盘，一次打印即等于永久泄露；自制脱敏不算防护。确认存在性用 `echo "KEY=${KEY:+set}"`，看结构用 `grep -oE '^[A-Za-z_]+='`。
 - 非交互 SSH 下不假设 `python` / `conda` 在 `PATH`，远程 Python 命令必须显式激活环境。
 - 不终止非当前任务启动的进程。长生命周期进程尽量少开，启动前检查可复用实例，结束即回收。
 - **命令超时优先用工具自带参数**：`ssh -o ConnectTimeout=`、`rrctl --max-wait-seconds`、工具内部预算；shell 层 `timeout` 只是额外一层，不改变权限判定。解释器内联代码里的删除 API（如 `shutil` 的 `rmtree`）由本地 `pi-interpreter-guard` 扩展按内容拦截；cc-safety-net 在 `standard` 级别放行它们，而改用其 `paranoid_interpreters` 会误伤大量正常内联命令。
