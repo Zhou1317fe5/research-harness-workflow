@@ -27,7 +27,7 @@
 - 改动紧贴批准范围和现有代码模式，不混入无关重构、格式化或调试痕迹。**不为“结构上不可能出错”而增加防御代码**：只在外部输入边界与实际出过问题的路径上校验，其余处保持简单（适用范围见 `systematic-debugging/defense-in-depth.md`）。
 - 先读即将修改的代码；使用结构化解析器处理 CSV、JSON、TOML 等格式。
 - 系统边界校验外部输入；shell、SQL 使用安全参数传递。
-- 不用 case 特化、固定答案或输出修补伪装 prompt、模型和测试能力。
+- 不用 case 特化、固定答案或输出修补去伪装 prompt、模型或测试的真实能力（即：让指标好看，但换掉输入、seed 或评测条件就不成立）。区分两类——**实现边界检查**（如 CSV 列校验、路径校验）是正当工程；**只对已知输入返回正确结果**的硬编码才是违规。
 - 功能逻辑只写在 canonical 实现文件；兼容 wrapper 只维护向后兼容，不承载行为。
 
 # 验证
@@ -43,7 +43,7 @@
 
 **不做 TDD / test-first / RED。** 科研代码的正确性由科学契约与数值证据判定，不由先写测试判定。这一条覆盖 skill 中任何 test-first 表述。
 
-**本地**负责代码正确性、单元测试、编译、参数链路与配置解析；**真实训练启动、step 级验证、GPU 显存、loss/log/checkpoint 必须走远程**。本地验证范围按改动影响面确定，不追求“把能跑的都跑一遍”。
+**执行栈分工**：代码正确性、单元测试、编译、参数链路与配置解析可在本地或远程 CPU 完成；**真实训练启动、step 级验证、GPU 显存、loss/log/checkpoint 必须在远程真实运行中验证**。验证地点按便利与成本选择——**不强制在本地**，远程 CPU 同样可用，能用 GPU 显著加速时也可用 GPU。验证范围按改动影响面确定，不追求“把能跑的都跑一遍”。
 
 远程执行统一经 **rrctl 的 process 后端**，`fallback_allowed` 必须为 `false`：rrctl 不可用、readiness 失败或 launch 失败时停在当前 row，**不得回退临时 SSH/nohup 拼接冒充同一控制面**。GPU 运行取得资源归属后才启动；观察超时沿用原 RunID 恢复。生命周期、首步 gate、巡检口径与拉取策略见 `mission-csv-execute/references/remote-run.md`。
 
@@ -71,12 +71,12 @@ research_workspace/
 
 # 安全与进程
 
-- 未获授权不运行破坏性命令，不覆盖或丢弃用户改动，不使用 `git reset --hard`。
+- 未获授权不运行破坏性命令，不覆盖或丢弃用户改动，不使用 `git reset --hard`。（`git reset --hard`、`git clean -f`、`git checkout -- <path>`、`git push --force`、越界的 `rm -rf`，以及 `~/.ssh`、`~/.aws` 读取，已由全局 cc-safety-net 的语义分析拦截，**无需在此重复**；本节只保留它拦不住的部分。）
 - **凭据只传变量名或变量引用，永不传值**：`set -a; source <env file>; set +a` 后引用变量；控制面用 `password_env` 传变量名。不硬编码、提交或输出密钥、凭证、API Key。
-- **禁止整体打印含凭据的文件**（`cat`/`head`/`tail`/`sed -n`/`nl`）。会话记录把 stdout 永久落盘，一次打印即等于永久泄露；自制脱敏不算防护。确认存在性用 `echo "KEY=${KEY:+set}"`，看结构用 `grep -oE '^[A-Za-z_]+='`。
+- **禁止整体打印含凭据的文件**（`cat`/`head`/`tail`/`sed -n`/`nl`）。**实测 cc-safety-net 不拦** `cat .env`、`cat .agents/harness/config/.env` 或 `echo "$PASSWORD"`（它拦的是 `~/.ssh`、`~/.aws` 这类敏感路径），所以这条必须自己守。会话记录把 stdout 永久落盘，一次打印即等于永久泄露；自制脱敏不算防护。确认存在性用 `echo "KEY=${KEY:+set}"`，看结构用 `grep -oE '^[A-Za-z_]+='`。
 - 非交互 SSH 下不假设 `python` / `conda` 在 `PATH`，远程 Python 命令必须显式激活环境。
 - 不终止非当前任务启动的进程。长生命周期进程尽量少开，启动前检查可复用实例，结束即回收。
-- **命令超时优先用工具自带参数**：`ssh -o ConnectTimeout=`、`rrctl --max-wait-seconds`、工具内部预算；shell 层 `timeout` 只是额外一层，不改变权限判定。破坏性命令由全局 cc-safety-net 按语义拦截（危险 `rm -rf`、`git reset --hard` / `clean -f` / `checkout --` / `push --force`、`find -delete`、`dd of=/dev/*`、`mkfs` 与分区/卷工具）：项目内与临时目录的删除放行，打到项目外、家目录、根目录的会被拦；解释器内联代码里的删除 API（如 `python3 -c "shutil.rmtree(...)"`）另由本地 `pi-interpreter-guard` 扩展拦截。
+- **命令超时优先用工具自带参数**：`ssh -o ConnectTimeout=`、`rrctl --max-wait-seconds`、工具内部预算；shell 层 `timeout` 只是额外一层，不改变权限判定。解释器内联代码里的删除 API（如 `shutil` 的 `rmtree`）由本地 `pi-interpreter-guard` 扩展按内容拦截；cc-safety-net 在 `standard` 级别放行它们，而改用其 `paranoid_interpreters` 会误伤大量正常内联命令。
 
 # 搜索分工
 
