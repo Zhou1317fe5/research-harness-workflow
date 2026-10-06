@@ -27,7 +27,6 @@
 - 改动紧贴批准范围和现有代码模式，不混入无关重构、格式化或调试痕迹。**不为“结构上不可能出错”而增加防御代码**：只在外部输入边界与实际出过问题的路径上校验，其余处保持简单（适用范围见 `systematic-debugging/defense-in-depth.md`）。
 - 先读即将修改的代码；使用结构化解析器处理 CSV、JSON、TOML 等格式。
 - 系统边界校验外部输入；shell、SQL 使用安全参数传递。
-- 不用 case 特化、固定答案或输出修补去伪装 prompt、模型或测试的真实能力（即：让指标好看，但换掉输入、seed 或评测条件就不成立）。区分两类——**实现边界检查**（如 CSV 列校验、路径校验）是正当工程；**只对已知输入返回正确结果**的硬编码才是违规。
 - 功能逻辑只写在 canonical 实现文件；兼容 wrapper 只维护向后兼容，不承载行为。
 
 # 验证
@@ -80,15 +79,7 @@ research_workspace/
 
 # 搜索分工
 
-- 本地代码语义理解、探索性定位、跨模块调用链：优先使用 `fast_context_search`。
-- 文件名、目录或路径的模糊发现：
-  - Pi 使用 `fffind`，利用 fuzzy matching、frecency 和 Git 状态排序。
-  - Codex/Claude 使用自身可用的文件查找工具。
-- 已知函数名、类名、配置项或报错文本的内容搜索：
-  - Pi 使用 `ffgrep`。
-  - Codex/Claude 使用 `rg` 精确定位。
-- 已知路径直接读取文件；`fffind` 只用于路径发现，不用于搜索文件内容。
-- 外部资料、论文、工具版本和 API/SDK 文档统一使用 `smart-search-cli`（命令为 `smart-search`）。
+按“要找什么”选工具（`fast_context_search` / `fffind` / `ffgrep` / `smart-search`）。**完整规则与参数取向见全局用户指令 `~/.pi/agent/AGENTS.md`**，此处不重复，避免全局与项目两份漂移。
 
 # Git 与提交
 
