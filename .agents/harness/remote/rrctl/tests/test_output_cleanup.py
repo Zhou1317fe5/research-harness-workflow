@@ -91,6 +91,18 @@ class CleanupTests(fixtures.ProcessBackendTests):
         self.assertEqual(summary["terminal_state"], "workload_exit_zero")
         self.assertTrue(any("console.log" in p for p in summary["retained_evidence_paths"]))
 
+    def test_cleanup_preserves_pre_cleanup_smoke_evidence(self):
+        spec, output = self.smoke_spec(policy=self.default_policy())
+        (output / SUMMARY_PATH).write_text(
+            '{"baseline_equivalence_required": true, '
+            '"baseline_equivalence_probe": {"complete": true}}'
+        )
+        cleanup_output(spec, terminal_state="workload_exit_zero")
+        summary = load_json(output / SUMMARY_PATH)
+        self.assertTrue(summary["baseline_equivalence_required"])
+        self.assertEqual(summary["baseline_equivalence_probe"]["complete"], True)
+        self.assertEqual(summary["schema_version"], "rrctl.smoke-summary.v1")
+
     # ---- reject 分支（fail-closed） ----
 
     def test_unsupported_mode_is_rejected(self):

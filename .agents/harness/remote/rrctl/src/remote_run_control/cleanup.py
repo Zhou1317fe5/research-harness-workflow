@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import fnmatch
+import json
 import os
 import shutil
 from pathlib import Path, PurePosixPath
@@ -128,7 +129,32 @@ def cleanup_output(spec: RunSpec, *, terminal_state: str) -> dict[str, Any] | No
             if _matches(relative, patterns):
                 remaining.append(relative)
 
+    summary_path = root / SUMMARY_PATH
+    preserved: dict[str, Any] = {}
+    if summary_path.is_file():
+        try:
+            existing = json.loads(summary_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise RRCError(
+                "cleanup_summary_invalid",
+                f"cannot preserve pre-cleanup smoke evidence: {summary_path}",
+                "cleanup",
+            ) from exc
+        if not isinstance(existing, dict):
+            raise RRCError(
+                "cleanup_summary_invalid",
+                f"pre-cleanup smoke summary must be an object: {summary_path}",
+                "cleanup",
+            )
+        canonical = {
+            "schema_version", "run_id", "terminal_state",
+            "checkpoint_cleanup_completed", "checkpoint_paths_remaining",
+            "deleted_paths", "released_bytes", "retained_evidence_paths",
+            "updated_at",
+        }
+        preserved = {key: value for key, value in existing.items() if key not in canonical}
     summary = {
+        **preserved,
         "schema_version": "rrctl.smoke-summary.v1",
         "run_id": spec.run_id,
         "terminal_state": terminal_state,

@@ -283,7 +283,12 @@ Do not create a second formal reviewer, Attempt 2, resolution review, new lineag
 - Validation gaps: <none or exact missing evidence>
 ```
 
-Write `pre_run_result:pass` only for `scientifically_correct` or after every reported blocker has been fixed and closed with production/sink evidence. The recorded `pre_run_code_commit` is the code used for the official run, not the CSV's eventual final commit.
+**Result semantics**:
+- `scientifically_correct`: Intent, implementation, and dynamic reachability are verified.
+- `scientifically_incorrect`: Any code defect, data-flow gap, or missing required dynamic evidence/logs (e.g., unverified sink, missing gradient printout, unmeasured tolerance). List each as a concrete Blocker so the main agent can repair or collect production sink evidence and close via `closure.json`.
+- `not_evaluable`: Strictly reserved for irreconcilable non-code contradictions (e.g. Spec itself is contradictory, task boundary is undefined). **Do NOT use `not_evaluable` for missing code paths, missing probe logs, or dynamic evidence gaps**; classify those as `scientifically_incorrect` with explicit Blockers.
+
+Write `pre_run_result:pass` only for `scientifically_correct` or after every reported blocker has been fixed and closed with production/sink evidence (or when user-authorized closure exception is verified for an existing verdict). The recorded `pre_run_code_commit` is the code used for the official run, not the CSV's eventual final commit.
 
 ## Compatibility
 

@@ -39,7 +39,8 @@ def _check_request(request: dict, label: str, rows: list[dict[str, str]]) -> lis
     errors: list[str] = []
     allowed = {
         "schema_version", "row_id", "set", "append_notes", "set_note_tags",
-        "event", "retry_binding", "remote_binding_reconciliation", "commit_boundary", "expected_sha256",
+        "event", "retry_binding", "remote_binding_reconciliation",
+        "restricted_terminal_reconciliation", "commit_boundary", "expected_sha256",
     }
     unknown = sorted(set(request) - allowed)
     if unknown:
@@ -83,6 +84,9 @@ def _check_request(request: dict, label: str, rows: list[dict[str, str]]) -> lis
     reconciliation = request.get("remote_binding_reconciliation")
     if reconciliation is not None and not isinstance(reconciliation, dict):
         errors.append(f"{label}: remote_binding_reconciliation_invalid: expected object")
+    restricted = request.get("restricted_terminal_reconciliation")
+    if restricted is not None and not isinstance(restricted, dict):
+        errors.append(f"{label}: restricted_terminal_reconciliation_invalid: expected object")
     matches = [row for row in rows if row["id"] == row_id]
     if len(matches) != 1:
         errors.append(f"{label}: row_lookup_invalid: {row_id} matched {len(matches)} rows")
@@ -97,6 +101,14 @@ def _check_request(request: dict, label: str, rows: list[dict[str, str]]) -> lis
             parse_note_tags(planned["notes"])
         except ValueError as exc:
             errors.append(f"{label}: set_note_tags_invalid: {exc}")
+    if append_notes:
+        planned["notes"] = planned["notes"] + (
+            ("; " if planned["notes"].strip() else "") + "; ".join(append_notes)
+        )
+        try:
+            parse_note_tags(planned["notes"])
+        except ValueError as exc:
+            errors.append(f"{label}: append_notes_invalid: {exc}")
     # 对计划翻转状态的行，预演 PRERUN 结构校验（枚举与模式/结果一致性同样约束
     # set_note_tags 写入的 review_result，不能只检查 set 的列更新）。
     if csv_state._is_prerun(planned):

@@ -711,6 +711,8 @@ def run_process(
                     event = json.loads(line)
                 except json.JSONDecodeError:
                     continue
+                if not isinstance(event, dict):
+                    continue
                 if event.get("type") == "thread.started" and isinstance(event.get("thread_id"), str):
                     on_session(event["thread_id"])
             if process.poll() is not None:

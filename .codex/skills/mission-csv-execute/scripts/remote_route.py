@@ -16,6 +16,9 @@ from harness.workflow.mission_state import assert_launchable
 
 SCHEMA_VERSION = "mission.remote-route.v1"
 PRE_RUN_EXCEPTION_SCHEMA = "mission.pre-run-exception.v1"
+PRE_RUN_EXCEPTION_CLOSURE_SCHEMA = "mission.pre-run-exception.v2"
+PRE_RUN_EXCEPTION_CLOSURE_KIND = "review_not_evaluable_with_closed_blockers"
+PRE_RUN_EXCEPTION_CLOSURE_REASON = "review_not_evaluable_with_closed_blockers"
 OWNERS = {None, "rrctl", "legacy"}
 LIFECYCLES = {"closed", "running_remote", "not_started", "failed_retry"}
 CHECK_STATES = {"not_checked", "passed", "failed"}
@@ -113,7 +116,7 @@ def _validate_pre_run_exception(
         _error(errors, "type_invalid", "pre_run_exception", "expected object")
         return None
 
-    allowed = {
+    base_fields = {
         "schema_version",
         "kind",
         "candidate_commit",
@@ -124,24 +127,48 @@ def _validate_pre_run_exception(
         "reason_code",
         "evidence_paths",
     }
+    closure_fields = {
+        "mission_id",
+        "row_id",
+        "prior_verdict_path",
+        "closure_evidence_paths",
+    }
+    is_closure = value.get("kind") == PRE_RUN_EXCEPTION_CLOSURE_KIND
+    allowed = base_fields | (closure_fields if is_closure else set())
     for field in sorted(set(value) - allowed):
         _error(errors, "unknown_field", f"pre_run_exception.{field}", "not allowed")
-    for field in sorted(allowed - set(value)):
+    required = base_fields | (closure_fields if is_closure else set())
+    for field in sorted(required - set(value)):
         _error(errors, "missing_field", f"pre_run_exception.{field}", "required")
 
-    if value.get("schema_version") != PRE_RUN_EXCEPTION_SCHEMA:
+    expected_schema = PRE_RUN_EXCEPTION_CLOSURE_SCHEMA if is_closure else PRE_RUN_EXCEPTION_SCHEMA
+    if value.get("schema_version") != expected_schema:
         _error(
             errors,
             "schema_invalid",
             "pre_run_exception.schema_version",
-            f"expected {PRE_RUN_EXCEPTION_SCHEMA}",
+            f"expected {expected_schema}",
         )
-    if value.get("kind") != "review_service_unavailable":
+    if not is_closure and value.get("kind") != "review_service_unavailable":
         _error(
             errors,
             "value_invalid",
             "pre_run_exception.kind",
             "expected review_service_unavailable",
+        )
+    if is_closure and value.get("reason_code") != PRE_RUN_EXCEPTION_CLOSURE_REASON:
+        _error(
+            errors,
+            "value_invalid",
+            "pre_run_exception.reason_code",
+            f"expected {PRE_RUN_EXCEPTION_CLOSURE_REASON}",
+        )
+    if not is_closure and value.get("reason_code") != "review_service_failure_two_attempts":
+        _error(
+            errors,
+            "value_invalid",
+            "pre_run_exception.reason_code",
+            "expected review_service_failure_two_attempts",
         )
 
     candidate = value.get("candidate_commit")
@@ -181,46 +208,66 @@ def _validate_pre_run_exception(
             "pre_run_exception.authorization_ref",
             "required",
         )
-    if value.get("reason_code") != "review_service_failure_two_attempts":
-        _error(
-            errors,
-            "value_invalid",
-            "pre_run_exception.reason_code",
-            "expected review_service_failure_two_attempts",
-        )
 
-    evidence_paths = value.get("evidence_paths")
-    valid_paths = (
-        isinstance(evidence_paths, list)
-        and bool(evidence_paths)
-        and all(_non_empty_text(item) for item in evidence_paths)
-        and all(
-            not PurePosixPath(item).is_absolute()
-            and ".." not in PurePosixPath(item).parts
-            for item in evidence_paths
-            if isinstance(item, str)
+    def relative_paths(raw: Any, field: str) -> list[str]:
+        valid = (
+            isinstance(raw, list)
+            and bool(raw)
+            and all(_non_empty_text(item) for item in raw)
+            and all(
+                not PurePosixPath(item).is_absolute()
+                and ".." not in PurePosixPath(item).parts
+                for item in raw
+                if isinstance(item, str)
+            )
         )
-    )
-    if not valid_paths:
-        _error(
-            errors,
-            "type_invalid",
-            "pre_run_exception.evidence_paths",
-            "expected a non-empty repository-relative string array",
-        )
-        evidence_paths = []
+        if not valid:
+            _error(
+                errors,
+                "type_invalid",
+                f"pre_run_exception.{field}",
+                "expected a non-empty repository-relative string array",
+            )
+            return []
+        return list(raw)
 
-    return {
-        "schema_version": PRE_RUN_EXCEPTION_SCHEMA,
-        "kind": "review_service_unavailable",
+    evidence_paths = relative_paths(value.get("evidence_paths"), "evidence_paths")
+    result = {
+        "schema_version": expected_schema,
+        "kind": value.get("kind"),
         "candidate_commit": candidate,
         "review_mode": "scientific_review",
         "review_result": "not_evaluable",
         "user_authorized": value.get("user_authorized") is True,
         "authorization_ref": value.get("authorization_ref", ""),
-        "reason_code": "review_service_failure_two_attempts",
+        "reason_code": value.get("reason_code", ""),
         "evidence_paths": evidence_paths,
     }
+    if is_closure:
+        for field in ("mission_id", "row_id", "prior_verdict_path"):
+            if not _non_empty_text(value.get(field)):
+                _error(errors, "type_invalid", f"pre_run_exception.{field}", "required")
+        prior = value.get("prior_verdict_path", "")
+        if prior and (
+            PurePosixPath(prior).is_absolute() or ".." in PurePosixPath(prior).parts
+        ):
+            _error(
+                errors,
+                "type_invalid",
+                "pre_run_exception.prior_verdict_path",
+                "expected repository-relative path",
+            )
+        result.update(
+            {
+                "mission_id": value.get("mission_id", ""),
+                "row_id": value.get("row_id", ""),
+                "prior_verdict_path": prior,
+                "closure_evidence_paths": relative_paths(
+                    value.get("closure_evidence_paths"), "closure_evidence_paths"
+                ),
+            }
+        )
+    return result
 
 
 def _validate_rrctl(value: Any, errors: list[str]) -> dict[str, Any]:

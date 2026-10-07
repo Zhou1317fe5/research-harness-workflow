@@ -195,7 +195,8 @@ def _validate_single_prerun(
             raise StateUpdateError(
                 f"prerun_verdict_artifact_missing: {row['id']}"
             )
-        if _note_value(notes, "pre_run_result") == "pass":
+        pre_run_result = _note_value(notes, "pre_run_result")
+        if pre_run_result == "pass":
             direct_pass = result in {
                 "scientifically_correct",
                 "targeted_correct",
@@ -208,6 +209,26 @@ def _validate_single_prerun(
             if not (direct_pass or repaired_pass):
                 raise StateUpdateError(
                     f"prerun_pass_without_correctness_evidence: {row['id']}"
+                )
+        elif pre_run_result == "authorized_exception":
+            required_exception_tags = {
+                "user_authorized_pre_run_exception": "true",
+                "review_requirement_unfulfilled": "review_not_evaluable_with_closed_blockers",
+            }
+            if result != "not_evaluable" or any(
+                _note_value(notes, key) != expected
+                for key, expected in required_exception_tags.items()
+            ):
+                raise StateUpdateError(
+                    f"prerun_authorized_exception_invalid: {row['id']}"
+                )
+            if not _note_value(notes, "pre_run_authorization_ref"):
+                raise StateUpdateError(
+                    f"prerun_authorized_exception_authorization_missing: {row['id']}"
+                )
+            if not _note_value(notes, "blocker_closure_evidence"):
+                raise StateUpdateError(
+                    f"prerun_authorized_exception_closure_missing: {row['id']}"
                 )
         gates.setdefault(gated_run, []).append(row["id"])
 

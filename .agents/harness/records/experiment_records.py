@@ -129,7 +129,16 @@ def csv_projection(repo_root: Path | None = None) -> dict[str, dict]:
                         except (OSError, ValueError, AttributeError):
                             pass
                     if purpose not in ("pre_review_smoke", "preregistered_read_only_probe"):
-                        acc["run_id"].add(run_id)
+                        # Restricted runs are deliberately not formal records.  If
+                        # their canonical RunSpec was not retained, the explicit
+                        # disabled-ingest marker is the only safe fallback; never
+                        # silently drop a missing-spec formal run.
+                        restricted_marker = (
+                            "artifact_ingest_disabled:true" in (row.get("notes") or "")
+                            and "official_metrics_disabled:true" in (row.get("notes") or "")
+                        )
+                        if not (restricted_marker and row.get("remote_state") == "not_applicable"):
+                            acc["run_id"].add(run_id)
                 na = (row.get("next_action") or "").strip()
                 if na and na not in acc["next_action"]:
                     acc["next_action"].append(na)

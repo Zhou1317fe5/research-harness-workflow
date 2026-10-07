@@ -29,6 +29,8 @@ from harness.remote.build_rrctl_runspec import (
     canonical_run_spec,
     run_spec_digest,
     same_scientific_behavior,
+    _verified_verdict,
+    validate_repaired_closure as _validate_repaired_closure,
 )
 
 
@@ -67,7 +69,11 @@ def validate_mission_launch(spec: dict, *, resume: bool = False, spec_path: Path
     from git_isolation import verify_commit
     from harness.workflow.mission_state import assert_launchable, task_for_csv
     from validate_spec import validate_text
-    from remote_route import decide_remote_route
+    from remote_route import (
+        PRE_RUN_EXCEPTION_CLOSURE_KIND,
+        PRE_RUN_EXCEPTION_CLOSURE_REASON,
+        decide_remote_route,
+    )
     from harness.remote.build_rrctl_runspec import _gate_provenance
 
     if resume:
@@ -271,17 +277,129 @@ def validate_mission_launch(spec: dict, *, resume: bool = False, spec_path: Path
         gated_run = review_tags.get("gated_run")
         if not gated_run or not any(item["id"] == gated_run for item in rows):
             raise ValueError("pre-run launch exception review row has no valid gated run")
-        if any(
-            review_tags.get(key) != expected
-            for key, expected in (
-                ("pre_run_code_commit", commit),
-                ("review_mode", "scientific_review"),
-                ("review_result", "not_evaluable"),
-                ("user_authorized_pre_run_exception", "true"),
-                ("review_requirement_unfulfilled", "service_failure_two_attempts"),
-            )
-        ):
+        closure_exception = pre_run_exception.get("kind") == PRE_RUN_EXCEPTION_CLOSURE_KIND
+        expected_reason = (
+            PRE_RUN_EXCEPTION_CLOSURE_REASON
+            if closure_exception
+            else "review_service_failure_two_attempts"
+        )
+        required_tags = (
+            ("pre_run_code_commit", commit),
+            ("review_mode", "scientific_review"),
+            ("review_result", "not_evaluable"),
+            ("user_authorized_pre_run_exception", "true"),
+            ("review_requirement_unfulfilled", expected_reason),
+        )
+        if any(review_tags.get(key) != expected for key, expected in required_tags):
             raise ValueError("pre-run launch exception does not match the Mission review record")
+        if closure_exception:
+            if (
+                pre_run_exception.get("mission_id") != metadata.get("spec_id")
+                or pre_run_exception.get("row_id") != row["id"]
+            ):
+                raise ValueError("authorized blocker closure is bound to a different Mission row")
+            closure_paths = pre_run_exception.get("closure_evidence_paths", [])
+            if not closure_paths:
+                raise ValueError("authorized blocker closure evidence is missing")
+            def mission_artifact_matches(note_path: str | None, candidate_paths: list[str]) -> bool:
+                if not isinstance(note_path, str) or not note_path:
+                    return False
+                note_resolved = {
+                    (csv_path.parent / note_path).resolve(),
+                    (repo / note_path).resolve(),
+                }
+                return any(
+                    (repo / candidate).resolve() in note_resolved
+                    for candidate in candidate_paths
+                )
+
+            if not mission_artifact_matches(
+                review_tags.get("blocker_closure_evidence"), list(closure_paths)
+            ):
+                raise ValueError("authorized blocker closure does not match the Mission review record")
+            prior_path = pre_run_exception.get("prior_verdict_path")
+            if not mission_artifact_matches(
+                review_tags.get("verdict_artifact"), [prior_path]
+            ):
+                raise ValueError("authorized blocker closure prior verdict does not match the Mission review record")
+            if review_tags.get("pre_run_authorization_ref") != pre_run_exception.get("authorization_ref"):
+                raise ValueError("authorized blocker closure authorization does not match the Mission record")
+            try:
+                prior_verdict = json.loads((repo / prior_path).read_text(encoding="utf-8"))
+                reviewer_id = str(prior_verdict.get("reviewer_id") or "")
+                _verified_verdict(
+                    prior_path,
+                    repo_root=repo,
+                    source_commit=commit,
+                    review_mode="scientific_review",
+                    review_result="not_evaluable",
+                    reviewer_id=reviewer_id,
+                )
+            except (OSError, UnicodeError, json.JSONDecodeError, RunSpecBuildError, ValueError) as exc:
+                raise ValueError(f"authorized blocker prior verdict is not verifiable: {exc}") from exc
+            closure_documents = []
+            for value in closure_paths:
+                candidate = (repo / value).resolve()
+                if candidate.suffix.lower() != ".json":
+                    continue
+                try:
+                    closure_documents.append(json.loads(candidate.read_text(encoding="utf-8")))
+                except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+                    raise ValueError("authorized blocker closure document is invalid") from exc
+            closure_document = next(
+                (
+                    document for document in closure_documents
+                    if isinstance(document, dict)
+                    and document.get("prior_verdict_result") == "not_evaluable"
+                    and isinstance(document.get("closure_commit"), str)
+                ),
+                None,
+            )
+            if closure_document is None:
+                raise ValueError("authorized blocker closure lacks commit provenance")
+            closure_commit = closure_document["closure_commit"]
+            if closure_document.get("reviewed_commit") != closure_commit or closure_commit != commit:
+                raise ValueError("authorized blocker closure reviewed commit mismatch")
+            evidence_commit = closure_document.get("evidence_scientific_commit") or closure_commit
+            workflow_delta = closure_document.get("workflow_only_delta") or []
+            if (
+                not isinstance(evidence_commit, str)
+                or not re.fullmatch(r"[0-9a-f]{40}", evidence_commit)
+                or not isinstance(workflow_delta, list)
+                or any(not isinstance(path, str) for path in workflow_delta)
+            ):
+                raise ValueError("authorized blocker closure lacks evidence commit provenance")
+            if evidence_commit != closure_commit:
+                if subprocess.run(
+                    ["git", "-C", str(repo), "merge-base", "--is-ancestor", evidence_commit, closure_commit],
+                    check=False, capture_output=True,
+                ).returncode != 0:
+                    raise ValueError("authorized blocker evidence commit is not an ancestor")
+                allowed_workflow_delta = {
+                    ".agents/harness/remote/remote_run.py",
+                    ".agents/harness/remote/tests/test_research_binding.py",
+                    ".codex/skills/mission-csv-execute/scripts/csv_state.py",
+                    ".codex/skills/mission-csv-execute/scripts/preflight.py",
+                    ".codex/skills/mission-csv-execute/scripts/remote_route.py",
+                }
+                from harness.remote.change_fingerprint import behavior_delta
+                try:
+                    actual_workflow_delta = set(
+                        behavior_delta(repo, evidence_commit, closure_commit)
+                    )
+                except Exception as exc:  # noqa: BLE001 - convert provenance failures to gate errors
+                    raise ValueError("authorized blocker closure behavior delta is not verifiable") from exc
+                if (
+                    actual_workflow_delta != set(workflow_delta)
+                    or not actual_workflow_delta <= allowed_workflow_delta
+                ):
+                    raise ValueError("authorized blocker closure includes unapproved code changes")
+            try:
+                _validate_repaired_closure(
+                    list(closure_paths), repo_root=repo, reviewed_commit=closure_commit
+                )
+            except Exception as exc:  # noqa: BLE001 - uniform launch-gate failure
+                raise ValueError(f"authorized blocker closure is not verifiable: {exc}") from exc
     if needs_review or (gate is not None and not restricted):
         try:
             gate = _gate_provenance(

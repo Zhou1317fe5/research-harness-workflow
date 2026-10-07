@@ -301,10 +301,16 @@ flowchart LR
 
 | 分类 | 判断标准 | 处置 |
 |------|----------|------|
-| `current-scope gap` | 违反 source doc、当前 issue acceptance criteria、生产接线要求或声明-证据合同 | 现在修；无法在原行修完时追加正式 follow-up issue 和下一轮 REVIEW，继续执行 |
+| `current-scope gap` | 违反 source doc、当前 issue acceptance criteria、核心科学数据流或声明-证据合同 | 现在修；无法在原行修完时追加正式 follow-up issue 和下一轮 REVIEW，继续执行 |
 | `human-required blocker` | 只有用户或外部主体能提供授权、凭证、付费/业务决定或不可逆操作 | 记录 blocker，继续其他可推进行；全部剩余项都属于此类时才停 |
-| `deferred_improvement` | 当前承诺已经满足，但观察到范围外的质量、评估或架构改进 | 写入 deferred ledger，不追加 issue |
+| `deferred_improvement` | 当前承诺已经满足，但观察到范围外的质量、代码追溯、辅助工具或架构改进 | 写入 deferred ledger，不追加 issue |
 | `future_decision` | 当前承诺已经满足，但后续产品或架构存在真实取舍，需要用户决定 | 写入 deferred ledger，不追加 issue |
+
+**探索阶段与工程追溯类缺口处理纪律**：
+在探索阶段（`experiment_type: probe / baseline_reproduction` 或 Spec 声明为探索期/机制 screen 时）：
+- 只要核心科学证据（机制是否起作用、主指标增减）已有明确事实（即使是 `inconclusive` 或 `no_signal`），任何**非核心计算逻辑的工程追溯项**（如未来日志 digest 哈希记录、离线分析 CLI 打印单次运行的格式小瑕疵、辅助字段落盘）**一律归入 `deferred_improvement` 写入 `<stem>.deferred.json`**；
+- **严禁在探索阶段的 closing review 中将此类非核心工程修饰项判定为 `current-scope gap` 并追加 follow-up issue 和第二轮 `REVIEW-(N+1)`**；
+- 必须直接在 `REVIEW-01` 以 `evidence-close` 交付闭环收工，避免收尾阶段膨胀。
 
 拿不准是否属于当前范围时，回读 source doc、Outcome Contract 和 acceptance criteria。证据不足不能成为延期理由；只要可能影响当前承诺，就按 `current-scope gap` 处理。
 

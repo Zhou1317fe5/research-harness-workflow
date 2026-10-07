@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+from argparse import Namespace
 import csv
 import json
 import os
@@ -683,10 +684,10 @@ def main() -> int:
     task_path.write_text(prompt, encoding="utf-8")
 
     rj_args = Namespace(
-        packet=str(packet_path),
-        task=str(task_path),
+        packet=packet_path,
+        task=task_path,
         backend=args.backend,
-        job_dir=str(job_dir),
+        job_dir=job_dir,
         cwd=None,
         model=args.model,
         max_resumes=0,
@@ -714,6 +715,20 @@ def main() -> int:
         return 2
     verdict = json.loads(verdict_path.read_text(encoding="utf-8"))
     review_output_text = verdict.get("review_output") or ""
+    if not review_output_text.strip() and all(
+        key in verdict for key in ("reviewer_id", "result", "report_markdown", "gaps")
+    ):
+        # reviewer_job's closing verdict is already the canonical structured
+        # output; older launcher code expected it nested under review_output.
+        review_output_text = json.dumps(
+            {
+                "reviewer_id": verdict["reviewer_id"],
+                "result": verdict["result"],
+                "report_markdown": verdict["report_markdown"],
+                "gaps": verdict["gaps"],
+            },
+            ensure_ascii=False,
+        )
     if not review_output_text.strip():
         sys.stderr.write("verdict has empty review_output\n")
         return 2
@@ -725,6 +740,21 @@ def main() -> int:
         return 3
 
     # Schema check: closing.vision-review.v1 has reviewer_id, result, report_markdown, gaps[].
+    # Some reviewer_job versions emit the lean closing verdict without the
+    # launcher compatibility fields. Normalize only fields that are mechanically
+    # derivable from the approved contract and the existing report; do not alter
+    # the reviewer's gaps or scientific narrative.
+    if isinstance(closing_result, dict):
+        report = closing_result.get("report_markdown") or ""
+        closing_result.setdefault("summary", report)
+        closing_result.setdefault("handoff_markdown", report)
+        closing_result.setdefault("assumptions", [])
+        closing_result.setdefault("decision_debt", [])
+        closing_result.setdefault("deferred_findings", [])
+        closing_result.setdefault("human_required_blockers", [])
+        closing_result.setdefault("validation_limited", [
+            "closing verdict was emitted in direct structured form; launcher compatibility fields were normalized",
+        ])
     # Validate before releasing to callers (downstream verify_report relies on these keys).
     if not isinstance(closing_result, dict):
         sys.stderr.write(f"closing review output is not an object\n")
@@ -749,8 +779,15 @@ def main() -> int:
         "review_observed_model": observed_model,
         "review_model_evidence": model_evidence,
         # Schema-compatible top-level keys for downstream verify_report / csv checks.
-        "result": closing_result.get("result"),
+        "result": {
+            "pass": "vision_met",
+            "issues_found": "gaps_found",
+            "not_evaluable": "limited_review",
+        }.get(closing_result.get("result"), closing_result.get("result")),
         "report_markdown": closing_result.get("report_markdown"),
+        "claim_coverage": closing_result.get("claim_coverage"),
+        "claim_coverage_status": closing_result.get("claim_coverage_status"),
+        "scientific_outcome": closing_result.get("scientific_outcome", "not_applicable"),
         "gaps": closing_result.get("gaps") or [],
         "closing_reason": closing_result.get("closing_reason"),
         "reviewer_id": closing_result.get("reviewer_id") or "reviewer_job",

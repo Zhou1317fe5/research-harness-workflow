@@ -184,6 +184,76 @@ class ResearchBindingTests(unittest.TestCase):
         self.assertEqual(decision["decision"], "blocked")
         self.assertIn("formal_review_required", decision["reason_codes"])
 
+    def test_authorized_closed_blocker_exception_releases_only_verified_closure(self):
+        evidence = self.root / "issues/T/reviews/PRERUN-REVIEW-1/closure-evidence.json"
+        evidence.write_text('{"production": "r5"}\n')
+        closure = self.root / "issues/T/reviews/PRERUN-REVIEW-1/closure.json"
+        closure.write_text(json.dumps({
+            "schema_version": "fixture.blocker-closure.v1",
+            "reviewed_commit": self.commit,
+            "closure_commit": self.commit,
+            "evidence_scientific_commit": self.commit,
+            "workflow_only_delta": [],
+            "prior_verdict_result": "not_evaluable",
+            "blockers": [{
+                "id": "P4",
+                "verdict": "closed_by_production_sink_evidence",
+                "fix": "add condition intervention probe",
+                "evidence": ["issues/T/reviews/PRERUN-REVIEW-1/closure-evidence.json"],
+            }],
+        }) + "\n")
+        verdict_path = self.root / "issues/T/reviews/PRERUN-REVIEW-1/verdict.json"
+        verdict = json.loads(verdict_path.read_text())
+        verdict.update(result="not_evaluable", decision="do_not_run")
+        verdict_path.write_text(json.dumps(verdict))
+        self.review["notes"] = (
+            f"gated_run:RUN-ROW; pre_run_code_commit:{self.commit}; "
+            "pre_run_result:authorized_exception; review_mode:scientific_review; "
+            "review_result:not_evaluable; "
+            "verdict_artifact:issues/T/reviews/PRERUN-REVIEW-1/verdict.json; "
+            "blocker_closure_evidence:issues/T/reviews/PRERUN-REVIEW-1/closure.json; "
+            "user_authorized_pre_run_exception:true; "
+            "review_requirement_unfulfilled:review_not_evaluable_with_closed_blockers; "
+            "pre_run_authorization_ref:user_authorization_turn:fixture"
+        )
+        self.write_csv()
+        exception = {
+            "schema_version": "mission.pre-run-exception.v2",
+            "kind": "review_not_evaluable_with_closed_blockers",
+            "candidate_commit": self.commit,
+            "review_mode": "scientific_review",
+            "review_result": "not_evaluable",
+            "user_authorized": True,
+            "authorization_ref": "user_authorization_turn:fixture",
+            "reason_code": "review_not_evaluable_with_closed_blockers",
+            "mission_id": "SPEC-A",
+            "row_id": "RUN-ROW",
+            "prior_verdict_path": "issues/T/reviews/PRERUN-REVIEW-1/verdict.json",
+            "evidence_paths": [
+                "issues/T/reviews/PRERUN-REVIEW-1/verdict.json",
+                "issues/T/reviews/PRERUN-REVIEW-1/closure.json",
+                "issues/T/reviews/PRERUN-REVIEW-1/closure-evidence.json",
+            ],
+            "closure_evidence_paths": [
+                "issues/T/reviews/PRERUN-REVIEW-1/closure.json",
+            ],
+        }
+        authorized = copy.deepcopy(self.spec)
+        authorized["metadata"].pop("gate_provenance")
+        authorized["metadata"]["change_manifest"] = {
+            "schema_version": "prerun.change-route.v1",
+            "reviewed_commit": self.commit,
+            "candidate_commit": self.commit,
+            "changes": [],
+        }
+        authorized["metadata"]["pre_run_exception"] = exception
+        validate_mission_launch(authorized)
+
+        broken = copy.deepcopy(authorized)
+        broken["metadata"]["pre_run_exception"]["closure_evidence_paths"] = []
+        with self.assertRaisesRegex(ValueError, "closure_evidence_paths"):
+            validate_mission_launch(broken)
+
     def test_not_evaluable_is_not_a_pass_and_paused_mission_cannot_launch(self):
         original = self.review["notes"]
         self.review["notes"] = original.replace("scientifically_correct", "not_evaluable")
