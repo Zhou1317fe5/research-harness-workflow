@@ -1,7 +1,7 @@
 # research-harness-workflow
 
 可按项目复制使用的科研工作流模板。用 Spec 明确实验目标，用任务 CSV 跟踪执行，
-用本地科研记录与可选 Hindsight 保存和召回结论。
+用本地科研记录保存和召回结论。
 
 训练和评估参数放在项目 `.sh` 脚本中，用 `bash` 启动。模板提供
 [train.sh](scripts/train.sh) 和 [eval.sh](scripts/eval.sh)，也支持项目已有的单个训练评估脚本。

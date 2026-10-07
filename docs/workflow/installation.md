@@ -431,11 +431,7 @@ cp -n .agents/harness/config/research-memory.example.json .agents/harness/config
 | `context_chars / max_items` | 每次提供的上下文上限，默认 6500 字符和 8 条 |
 | `hooks_enabled` | 是否自动收集，默认 true |
 
-### 从旧版本迁移
-
-如果项目以前接入过 Hindsight，删除 `research-memory.json` 中的 `project_id`、`hindsight_enabled` 和 `hindsight_auto_sync`，并从 `.env`、`.mcp.json`、Codex/Claude 的 MCP 配置中删除 Hindsight 地址、bank 和凭据变量。不要删除 `research_workspace`、`.memory/events`、`STATE.md`、`CONCLUSIONS.md` 或实验记录；旧的 `outbox/`、`publications/` 和索引中的 jobs 只作为历史保留，不会再被推进或上传。
-
-清理配置后重新运行本地 hooks 安装命令，并重启或 reload Pi/宿主，使旧回调失效。迁移后只使用本地 `context`、`process` 和按 scope/protocol/status 精确筛选的 `recall`。仓库中被忽略的 `research-memory.json` 属于本机运行态；若其中 `hooks_enabled` 为 false，只表示该机器暂时停用自动采集，不改变模板示例的默认值。
+仓库中被忽略的 `research-memory.json` 属于本机运行态；若其中 `hooks_enabled` 为 false，只表示该机器暂时停用自动采集，不改变模板示例的默认值。
 
 这些记录怎样帮助下一轮研究，见[使用指南](usage.md#科研记录与召回)。
 
