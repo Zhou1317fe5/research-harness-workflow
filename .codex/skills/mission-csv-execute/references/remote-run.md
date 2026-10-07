@@ -4,6 +4,9 @@
 
 当 issue 涉及远程 train→eval：
 
+**执行栈与离线评测边界**：
+只有需要真实 GPU 计算（模型前向/反向、特征提取、预测生成、显存与 loss 验证）或远端专用环境依赖的运行才走远程 rrctl。**预测或权重拉回本地后的离线评测（如根据 predictions 计算 mIoU、准确率、混淆矩阵求和等纯 CPU 聚合）属于本地轻量处理，必须直接在本地执行，严禁将预测数据打包传回远端 CPU 额外启动 rrctl 运行**。纯离线评测行在 CSV 中使用 `test_mcp=local_cli`，产物就地生成并进入结果入账流程。
+
 1. 读取 Spec/CSV 中的 train intent、eval intent、required args、branch、commit、artifact path 和 command owner。
 2. 查找最近风险路由：`no_prerun/micro_validation/smoke_validation` 绑定 base/candidate；`full_review` 的 smoke row 绑定 candidate 与用户授权，official row 绑定已通过的 `PRERUN-REVIEW-*` 与 `pre_run_code_commit`。
 3. 确认运行命令使用 route 所绑定的 candidate commit；存在后续 diff 时重新分类，而不是自动进入完整 PRERUN。

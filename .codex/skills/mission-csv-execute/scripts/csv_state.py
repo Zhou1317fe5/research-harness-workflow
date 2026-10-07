@@ -235,7 +235,7 @@ def _validate_single_prerun(
 _PROGRESSION = {"未开始": 0, "进行中": 1, "已完成": 2}
 _REMOTE_FORWARD = {
     "": {"", "not_applicable", "running_remote"},
-    "not_applicable": {"not_applicable"},
+    "not_applicable": {"not_applicable", "ingested"},
     "running_remote": {"running_remote", "completed", "failed"},
     "completed": {"completed", "artifacts_pulled", "ingested"},
     "artifacts_pulled": {"artifacts_pulled", "ingested"},

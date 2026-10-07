@@ -113,6 +113,12 @@ Local validation before smoke follows risk and affected behavior: compile affect
 
 Required when the change claims any of: baseline-preserving, zero-init no-op, disabled-path equivalence, or reuse of a canonical implementation.
 
+**Exploration-stage and side-by-side screen exemption**:
+In the exploration stage (spec §9.0.1 minimum mechanism screen) or when baseline and candidate arms are evaluated side-by-side in the same screen run, an empirical remote GPU Baseline-Equivalence Probe is **NOT** required before launching the screen.
+- When both arms execute side-by-side, the baseline arm runs its own independent canonical implementation directly.
+- Structural verification or local CPU unit tests (proving disabled paths bypass the modification or produce zero residual on dummy tensors) are sufficient for the pre-run gate.
+- If equivalence is not measured empirically, the reviewer records `Baseline/disabled path` as `correct` (grounded in local unit evidence) or `not_applicable` (no standalone equivalence claimed); it must **NOT** record `not_evaluable` to block an exploration screen.
+
 When scientific computation changes, bind each side to its actual implementation as well as its weights. A reference label or entry file is insufficient if it still instantiates the changed candidate; evidence must identify the reference computation actually executed.
 
 Structural evidence does not establish equivalence. Zero residual, zero additivity, and matching counters are necessary, not sufficient: a path disabled elsewhere in the forward can still change the output while every new residual reads exactly zero.

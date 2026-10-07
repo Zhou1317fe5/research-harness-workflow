@@ -22,6 +22,7 @@ issues/**/readiness*.json
 /temp/
 /docs/reviews/
 /docs/adr/
+/.hermes.md
 /.agents/harness/.memory/
 /.agents/harness/config/research-memory.json
 /.ruff_cache

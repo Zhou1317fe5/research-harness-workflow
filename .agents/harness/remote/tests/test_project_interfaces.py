@@ -291,6 +291,53 @@ outputs = ["b.txt"]
         with self.assertRaises(ValueError):
             apply_project_config(request, path, pipeline="module_b")
 
+    def test_named_pipeline_custom_adapter_and_artifacts(self):
+        path = self.root / "custom_pipe.toml"
+        path.write_text('''
+version = 1
+[pipeline]
+default = "screen"
+
+[adapter]
+progress_path = "progress.jsonl"
+summary_path = "summary.json"
+summary_required_fields = ["metric"]
+
+[[artifacts]]
+path = "summary.json"
+required = true
+
+[[pipelines.screen.stages]]
+name = "predict"
+argv = ["bash", "screen.sh"]
+outputs = ["predictions.jsonl", "screen-summary.json"]
+
+[pipelines.screen.adapter]
+progress_path = "screen_progress.jsonl"
+summary_path = "screen_summary.json"
+summary_required_fields = []
+
+[[pipelines.screen.artifacts]]
+path = "screen_summary.json"
+required = true
+''')
+        config = load_config(path, pipeline="screen")
+        self.assertEqual(config["pipeline"]["adapter"]["summary_required_fields"], [])
+        self.assertEqual(config["pipeline"]["artifacts"], [{"path": "screen_summary.json", "required": True}])
+
+        request = self.request()
+        request.pop("workload")
+        request.pop("adapter_contract", None)
+        request.pop("artifacts", None)
+        result = apply_project_config(request, path, pipeline="screen")
+        self.assertEqual(result["adapter_contract"]["summary_required_fields"], [])
+        self.assertEqual(result["adapter_contract"]["summary_path"], "screen_summary.json")
+        artifact_paths = {item["path"]: item["required"] for item in result["artifacts"]}
+        self.assertTrue(artifact_paths["screen_summary.json"])
+        # stage outputs should be automatically included as optional artifacts
+        self.assertIn("predictions.jsonl", artifact_paths)
+        self.assertFalse(artifact_paths["predictions.jsonl"])
+
     def test_changed_pipeline_digest_stops_before_execution(self):
         path = self.named_config()
         args = ["run_pipeline.py", "--config", str(path), "--pipeline", "module_b", "--pipeline-sha256", "0" * 64, "--check"]

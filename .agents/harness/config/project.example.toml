@@ -25,6 +25,14 @@ name = "train_eval"
 argv = ["bash", "scripts/experiments/module_variant.sh"]
 log = "train_eval.log"
 outputs = ["checkpoints/best.pt", "summary.json"]
+# 流水线各阶段声明的 outputs 会自动作为可选产物纳入拉取清单，无需重复声明。
+# 命名流水线还可按需配置专属的 adapter 与 artifacts 覆盖全局默认（例如仅预测不发指标的 screen 流水线）：
+# [pipelines.module_variant.adapter]
+# summary_required_fields = []
+# summary_finite_fields = []
+# [[pipelines.module_variant.artifacts]]
+# path = "predictions.jsonl"
+# required = true
 # 按实际模块继续添加 pipelines.<name>.stages；命名不固定。
 # 执行器通过 RRCTL_OUTPUT_ROOT 向脚本传递本次运行的独立输出目录。
 

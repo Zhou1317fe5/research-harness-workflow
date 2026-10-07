@@ -13,6 +13,7 @@ except ModuleNotFoundError:
     except ModuleNotFoundError as exc:
         raise ModuleNotFoundError("Python 3.10 requires tomli; install .agents/harness/requirements.txt in the selected environment") from exc
 from pathlib import Path, PurePosixPath
+from typing import Any
 
 from harness.common.paths import CONFIG_DIR, REPO_ROOT as REPO_ROOT
 
@@ -28,6 +29,20 @@ def relative_path(value: str, label: str, *, allow_dot: bool = False) -> str:
     return path.as_posix()
 
 
+def _validate_artifacts(artifacts: Any, label: str = "artifacts") -> None:
+    if not isinstance(artifacts, list):
+        raise ValueError(f"{label} must be an array of tables")
+    for item in artifacts:
+        if not isinstance(item, dict) or set(item) - {"path", "required"}:
+            raise ValueError(f"{label} entries accept path and required")
+        path_val = item.get("path")
+        if not isinstance(path_val, str):
+            raise ValueError(f"{label}.path: expected a relative POSIX path")
+        relative_path(path_val, f"{label}.path")
+        if not isinstance(item.get("required", True), bool):
+            raise ValueError(f"{label}.required must be a boolean")
+
+
 def _pipeline_options(config: dict) -> tuple[dict, dict]:
     legacy = config.get("pipeline", {})
     named = config.get("pipelines", {})
@@ -36,7 +51,7 @@ def _pipeline_options(config: dict) -> tuple[dict, dict]:
     if set(legacy) - {"default", "stages"}:
         raise ValueError("pipeline accepts default or legacy stages")
     for name, definition in named.items():
-        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]*", name) or not isinstance(definition, dict) or set(definition) - {"stages"}:
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]*", name) or not isinstance(definition, dict) or set(definition) - {"stages", "adapter", "artifacts"}:
             raise ValueError(f"invalid named pipeline: {name}")
     if legacy.get("stages") and "default" in named:
         raise ValueError("named pipeline 'default' conflicts with legacy stages")
@@ -73,16 +88,25 @@ def load_config(path: Path = DEFAULT_CONFIG, *, pipeline: str | None = None) -> 
             raise ValueError("multiple pipelines are available; choose --pipeline or set pipeline.default")
     if selected is not None and (not isinstance(selected, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]*", selected)):
         raise ValueError("pipeline selector must be an identifier")
+    selected_definition: dict = {}
     if selected == "default" and legacy.get("stages"):
         stages, registered = legacy["stages"], False
     elif selected in named:
-        stages, registered = named[selected].get("stages", []), True
+        selected_definition = named[selected]
+        stages, registered = selected_definition.get("stages", []), True
     elif selected is None:
         stages, registered = [], False
     else:
         raise ValueError(f"unknown pipeline: {selected}; available: {', '.join(sorted(named))}")
     config.pop("pipelines", None)
     config["pipeline"] = {"name": selected, "named": registered, "stages": stages}
+    if "adapter" in selected_definition:
+        if not isinstance(selected_definition["adapter"], dict):
+            raise ValueError(f"pipelines.{selected}.adapter must be a table")
+        config["pipeline"]["adapter"] = selected_definition["adapter"]
+    if "artifacts" in selected_definition:
+        _validate_artifacts(selected_definition["artifacts"], f"pipelines.{selected}.artifacts")
+        config["pipeline"]["artifacts"] = selected_definition["artifacts"]
     if config.get("version") != 1:
         raise ValueError("project config version must be 1")
     unknown = set(config) - {"version", "pipeline", "adapter", "artifacts", "records", "environment", "resources", "health"}
@@ -119,15 +143,7 @@ def load_config(path: Path = DEFAULT_CONFIG, *, pipeline: str | None = None) -> 
                 raise ValueError(f"stage.{field} must be an array")
             for value in values:
                 relative_path(value, f"stage.{field}")
-    artifacts = config.get("artifacts", [])
-    if not isinstance(artifacts, list):
-        raise ValueError("artifacts must be an array of tables")
-    for item in artifacts:
-        if not isinstance(item, dict) or set(item) - {"path", "required"}:
-            raise ValueError("artifact entries accept path and required")
-        relative_path(item.get("path"), "artifact.path")
-        if not isinstance(item.get("required", True), bool):
-            raise ValueError("artifact.required must be a boolean")
+    _validate_artifacts(config.get("artifacts", []), "artifacts")
     records = config.get("records", {})
     if set(records) - {"summary_glob", "primary_metric", "secondary_metric", "protocol_field", "checkpoint_field", "steps_field", "dimensions"}:
         raise ValueError("unknown records configuration field")
@@ -179,8 +195,17 @@ def apply_project_config(request: dict, path: Path, *, pipeline: str | None = No
             raise ValueError("metadata must be an object")
         metadata.update({"pipeline_config": config_relative, "pipeline_stages_sha256": digest,
                          "pipeline_stages": copy.deepcopy(config["pipeline"]["stages"])})
-    result.setdefault("adapter_contract", config.get("adapter", {}))
-    result.setdefault("artifacts", config.get("artifacts", []))
+    pipeline_def = config.get("pipeline", {})
+    pipeline_adapter = pipeline_def.get("adapter")
+    result.setdefault("adapter_contract", copy.deepcopy(pipeline_adapter) if pipeline_adapter is not None else copy.deepcopy(config.get("adapter", {})))
+    pipeline_artifacts = pipeline_def.get("artifacts")
+    result.setdefault("artifacts", copy.deepcopy(pipeline_artifacts) if pipeline_artifacts is not None else copy.deepcopy(config.get("artifacts", [])))
+    declared_paths = {item.get("path") for item in result["artifacts"] if isinstance(item, dict)}
+    for stage in pipeline_def.get("stages", []):
+        for out_path in stage.get("outputs", []):
+            if out_path not in declared_paths:
+                result["artifacts"].append({"path": out_path, "required": False})
+                declared_paths.add(out_path)
     requested_resources = result.get("resources", {})
     if not isinstance(requested_resources, dict):
         raise ValueError("resources must be an object")
