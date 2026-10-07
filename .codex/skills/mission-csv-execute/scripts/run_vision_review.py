@@ -593,6 +593,42 @@ Legacy fallback: when no Outcome Contract is provided, keep the existing summary
 """
 
 
+def detect_session_model(repo_root: Path) -> str | None:
+    env_model = os.environ.get("PI_MODEL") or os.environ.get("EXEC_MODEL") or os.environ.get("SESSION_MODEL")
+    if env_model and env_model.strip():
+        provider = os.environ.get("PI_PROVIDER")
+        if provider and "/" not in env_model:
+            return f"{provider}/{env_model.strip()}"
+        return env_model.strip()
+
+    home = Path.home()
+    pi_sessions_root = home / ".pi" / "agent" / "sessions"
+    if pi_sessions_root.is_dir():
+        canon_path = str(repo_root.resolve()).strip("/").replace("/", "-")
+        target_dir = pi_sessions_root / f"--{canon_path}--"
+        if target_dir.is_dir():
+            session_files = list(target_dir.glob("*.jsonl"))
+            if session_files:
+                latest = max(session_files, key=lambda p: p.stat().st_mtime)
+                try:
+                    latest_model = None
+                    with open(latest, "r", encoding="utf-8") as f:
+                        for line in f:
+                            if not line.strip():
+                                continue
+                            data = json.loads(line)
+                            if data.get("type") == "model_change":
+                                prov = data.get("provider")
+                                mid = data.get("modelId")
+                                if prov and mid:
+                                    latest_model = f"{prov}/{mid}"
+                    if latest_model:
+                        return latest_model
+                except Exception:
+                    pass
+    return None
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--csv", required=True)
@@ -605,8 +641,8 @@ def main() -> int:
     parser.add_argument("--workdir", default=os.getcwd())
     parser.add_argument(
         "--model",
-        required=True,
-        help="审查模型：用当前会话（执行）模型。脚本不再固定为契约值，验证器只要求记录值来自可确证的运行时通道。",
+        default=None,
+        help="审查模型：默认自动探测当前会话（执行）模型。收尾审查严格使用主会话模型，严禁使用高级审查模型。",
     )
     parser.add_argument(
         "--backend",
@@ -619,6 +655,29 @@ def main() -> int:
     args = parser.parse_args()
 
     workdir_path = Path(args.workdir).expanduser().resolve()
+    session_model = detect_session_model(workdir_path)
+    effective_model = args.model
+    if not effective_model or effective_model.strip().lower() == "auto":
+        if session_model:
+            effective_model = session_model
+        else:
+            sys.stderr.write("cannot detect current session model; please pass --model <session_model>\n")
+            return 2
+    else:
+        # 收尾审查必须使用主会话模型，严禁私自越级使用高级审查模型
+        senior_markers = ("gpt-6", "claude-3-7", "claude-3.7", "o3", "o1")
+        if (
+            session_model
+            and effective_model != session_model
+            and any(marker in effective_model.lower() for marker in senior_markers)
+            and not any(marker in session_model.lower() for marker in senior_markers)
+        ):
+            sys.stderr.write(
+                f"notice: closing review strictly uses current session model '{session_model}', "
+                f"overriding requested senior model '{effective_model}'.\n"
+            )
+            effective_model = session_model
+    args.model = effective_model
     args.csv = existing_file(args.csv, workdir_path)
     args.source_doc = existing_file(args.source_doc, workdir_path) if args.source_doc else None
     args.claim_ledger = (

@@ -55,9 +55,9 @@ closing review 必须基于以下材料：
 | 2 | 主会话按同一 prompt 自审 | `review_agent_mode:self-review` | `review_independence:false` | 只在 reviewer_job 失败时使用；如实记录 capability failure，但完成的 self-review 可以闭环 |
 | 3 | 主会话按同一 prompt 自审 | `review_agent_mode:self-review` | `review_independence:false` | 只在前两项失败时使用；如实记录 capability failure，但完成的 self-review 可以闭环 |
 
-closing review 的审查模型固定为**当前会话（执行）模型**：不要求改成另一个“高级”模型，因此这里的
-`review_independence:true` 含义是**结构独立**——fresh 只读会话、prompt 不含主代理结论、禁止再委派；
-模型与执行模型相同是允许的。但 requested/observed 必须如实记录并来自可确证的运行时通道
+closing review 的审查模型**必须为当前会话（执行）模型，严禁私自指定或借用高级审查模型**：
+收尾审查是工程交付与台账核验（Spec 对应关系、CSV 状态、Git 提交对齐、Handoff 格式审计），不是科学机理审查。科学机理结论已由前序独立 `RESULT-ANALYSIS-01` 敲定定调，收尾审查严禁越级调用高级模型浪费配额。
+这里的 `review_independence:true` 含义是**结构独立**——fresh 只读会话、prompt 不含主代理结论、禁止再委派；模型与执行模型相同是强制要求。requested/observed 必须如实记录并来自可确证的运行时通道
 （`session-metadata` / `event-stream` / `parent-runtime`），记录 `unknown` 会被验证器拒绝。
 同一模型意味着两者盲区相同，抓不住“模型本身就这么想”的错误：读者应据此判断该结论的证据强度。
 
@@ -80,7 +80,7 @@ python scripts/run_vision_review.py \
   --handoff <csv-path-without-.csv>.handoff.md \
   --workdir <repo-root> \
   --backend codex \
-  --model <当前会话模型>
+  --model <当前会话模型（默认自动探测，严禁传高级审查模型）>
 <!-- reviewer-launcher:END -->
 ```
 
@@ -90,7 +90,7 @@ python scripts/run_vision_review.py \
 
 reviewer prompt 必须明确写入：
 
-- 独立路径的请求模型 = 当前会话（执行）模型，由主会话显式 `--model` 传入 reviewer_job；requested model 与 observed model 分开记录，observed 必须来自运行时可确证的通道
+- 独立路径的请求模型 = 当前会话（执行）模型（严禁使用高级审查模型），由主会话显式 `--model` 或由脚本自动探测传入 reviewer_job；requested model 与 observed model 分开记录，observed 必须来自运行时可确证的通道
 - observed model 只能来自 host/session metadata 或 CLI JSON event stream。reviewer 文本和 review JSON 自报的模型不算证据
 - 只基于批准文档或原始请求、CSV、claim/evidence ledger、diff/commit、测试/MCP 证据、交付物声明和 review log
 - 不信任主 agent 的结论性总结

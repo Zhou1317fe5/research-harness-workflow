@@ -109,9 +109,10 @@ task / raw / verdict 与其 SHA 链，主会话不直接参与 review。Scientif
 `.pi/agents/` 注册项，也无任何回填 frontmatter 的需求。
 
 **关于审查模型。** 审查会话与交互会话共用同一套 Pi/Codex 模型注册表，可用模型由
-`/model` 决定。**closing review（`REVIEW-*`）使用当前会话（执行）模型**：主会话用
-`--model` 把当前模型字符串显式交给 reviewer_job；独立性不是来自换模型，而是来自
-fresh 只读会话与不含主代理结论的 prompt。requested/observed 会如实记录。
+`/model` 决定。**closing review（`REVIEW-*`）必须使用当前会话（执行）模型，严禁使用高级审查模型**：
+主会话用 `--model`（或留空由脚本自动探测）把当前执行模型传给 reviewer_job；独立性不是来自换模型，
+而是来自 fresh 只读会话与不含主代理结论的 prompt，requested/observed 会如实记录。收尾审查仅验收工程交付账目与规范，
+不重做科学机理裁决，严禁越级调用高级审查模型造成配额浪费。
 PRERUN 与 post-run 分析仍用契约里的模型。获批值与 thinking 级别记录在
 `.agents/harness/config/review_contract.toml`（缺失时用 `.agents/harness/review_model.py`
 的内置默认值）；改模型只需改这一个文件。
