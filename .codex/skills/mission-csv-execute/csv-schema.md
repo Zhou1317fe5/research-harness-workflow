@@ -156,6 +156,7 @@ Keep commonly used `notes` tags stable:
 | `scientific_reviewer_gap:<reason>` | One recorded capability gap when the independent scientific reviewer is unavailable; do not create retry rows. |
 | `pre_run_code_commit:<hash>` | Code snapshot reviewed before training/eval/remote run. |
 | `pre_run_result:pass` | Pre-run review allowed the gated run. |
+| `advisor_decision:<summary>` | Actionable technical decision and unblocking guidance from the strong Advisor model. |
 
 ### Claim reference checks
 

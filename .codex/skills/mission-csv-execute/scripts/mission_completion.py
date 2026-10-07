@@ -54,7 +54,7 @@ SINGLETON_NOTE_KEYS = frozenset({
     "readiness_result", "command_owner", "legacy_reason",
     "legacy_migration_deadline", "legacy_migration_issue", "legacy_responsible_component",
     "artifact_evidence", "artifact_policy", "formal_attempt", "root_budget_enforced",
-    "commit_hash", "git_repo",
+    "commit_hash", "git_repo", "advisor_decision",
 })
 REVIEW_REQUIRED_TAGS = {
     "review_agent_mode",

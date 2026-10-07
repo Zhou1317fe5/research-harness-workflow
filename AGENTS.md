@@ -69,8 +69,6 @@
 
 **PRERUN 单次审查与 Blocker 闭环**：运行前科学审查只执行单次定点审查，坚决遏制审查标准发散与无限循环。审查发现缺陷或探针缺失时，必须列为具有明确证伪条件的 Blockers；主代理在原实施行完成修复或补齐运行证据，经 `closure.json` 机器校验闭合后即自动放行启动，严禁发起无边界的二次 full review。`not_evaluable` 仅限 Spec 逻辑自相矛盾等不可判定情形；运行期日志或梯度等价性证据缺失一律按可证伪 Blocker 处理。
 
-**探索期收尾审查纪律（防收尾膨胀）**：在探索阶段机制验证（如单配置 screen / probe）获得明确指标或行为结论后，收尾审查必须在第一轮（`REVIEW-01`）以证据直接收敛。非核心计算逻辑的辅助工程修饰（如未来日志 digest 哈希追溯、离线分析 CLI 打印单次运行的格式小瑕疵）一律归入 `deferred_improvement` 写入 deferred ledger，严禁判定为 `current-scope gap` 并追加 follow-up issue 导致收尾阶段膨胀。
-
 测试是 commit、push、PR 前的门禁，**范围按改动影响面与将要声称的结论确定**；不设测试数量配额，也不因翻页或进入下一步机械重跑。只报告实际运行过的命令、退出码和结果。测试范围分级、`validation_gap` 标注与 claim 终态规则见 `mission-csv-execute`。
 
 # 科研产物布局
