@@ -113,6 +113,19 @@ class ReferenceTests(unittest.TestCase):
         self.assertIn(first, conclusions)
         self.assertIn(second, conclusions)
 
+    def test_legacy_config_fields_are_tolerated(self):
+        cfg_path = self.root / '.agents/harness/config/research-memory.json'
+        cfg_path.parent.mkdir(parents=True, exist_ok=True)
+        cfg_path.write_text(json.dumps({
+            'project_id': 'legacy-proj',
+            'hindsight_enabled': True,
+            'hindsight_auto_sync': False,
+            'hooks_enabled': False,
+        }))
+        mem = Memory(self.root)
+        self.assertFalse(mem.config['hooks_enabled'])
+        self.assertNotIn('project_id', mem.config)
+
 
 if __name__ == '__main__':
     unittest.main()

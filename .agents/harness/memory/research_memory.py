@@ -159,6 +159,9 @@ def internal_host_process():
     return os.environ.get("MAGIC_CONTEXT_PI_SUBAGENT") == "1" or (depth.isdigit() and int(depth) > 0)
 
 
+LEGACY_CONFIG_FIELDS = {"project_id", "hindsight_enabled", "hindsight_auto_sync"}
+
+
 class Memory:
     def __init__(self, root=ROOT, store=None):
         self.root = Path(root).resolve()
@@ -168,9 +171,9 @@ class Memory:
                        "max_items": 8, "hooks_enabled": True}
         if self.config_path.is_file():
             supplied = json.loads(self.config_path.read_text())
-            if not isinstance(supplied, dict) or set(supplied) - set(self.config):
+            if not isinstance(supplied, dict) or set(supplied) - set(self.config) - LEGACY_CONFIG_FIELDS:
                 raise MemoryError("未知的 research-memory 配置字段")
-            self.config.update(supplied)
+            self.config.update({k: v for k, v in supplied.items() if k in self.config})
         for key, low, high in (("context_chars", 1000, 16000), ("max_items", 1, 30)):
             if type(self.config[key]) is not int or not low <= self.config[key] <= high:
                 raise MemoryError(f"无效的 {key} 配置")
