@@ -18,7 +18,7 @@ from .output_limits import CONTROL_OUTPUT_LIMIT
 from .security import redact, redact_data
 
 CLI_SCHEMA = "rrctl.cli.v1"
-OPERATIONS = {"ready", "launch", "inspect", "health", "wait", "pull", "resume", "abort", "doctor"}
+OPERATIONS = {"ready", "launch", "inspect", "health", "wait", "pull", "recover-evidence", "resume", "abort", "doctor"}
 
 
 def _emit(value: dict[str, Any], *, machine: bool) -> None:
@@ -137,6 +137,13 @@ def build_parser(*, machine: bool = False) -> argparse.ArgumentParser:
         action="store_true",
         help="snapshot bounded logs and state, including failed or running workloads",
     )
+
+    recover = commands.add_parser(
+        "recover-evidence", help="recover explicitly declared outputs from a finished workload"
+    )
+    recover.add_argument("run_id")
+    recover.add_argument("--path", action="append", required=True, help="confined output path; repeatable")
+    recover.add_argument("--destination", type=Path, required=True)
 
     resume = commands.add_parser("resume", help="rebuild local index from remote control state")
     resume.add_argument("--profile", required=True)
@@ -295,6 +302,10 @@ def main(argv: list[str] | None = None) -> int:
                 value = _compact_wait(value, controller)
         elif operation == "pull":
             value = controller.pull(args.run_id, diagnostic=args.diagnostic)
+        elif operation == "recover-evidence":
+            value = controller.recover_evidence(
+                args.run_id, paths=args.path, destination=args.destination
+            )
         elif operation == "resume":
             value = controller.resume(profile_name=args.profile, control_root=args.control_path)
         elif operation == "abort":

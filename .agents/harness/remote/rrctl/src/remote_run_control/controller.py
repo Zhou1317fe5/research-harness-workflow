@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import os
@@ -24,12 +25,92 @@ from .monitor import OBSERVE_MAX_SECONDS
 from .monitor import protocol as monitoring_protocol
 from .profiles import DEFAULT_PROFILE_PATH, ProfileStore
 from .readiness import ReadinessResult, validate_run_spec
-from .security import redact, redact_data
+from .security import confined_relative_path, redact, redact_data
 from .source_identity import source_content_sha256
 from .transport import CommandResult, Transport, transport_for
 from .zipapp_builder import build_worker_zipapp
 
 DEFAULT_STATE_ROOT = Path.home() / ".local" / "state" / "rrctl" / "runs"
+
+_RECOVERY_SCRIPT = r'''\
+import hashlib, json, os, shutil, sys, uuid
+from pathlib import Path
+
+control_root = Path(sys.argv[1]).resolve()
+output_root = Path(sys.argv[2]).resolve()
+paths = json.loads(sys.argv[3])
+run_id = sys.argv[4]
+run_spec_sha256 = sys.argv[5]
+if not isinstance(paths, list) or not paths or any(not isinstance(p, str) for p in paths):
+    raise SystemExit("recovery_paths_invalid")
+
+def safe_relative(value):
+    p = Path(value)
+    if p.is_absolute() or ".." in p.parts or not value or value.startswith("~"):
+        raise SystemExit("recovery_path_not_confined:" + value)
+    return p.as_posix()
+
+def files_for(value):
+    rel = safe_relative(value)
+    source = output_root / rel
+    if source.is_symlink():
+        raise SystemExit("recovery_symlink:" + rel)
+    resolved = source.resolve()
+    if output_root not in resolved.parents and resolved != output_root:
+        raise SystemExit("recovery_path_escape:" + rel)
+    if source.is_file():
+        return [(rel, source)]
+    if source.is_dir():
+        out = []
+        for item in sorted(source.rglob("*")):
+            if item.is_symlink():
+                raise SystemExit("recovery_symlink:" + item.relative_to(output_root).as_posix())
+            if item.is_file():
+                item.resolve().relative_to(output_root)
+                out.append((item.relative_to(output_root).as_posix(), item))
+        return out
+    raise SystemExit("recovery_path_missing:" + rel)
+
+entries = []
+# Rebuild after de-duplication without mutating the traversal list.
+unique = []
+seen = set()
+for value in paths:
+    for rel, source in files_for(value):
+        if rel not in seen:
+            seen.add(rel)
+            unique.append((rel, source))
+if not unique:
+    raise SystemExit("recovery_no_files")
+recovery_id = uuid.uuid4().hex
+root = control_root / "recovery" / recovery_id
+(root / "output").mkdir(parents=True, mode=0o700)
+total = 0
+for rel, source in unique:
+    target = root / "output" / rel
+    target.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
+    if target.exists() or target.is_symlink():
+        raise SystemExit("recovery_destination_collision")
+    size = source.stat().st_size
+    total += size
+    if total > 536870912:
+        raise SystemExit("recovery_size_limit")
+    shutil.copyfile(source, target)
+    digest = hashlib.sha256(target.read_bytes()).hexdigest()
+    entries.append({"path": "output/" + rel, "size": size, "sha256": digest})
+manifest = {
+    "schema_version": "rrctl.artifacts.v1",
+    "run_id": run_id,
+    "run_spec_sha256": run_spec_sha256,
+    "generated_at": __import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat(),
+    "output_root": str(root),
+    "entries": entries,
+    "source_root": str(output_root),
+    "recovery_id": recovery_id,
+}
+(root / "artifact_manifest.json").write_text(json.dumps(manifest, sort_keys=True, indent=2) + chr(10), encoding="utf-8")
+print(json.dumps({"recovery_id": recovery_id, "root": str(root), "entries": len(entries)}, sort_keys=True))
+'''
 
 
 @dataclass(frozen=True, slots=True)
@@ -946,6 +1027,89 @@ class Controller:
                 time.sleep(delay)
         except BaseException as exc:
             self._raise_observer_error(run_id, exc)
+
+    def recover_evidence(
+        self, run_id: str, *, paths: list[str], destination: Path
+    ) -> dict[str, Any]:
+        """Create and pull an identity-bound recovery snapshot for a finished workload.
+
+        This deliberately does not mutate the original completion manifest, RunSpec, binding,
+        summary, or remote lifecycle state. It is for result-contract failures where the
+        workload exited successfully but the normal artifact manifest was never published.
+        """
+        ref, spec, transport = self._runtime(run_id)
+        if not paths:
+            raise RRCError("recovery_paths", "at least one recovery path is required", "artifact")
+        normalized = []
+        for value in paths:
+            try:
+                normalized.append(confined_relative_path(value, field="recovery.path").as_posix())
+            except Exception as exc:
+                raise RRCError("recovery_path", str(exc), "artifact") from exc
+        binding = json.loads(transport.download(f"{ref.control_root}/binding.json"))
+        if binding.get("run_id") != run_id or binding.get("run_spec_sha256") != spec.digest:
+            raise RRCError("recovery_identity", "remote binding does not match RunSpec", "artifact")
+        observed = self.inspect(run_id)
+        status = observed.get("status", {})
+        state = status.get("state")
+        if state not in {"workload_complete", "completed", "failed"}:
+            raise RRCError("recovery_state", f"workload is not finished: {state}", "artifact")
+        if status.get("detail", {}).get("exit_code") not in (0, None):
+            raise RRCError("recovery_exit", "workload exit code is not zero", "artifact")
+        result = transport.run(
+            [
+                spec.remote.python,
+                "-c",
+                _RECOVERY_SCRIPT,
+                ref.control_root,
+                spec.remote.output_root,
+                json.dumps(normalized, separators=(",", ":")),
+                run_id,
+                spec.digest,
+            ],
+            timeout_seconds=300,
+        )
+        if result.returncode != 0:
+            raise RRCError(
+                "recovery_remote",
+                result.stderr.decode("utf-8", errors="replace")[-2000:],
+                "artifact",
+            )
+        try:
+            created = json.loads(result.stdout.decode("utf-8"))
+            recovery_root = str(created["root"])
+        except (json.JSONDecodeError, KeyError, TypeError) as exc:
+            raise RRCError("recovery_response", "invalid recovery helper response", "artifact") from exc
+        manifest_bytes = transport.download(f"{recovery_root}/artifact_manifest.json")
+        with tempfile.NamedTemporaryFile(prefix="rrctl-recovery-manifest-", suffix=".json") as handle:
+            handle.write(manifest_bytes)
+            handle.flush()
+            manifest = load_artifact_manifest(Path(handle.name), expected_run_id=run_id)
+        if manifest.get("run_spec_sha256") != spec.digest:
+            raise RRCError("recovery_manifest_identity", "recovery manifest RunSpec mismatch", "artifact")
+        destination = destination.expanduser().resolve()
+        destination.mkdir(parents=True, exist_ok=True)
+        if any(destination.iterdir()):
+            raise RRCError("recovery_collision", f"destination is not empty: {destination}", "artifact")
+        for item in manifest["entries"]:
+            rel = confined_relative_path(item["path"], field="recovery.manifest.path")
+            data = transport.download(f"{recovery_root}/{rel.as_posix()}")
+            if len(data) != item["size"] or hashlib.sha256(data).hexdigest() != item["sha256"]:
+                raise RRCError("recovery_hash", f"recovery hash mismatch: {rel}", "artifact")
+            target = destination / rel
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(data)
+        (destination / "artifact_manifest.json").write_bytes(
+            json.dumps(manifest, ensure_ascii=False, sort_keys=True, indent=2).encode("utf-8") + b"\n"
+        )
+        return {
+            "run_id": run_id,
+            "destination": str(destination),
+            "entries": len(manifest["entries"]),
+            "recovery_id": manifest.get("recovery_id"),
+            "remote_state_preserved": True,
+            "original_completion_manifest_unchanged": True,
+        }
 
     def pull(self, run_id: str, *, diagnostic: bool = False) -> dict[str, Any]:
         ref, spec, transport = self._runtime(run_id)
