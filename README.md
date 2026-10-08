@@ -15,12 +15,11 @@
 
 ## 文档
 
-[docs/workflow](docs/workflow/README.md) 介绍工作流与宿主配置：
+[docs/workflow](docs/workflow/README.md) 介绍工作流设计哲学与配置：
 
-- [功能、理念与流程](docs/workflow/README.md)
-- [项目接入与配置](docs/workflow/installation.md)
-- [Pi 安装与配置](docs/workflow/Pi_配置说明.md)
-- [日常使用指南](docs/workflow/usage.md)
+- [设计哲学与核心机制](docs/workflow/README.md)
+- [Agent 自动适配协议](docs/workflow/agent-onboarding.md)
+- [日常实验使用指南](docs/workflow/usage.md)
 
 ## 项目组成
 
