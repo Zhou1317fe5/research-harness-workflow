@@ -52,9 +52,14 @@ CSV 的 artifact root 按以下顺序确定：
 25. **handoff 可读且可核对**：正文清楚、自包含，结构化答案与证据保持一致。`humanizer-zh` 按需使用，不是完成门禁；不得润色机器表格、标记或路径。
 26. **先分类再处置发现**：当前 scope/acceptance gap 现在修或追加正式 follow-up issue；human-required blocker 记录后继续其他可推进项；只有不阻塞当前承诺的改进和未来决策才进入 Deferred Findings ledger。
 27. **sidecar 不是第二状态源**：`<stem>.deferred.json` 和 events sidecar 只保存证据、事件和讨论问题，不控制 CSV 行状态，也不得成为关闭当前 issue 的理由。CSV 是唯一的逐行执行与验收状态源；`issues/.missions.json` 只维护当前任务身份及暂停、取消、替换等生命周期，不复制行状态。
-28. **完成后停在讨论入口并给出交接路径**：原 CSV 和 handoff 闭环后，在对话层交付最终收口汇报，**必须显式提供可一键复制的文件路径（独立行或代码块展示）**：
-   - 方案讨论交接层：`issues/<stem>/<stem>.review.md`（或 `<dir>/review.md`，专供方案讨论会话快速导入）
-   - 人类交付交工单：`issues/<stem>/<stem>.handoff.md`
+28. **完成后停在讨论入口并给出交接路径**：原 CSV 和 handoff 闭环后，在对话层交付最终收口汇报，**必须显式提供可一键复制的文件路径代码块，禁止遗漏 review.md**：
+
+   ```text
+   交接文件路径：
+   - 方案讨论交接层：issues/<stem>/<stem>.review.md
+   - 人类交付交工单：issues/<stem>/<stem>.handoff.md
+   ```
+
    展示开放待讨论项后停止，不得自动创建下一份 CSV，也不得把待讨论项追加到当前 CSV 后继续执行。
 29. **每个 CSV 都必须有 closing review，但不默认重复独立审查**：加载合法 CSV 后若没有 `REVIEW-*` 行，先追加 `REVIEW-01`。若同一 scientific commit 已完成独立 PRERUN、此后 scientific contract/dataflow/sink 未改变且机械证据无冲突，closing 直接走 `evidence-close`；只有未经过等价独立审查的高风险交付、证据冲突或疑似 current-scope gap 才走独立 capability ladder。
 30. **保护用户 index**：开始时记录 `git diff --cached` 的路径与 patch。提交只命名本任务路径；已暂存的无关改动保持原样且不得进入提交。同一路径存在用户已暂存 patch、或无法精确隔离 index delta 时，记录 human-required blocker。禁止用 `git stash`、reset、移动或隐藏用户工作来简化提交。

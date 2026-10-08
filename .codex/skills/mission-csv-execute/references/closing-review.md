@@ -399,7 +399,7 @@ REVIEW-02
 
 `REVIEW-N` 只有在 review log 已写入、handoff.md 已生成（或已记 `handoff:generation_failed` 并产出兜底）、且 handoff contract check 结果已写入 notes 后才能完成：
 
-- 若 `vision_met`：必须同时满足 `handoff_contract:passed`；标记 `REVIEW-N` 完成，若无其他未完成行则结束 CSV。在终端对话层最终汇报时，必须提供可一键复制的 `review.md` 与 `handoff.md` 文件路径。开放 Deferred Findings 或负向 `scientific_outcome` 只进入 handoff 的“待讨论/科学结论”，不阻止按协议闭环
+- 若 `vision_met`：必须同时满足 `handoff_contract:passed`；标记 `REVIEW-N` 完成，若无其他未完成行则结束 CSV。在终端对话层最终汇报时，必须提供包含 `review.md`（方案讨论交接）与 `handoff.md` 的可一键复制代码块，严禁遗漏 `review.md`。开放 Deferred Findings 或负向 `scientific_outcome` 只进入 handoff 的“待讨论/科学结论”，不阻止按协议闭环
 - 若 `gaps_found`：把其中的 current-scope gaps 追加为 follow-up issue，再追加 `REVIEW-(N+1)`；标记 `REVIEW-N` 完成并继续
 - 若 `limited_review` 且没有可执行 gap：标记当前 review 行完成，并如实记录缺失证据；不得仅为等待独立能力变化追加 `REVIEW-(N+1)`
 - 若存在 human-required blocker：记录 blocker，保持 `git_state=未提交`，停止并请求最小必要输入
