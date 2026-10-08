@@ -219,6 +219,17 @@ python .agents/harness/workflow/mission_state.py bind --task-id <SpecID> --csv i
 旧项目尚未登记该任务时，先用 `register --task-id <SpecID> --spec <approved-spec-path> --source-ref <approval-source>`。
 恢复依据使用这个当前指针；任务生命周期不替代 CSV 行状态或实验验收。
 
+**对话层交付要求（强制一键复制）**：在终端向用户汇报时，**必须以独立代码块展示原始 CSV 文件路径与启动命令，严禁使用 Markdown 超链接（如 `[任务 CSV](...)` 会被终端 UI 渲染成无路径文本或不可复制的超链接）**，方便用户复制粘贴到执行会话中：
+
+```text
+任务 CSV 路径：
+issues/<stem>/<stem>.csv
+
+执行会话启动命令：
+mission issues/<stem>/<stem>.csv
+```
+
+标准生成摘要：
 ```
 生成完成
 - 快照: issues/<stem>/<stem>.csv

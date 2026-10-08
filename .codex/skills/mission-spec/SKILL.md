@@ -21,7 +21,7 @@ Declare: `使用 mission-spec skill，讨论并生成可批准的 canonical spec
 8. After approval, set `status: approved` and add the current RFC 3339 `approved_at` timestamp with timezone. Do not change the approved body in the same edit.
 9. For a genuine architecture-bearing decision, run installed `lite-arch` and print its required three-line decision block before creating, amending, superseding, or skipping an ADR. Do not create ADRs for ordinary scientific iterations or routine implementation choices.
 10. Commit the approved spec and any draft ADR created by the optional gate before execution. Then run `validate_spec.py` without the allow flag to prove the approved file is committed and unchanged from `HEAD`.
-11. Route the committed spec to `mission-approved-doc`, unless the user explicitly chooses ordinary direct implementation.
+11. Route the committed spec to `mission-approved-doc`, unless the user explicitly chooses ordinary direct implementation. When presenting the completed artifacts to the user, **always print the raw CSV file path and the `mission issues/<stem>/<stem>.csv` command in an isolated code block (never as a markdown hyperlink like `[任务 CSV](...)`)** so the user can easily copy and paste it into an execution session.
 
 ## Canonical format
 
