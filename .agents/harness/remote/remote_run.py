@@ -20,6 +20,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 from pathlib import Path, PurePosixPath
 
 from harness.common.paths import REPO_ROOT
@@ -592,9 +593,57 @@ def _emit_stage(stage: str, value: dict, run_id: str, returncode: int, *, full: 
     print(json.dumps(summary, ensure_ascii=False), flush=True)
 
 
+class ProgressHeartbeat:
+    """在长时间等待 (wait) 期间，每隔固定周期（默认 30 分钟）打印一次进度心跳与 ETA。"""
+
+    def __init__(
+        self,
+        run_id: str,
+        repo_root: Path,
+        profiles: Path | None,
+        spec_path: Path | None = None,
+        interval_seconds: float = 1800,
+    ):
+        self.run_id = run_id
+        self.repo_root = repo_root
+        self.profiles = profiles
+        self.spec_path = spec_path
+        self.interval_seconds = interval_seconds
+        self._stop_event = threading.Event()
+        self._thread = threading.Thread(target=self._run, daemon=True)
+
+    def start(self) -> None:
+        if self.interval_seconds > 0:
+            self._thread.start()
+
+    def stop(self) -> None:
+        self._stop_event.set()
+        if self._thread.is_alive():
+            self._thread.join(timeout=2.0)
+
+    def _run(self) -> None:
+        from harness.remote.remote_progress import format_progress, get_progress
+
+        while not self._stop_event.wait(timeout=self.interval_seconds):
+            try:
+                info = get_progress(
+                    self.run_id,
+                    self.repo_root,
+                    profiles=self.profiles,
+                    spec_path=self.spec_path,
+                )
+                msg = format_progress(info, mode="heartbeat")
+                if msg:
+                    sys.stderr.write(f"\n{msg}\n")
+                    sys.stderr.flush()
+            except Exception:
+                pass
+
+
 def execute(
     spec_path: Path, *, profiles: Path | None, poll_seconds: float,
-    max_wait_seconds: float = 0, resume: bool = False, full_output: bool = False,
+    max_wait_seconds: float = 0, heartbeat_seconds: float = 1800,
+    resume: bool = False, full_output: bool = False,
 ) -> int:
     spec = json.loads(spec_path.read_text(encoding="utf-8"))
     if not isinstance(spec, dict):
@@ -612,7 +661,17 @@ def execute(
         ("pull", [run_id]),
     ]
     for stage, arguments in stages:
-        result = rrctl_call([*prefix, stage, *arguments], REPO_ROOT)
+        heartbeat = None
+        if stage == "wait" and heartbeat_seconds > 0:
+            heartbeat = ProgressHeartbeat(
+                run_id, REPO_ROOT, profiles, spec_path=spec_path, interval_seconds=heartbeat_seconds
+            )
+            heartbeat.start()
+        try:
+            result = rrctl_call([*prefix, stage, *arguments], REPO_ROOT)
+        finally:
+            if heartbeat is not None:
+                heartbeat.stop()
         try:
             value = json.loads(result.stdout)
         except json.JSONDecodeError as exc:
@@ -655,6 +714,10 @@ def main() -> int:
         "--max-wait-seconds", type=float, default=0,
         help="0 waits until terminal/attention; positive values are explicit diagnostic budgets",
     )
+    parser.add_argument(
+        "--heartbeat-seconds", type=float, default=1800,
+        help="周期性进度心跳秒数，默认 1800（30 分钟）；0 表示禁用",
+    )
     parser.add_argument("--resume", action="store_true", help="inspect the bound run and continue wait/pull without launching again")
     parser.add_argument("--full-output", action="store_true", help="print full responses instead of summaries and local detail paths")
     parser.add_argument("--request", type=Path, help="prepare the RunSpec from a request before executing")
@@ -663,8 +726,8 @@ def main() -> int:
     parser.add_argument("--execute", action="store_true", help="execute the generated rrctl sequence")
     args = parser.parse_args()
     try:
-        if not math.isfinite(args.poll_seconds) or args.poll_seconds <= 0 or not math.isfinite(args.max_wait_seconds) or args.max_wait_seconds < 0:
-            raise ValueError("poll must be positive and max-wait nonnegative finite seconds")
+        if not math.isfinite(args.poll_seconds) or args.poll_seconds <= 0 or not math.isfinite(args.max_wait_seconds) or args.max_wait_seconds < 0 or not math.isfinite(args.heartbeat_seconds) or args.heartbeat_seconds < 0:
+            raise ValueError("poll must be positive and wait/heartbeat nonnegative finite seconds")
         spec = args.runspec.resolve()
         if args.request:
             if args.resume:
@@ -692,7 +755,7 @@ def main() -> int:
             profiles = default_profiles
         if args.execute:
             return execute(spec, profiles=profiles, poll_seconds=args.poll_seconds, max_wait_seconds=args.max_wait_seconds,
-                           resume=args.resume, full_output=args.full_output)
+                           heartbeat_seconds=args.heartbeat_seconds, resume=args.resume, full_output=args.full_output)
         command = [sys.executable, ".agents/harness/remote/remote_run.py", str(spec), "--execute", "--poll-seconds", str(args.poll_seconds),
                    "--max-wait-seconds", str(args.max_wait_seconds)]
         if args.resume:

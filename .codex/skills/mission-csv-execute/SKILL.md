@@ -67,6 +67,10 @@ CSV 的 artifact root 按以下顺序确定：
 32. **先问机制，再证正确**：每个 Mission 的第一笔远程投入是最便宜的机制 screen，不是精度校验或完整矩阵。论文门槛是“结论可靠”，不是“实现与理论精确一致”：已知小偏差、已知近似、工程债都允许保留，只要不影响要声称的结论；唯一必须处理的是**可能翻转结论的未解决疑点**（如近似误差大到改变候选排序、或泄漏使对比不成立）。改变的是科学投入顺序，不是运行前校验——`pre_review_smoke` 与科学 review 属前提类，仍先于任何产出指标的 official 运行，`remote_route.py` 的门禁不变；官方运行不强制全量规模，所以小规模真实 screen 无需新机制。先用最小设置确认机制是否真的改变了输出，再决定是否投入精度校验与完整矩阵。判据属于前提还是诊断按批准 spec（§9.0）在运行前冻结：会影响结论的精度问题（候选排序、符号、方向、稳定性）同样属于前提。输出未变优先查接线，但输出未变也可能是合法拒绝、回退或决策不敏感，须看机制内部是否消费了候选而不是只看最终指标。
 33. **“无信号”是合法终态**：允许将“本次未观察到预注册收益”作为正常收工结论关闭 Mission，不必当作失败或未完成。在探索阶段经历最多 2 次兜底 Trick 补丁后若仍未见显著增益（未达单域晋级门限），果断以此终态收工结项，不陷入无限微调循环。但只有样本量 / 重复足够、实现已验证、且真正达到预注册 Failure Signal 时才写“Hypothesis 被否”；否则写“inconclusive，原因待查”。小样本结果能否用于论文取决于它能否支撑你要写的那句话（只声称方向性趋势则够，要声称主结果提升则补样本），不取决于走完某个固定步骤；看到正向信号也不等于 idea 已验证。此规则不阻止任何运行，只给“停下来”一个合法出口。
 34. **最小工件直接落盘**：新 Mission 从一开始只写终态所需工件，不创建一次性 request/state/inspect/ready/launch/pull JSON，不在 closing 阶段运行压缩或生成 `artifact-index.json`。CSV + events 是状态记录；每个实际启动的 RunID 最多保留一个 canonical RunSpec；PRERUN 与 closing 各最多保留一个最终结构化结论。`compact_artifacts.py` 仅用于 legacy Mission 的人工归档/GC，不是 closing 步骤。
+35. **运行透明度：启动时间沙盘、30 分钟周期心跳与即时查询**：
+    - **启动前沙盘预报**：正式运行（如 600 集或全量 epoch）启动前，读取前置已通过的 `pre_review_smoke` 运行耗时（如单集耗时 $T_{\text{smoke}}$），推算全量规模总耗时与预计完成时刻（当地 CST 时区），并在对话层启动汇报中主动告知用户（包含：单集实测速度、全量规模、预计总耗时、预计完成时刻）；
+    - **运行中 30 分钟心跳**：`remote_run.py` 内置 30 分钟心跳（默认 `--heartbeat-seconds 1800`），每隔 30 分钟在控制台打印一行进度、速度、已用时间、预计剩余时间、预计完成时刻与当前指标，严禁黑盒死等；
+    - **即时问答支持**：当用户在会话中询问“现在跑到哪了？”、“预计几点跑完？”或“进度如何？”时，执行 `python3 .agents/harness/remote/remote_progress.py`，1 秒内直接以清晰结构向用户汇报当前运行状态、进度百分比、速度、已用时间、预计剩余时间、预计完成时刻与当前指标。
 
 下文 `<skill-dir>` 指本 Skill 所在目录，命令显式使用该路径，不假设 cwd 是 Skill 目录。接收 CSV 后，若 canonical CSV 缺少结果分析行，先运行 `python3 <skill-dir>/scripts/ensure_result_analysis_row.py <csv-path>`；再运行 `python3 <skill-dir>/scripts/ensure_review_row.py <csv-path>`。提交使用 `scripts/git_isolation.py` 的 `commit_paths`；它会拒绝同路径 staged 冲突并核对提交前后的 index patch。
 

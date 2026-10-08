@@ -142,6 +142,24 @@ def evaluate(context: dict[str, Any]) -> dict[str, Any]:
         observations["progress_count"] = count
         progress_report["count"] = count
         progress_report["count_field"] = contract["progress_count_field"]
+        total = (
+            progress.get("episodes")
+            or progress.get("total_episodes")
+            or progress.get("total_steps")
+            or progress.get("total")
+            or contract.get("completion_exact_count")
+            or contract.get("completion_min_count")
+        )
+        if isinstance(total, int) and total > 0:
+            progress_report["total"] = total
+            observations["progress_total"] = total
+        metrics = {}
+        for k in contract.get("progress_finite_fields", []):
+            if k in progress and isinstance(progress[k], (int, float)):
+                metrics[k] = progress[k]
+        if metrics:
+            progress_report["metrics"] = metrics
+            observations["progress_metrics"] = metrics
     if phase != "completion":
         return {
             "healthy": True,

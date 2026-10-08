@@ -724,5 +724,30 @@ class ResearchBindingTests(unittest.TestCase):
         self.assertEqual(result["route"], "legacy")
 
 
+    def test_progress_heartbeat_runs_and_stops_cleanly(self):
+        from harness.remote.remote_run import ProgressHeartbeat
+        with patch("harness.remote.remote_progress.get_progress") as mock_get, \
+             patch("sys.stderr.write") as mock_stderr:
+            mock_get.return_value = {
+                "run_id": "RUN-HEARTBEAT-TEST",
+                "state": "running",
+                "current_step": 10,
+                "total_steps": 100,
+                "pct": 10.0,
+                "speed_seconds_per_step": 1.0,
+                "elapsed_seconds": 10.0,
+                "remaining_seconds": 90.0,
+                "eta_datetime": "2026-10-08T12:00:00+00:00",
+                "metrics": {},
+            }
+            hb = ProgressHeartbeat("RUN-HEARTBEAT-TEST", self.root, None, interval_seconds=0.02)
+            hb.start()
+            import time
+            time.sleep(0.06)
+            hb.stop()
+            self.assertTrue(mock_get.called)
+            self.assertTrue(mock_stderr.called)
+
+
 if __name__ == "__main__":
     unittest.main()

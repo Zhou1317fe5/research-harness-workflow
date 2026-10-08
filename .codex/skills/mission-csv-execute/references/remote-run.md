@@ -107,6 +107,16 @@
 
    退出码 0 表示 completed，1 表示 failed/aborted，2 表示 attention/控制错误。默认预算 0 不返回周期性 timeout；只有显式设置正值诊断预算时，124 才表示期限到达且运行保留，随后继续同一 RunID，不标 failed、不拉诊断、不重复 launch。completed 后立即 pull/ingest；出现 attention 时按硬/软条件处理，保持 `fallback_allowed=false`。
 
+10. **运行进度透明度、ETA 预计完成时间与时间沙盘规范**：
+   长时间远程运行绝不能陷入信息黑盒。系统提供三重透明度机制：
+   - **优化 3：启动前时间沙盘（Time Sandbox）**：正式全量运行（如 600 集或全量 epoch）启动前，必须读取前置已通过的 `pre_review_smoke` 运行耗时（如单集耗时 $T_{\text{smoke}}$），乘以全量规模推算预计总耗时与预计完成钟点（当地 CST 时间），并在对话层启动汇报中主动告知用户（包含：单集实测速度、全量规模、预计总耗时、预计完成时刻）；
+   - **优化 1：30 分钟周期性进度心跳（Heartbeat）**：`remote_run.py` 内部内置 30 分钟进度心跳（默认 `--heartbeat-seconds 1800`）。在长时间等待期间，每隔 30 分钟在控制台打印一行进度心跳、速度、已用时间、预计剩余时间、预计完成时刻与当前指标，严禁黑盒死等；
+   - **优化 2：秒级即时查询进度探针（Active Query）**：当用户在对话中询问“现在跑到哪了？”、“预计几点跑完？”、“进度如何？”时，执行探针命令：
+     ```bash
+     python3 .agents/harness/remote/remote_progress.py
+     ```
+     （可直接运行无参自动探测最新任务，或指定 `<RunID>` / `issues/<stem>/runs/<RunID>/runspec.json`），1 秒内解析远端状态与进度，直接以清晰结构向用户汇报当前运行状态、进度百分比、速度、已用时间、预计剩余时间、预计完成时刻与当前指标。
+
 ### 运行类型
 
 - `pre_review_smoke`：通用 1–10 step（或至多 1 个 1-shot episode，预期 <5 分钟；禁多-shot重循环）运行可达性验证，必须清理 checkpoint。
