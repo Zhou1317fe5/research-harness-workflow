@@ -81,15 +81,23 @@ Validate these with smoke, ordinary tests, health checks, or artifact verificati
 
 For `full_review`, the final candidate commit must pass an isolated production-reaching GPU smoke before the reviewer is called:
 
-- 1 to 100 production steps: training steps or inference batches, with the unit and fixed input selection recorded in evidence;
+- 1 to 10 production steps: training steps or inference batches (or **strictly at most 1 minimal single-shot episode** for episode-driven inference; **forbidden to run multi-shot or multi-episode loops** during smoke);
 - exact candidate commit and production entrypoint;
 - zero exit and a numerical check matching the computation: training requires finite loss; inference requires finite model outputs;
+- target duration strictly bounded: smoke is a dynamic connectivity probe (verifying no crash, sink activation, finite outputs, memory bounds), not an evaluation; expected runtime is under 5 minutes;
 - isolated fail-on-collision output;
 - `official_metrics_disabled:true` and `artifact_ingest_disabled:true`, except the bounded Baseline-Equivalence Probe below.
-- thin rrctl readiness only: candidate commit, production command, GPU/environment, isolated RunID output, 1–100 step budget, disabled official metrics/ingest, and cleanup boundary;
+- thin rrctl readiness only: candidate commit, production command, GPU/environment, isolated RunID output, 1–10 step budget, disabled official metrics/ingest, and cleanup boundary;
 - no coverage manifest, reviewer packet, scientific anchors, official artifact completeness, experiment ingest, `prerun_ready.py`, or reviewer before launch;
 - terminal cleanup on success, failure, and abort: delete checkpoint/optimizer/scheduler/large intermediates only within the bound smoke output root;
 - retain `console.log`, `status.json`, and `smoke_summary.json`; require `checkpoint_cleanup_completed:true` and `checkpoint_paths_remaining:[]`.
+
+**Shift-Left Local Contract Validation (Pre-Smoke Gate)**:
+Before launching any remote GPU smoke, the agent **must execute a fast local CPU dummy-tensor probe**:
+- Construct micro dummy tensors (e.g., small spatial dimensions 32×32 or 64×64, random values);
+- Execute the modified module and pipeline entrypoints on local CPU across **all supported input dimensions and branches** (e.g., 1-shot and multi-shot layout dimensions, batch singleton dimensions, dtypes, and disabled paths);
+- Verify in seconds on CPU that tensor shapes, dimension slicing, and device/type conversions run cleanly without exceptions;
+- **Never push unverified tensor layouts or dimension assumptions directly to remote GPU**.
 
 The smoke object declares `computation_kind:training|inference`. Omission keeps the existing
 training contract and requires `finite_loss:true`. A loss-free inference path instead records
@@ -251,8 +259,8 @@ When the result is `scientifically_incorrect`:
 1. keep the official run blocked;
 2. repair all listed precondition blockers in the original implementation row;
    do not hold the run for diagnostic-only gaps;
-3. run a production-reaching probe for each affected source-to-sink path;
-4. rerun GPU smoke when scientific code, data flow, or a sink changed;
+3. for code logic defects, mathematical formulas, tensor shape adaptations, boundary conditions, or operator contracts (logic/contract repairs), verify the fix locally with targeted unit tests/probes and record the code diff and test evidence in `closure.json`. **Do NOT rerun end-to-end remote GPU smoke** if the prior smoke reached the production sink and the fix is verified deterministically by local tests;
+4. only rerun a minimal GPU probe if the prior smoke itself failed to complete or the change affects an unverified dynamic runtime connectivity/gradient sink;
 5. have the main agent record blocker-to-fix-to-evidence closure;
 6. proceed when every blocker has reproducible closure evidence.
 
