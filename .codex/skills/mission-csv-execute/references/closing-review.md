@@ -269,7 +269,7 @@ flowchart LR
 - 走注册 `reviewer` 子代理（第 1 项）时，prompt 必须要求返回 `handoff_markdown`，并传入上述结构和风格规则。
 - 走 self-review（第 3 项）时，handoff 顶部必须写 `WARNING: self-review only, NOT independently verified`，记录 `review_independence:false`，不得让自评看起来像独立结论。
 - handoff 是**只读派生产物**：内容来自 source doc / CSV / review JSON / 代码实际状态，禁止手工编辑；要改内容就重跑 review 重新生成。
-- handoff 内容硬约束：每句话必须可追溯到上述数据源，禁止用固定模板或漂亮话填充篇幅（与项目硬门禁"不得用输出修补伪装能力"一致）；数据源薄就如实写薄，不许编。
+- handoff 内容硬约束：每句话必须可追溯到上述数据源，数据源薄就如实写薄，禁止用固定模板或空话填充篇幅。
 - 生成后在 REVIEW 行 `notes` 追加 `handoff:<path>`。
 - 合并 reviewer 新发现到 `<stem>.deferred.json`：只接受 `deferred_improvement` / `future_decision`，按“含义 + evidence_refs”去重，分配稳定 `DF-NNN`；在来源 CSV 行 notes 写 `deferred_findings:<ids>`。
 - 先运行 `python <skill-dir>/scripts/validate_deferred_ledger.py <csv-path> --workdir <repo-root>`。失败时修 ledger 或 notes，不得继续做 handoff contract check。

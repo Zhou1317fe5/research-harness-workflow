@@ -101,7 +101,7 @@ Outcome Contract 与 claim ledger 分工不同：
 
 依次提取 `artifact_role`、`desired_effects`、`reader_questions`、`decisive_result` 和 `blocked_claims`。reader question 必须面向决策、可以证伪、有证据入口并声明范围。
 
-每个 effect/question/blocked claim 都必须有 `source_ref`。当前会话只可作为补充来源，并以 `source_ref=original-request` 持久化；不得凭模型印象增加源文档没有承诺的新能力。不得写 benchmark expected answer、case 特化提示或预填 pass/fail。
+每个 effect/question/blocked claim 都必须有 `source_ref`。当前会话只可作为补充来源，并以 `source_ref=original-request` 持久化；不得凭模型印象增加源文档没有承诺的新能力，不得预填 pass/fail。
 
 生成后必须运行：
 
