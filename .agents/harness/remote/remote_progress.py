@@ -94,6 +94,39 @@ def _parse_iso_datetime(dt_str: str | None) -> datetime.datetime | None:
         return None
 
 
+def _extract_total_from_meta(meta: dict[str, Any]) -> int | None:
+    """从 RunSpec 元数据中泛化提取总规模 (total_steps / total_episodes / total_epochs)。"""
+    for key in (
+        "completion_exact_count",
+        "completion_min_count",
+        "total_steps",
+        "total_episodes",
+        "episode_count",
+        "max_steps",
+        "max_epochs",
+        "total_epochs",
+        "epochs",
+        "total",
+    ):
+        val = meta.get(key)
+        if isinstance(val, int) and val > 0:
+            return val
+    ac = meta.get("adapter_contract")
+    if isinstance(ac, dict):
+        for key in ("completion_exact_count", "completion_min_count"):
+            val = ac.get(key)
+            if isinstance(val, int) and val > 0:
+                return val
+    # 递归查找任意子契约字典中的总步数字段 (如 custom contract 中的 episode_count, total_steps)
+    for v in meta.values():
+        if isinstance(v, dict):
+            for sub_key in ("episode_count", "total_steps", "total_episodes", "max_steps", "completion_count", "count"):
+                val = v.get(sub_key)
+                if isinstance(val, int) and val > 0:
+                    return val
+    return None
+
+
 def get_progress(run_id: str, repo_root: Path, profiles: Path | None = None, spec_path: Path | None = None) -> dict[str, Any]:
     """查询指定 RunID 的状态、最新进度与推算的 ETA。"""
     prefix = [resolve_rrctl(), "--json"]
@@ -160,13 +193,7 @@ def get_progress(run_id: str, repo_root: Path, profiles: Path | None = None, spe
                     try:
                         sdata = json.loads(p.read_text(encoding="utf-8"))
                         meta = sdata.get("metadata", {})
-                        t = (
-                            meta.get("full600_contract", {}).get("episode_count")
-                            or meta.get("adapter_contract", {}).get("completion_exact_count")
-                            or meta.get("adapter_contract", {}).get("completion_min_count")
-                            or meta.get("total_steps")
-                            or meta.get("total_episodes")
-                        )
+                        t = _extract_total_from_meta(meta)
                         if isinstance(t, int) and t > 0:
                             total_steps = t
                             break
