@@ -39,7 +39,7 @@ CSV 的 artifact root 按以下顺序确定：
 12. **状态问答**：简短回答后继续原任务；明确暂停、取消或改变范围才更新执行边界。
 13. **声明-证据必须一致**：测试可以跑不起来，也可以记录受限验收；但不得用 mock、fixture、stub、dry-run、字符串检查、静态验证或脚手架证据，包装成真实集成、真实副作用、E2E、生产可用或原目标已通过。
 14. **远程训练可暂停但不可伪完成**：`remote_state=running_remote` 是合法恢复点，不是完成态。四状态不得伪装成闭环，最终完成必须等 artifacts 拉回、ingest、review handoff 更新后再判断。
-15. **阻止受影响的运行，咨询 Advisor 决策后继续修复推进**：发现会污染科研结论的错误，先阻止受影响的正式运行或入账，并将事实写入 CSV notes 和 review log。在实施行定位、修复和适用验证时，若遇到方案不确定或疑难权衡，**主动调用 `advisor` 作出架构与修复决策，并在当前授权内自动闭环推进，不等待用户**；恢复正式运行前重新满足现有 gate。只有当确认改变科学判据属于外部物理阻断且无可用策略时，才等待该决定，继续其他不受影响的授权工作。
+15. **阻止受影响的运行，咨询 Advisor 决策后继续修复推进**：发现会污染科研结论的错误，先阻止受影响的正式运行或入账，并将事实写入 CSV notes 和 review log。在实施行定位、修复和适用验证时，若遇到方案不确定或疑难权衡，**主动调用 `advisor` 作出架构与修复决策，并在当前授权内自动闭环推进，不等待用户**；若初测指标微亏（差 0.5~1.5 点），优先从 `references/metric-tricks-arsenal.md` 中选取即插即用 Trick 就地攻坚拉升指标，保持大故事定力，严禁轻易推翻已确立的核心学术叙事；恢复正式运行前重新满足现有 gate。只有当确认改变科学判据属于外部物理阻断且无可用策略时，才等待该决定，继续其他不受影响的授权工作。
 16. **review.md 是 Codex→Claude 交接层**：远程命令、运行状态、拉取产物、客观指标差距、未验证项和 blocker 必须写入 `issues/<stem>/<stem>.review.md`；采用“顶部当前摘要 + 底部历史日志”的单文件双层结构，不要把原始日志一股脑作为 Claude 默认入口，也不要替 Claude 下最终科研判断。
 17. **运行前风险分流与审查门禁**：若 CSV 含代码更改且后续会正式运行，先执行 `prerun.change-route.v1`。`full_review` 必须先以 `execution_purpose:pre_review_smoke` 通过隔离 GPU few-step smoke，再创建唯一一个 scientific PRERUN row；失败在原 implementation row 修复重跑，不创建 FIX/PRERUN 行。`no_prerun/micro_validation/smoke_validation` 不调用 reviewer，`targeted_review/full_review` 的正式运行才要求 gate。
 18. **pre-run commit 边界**：`PRERUN-REVIEW-*` 审查并记录的是本次训练 / 运行使用的 `pre_run_code_commit`，不是整个 CSV 最终所有 commit。后续 artifact 拉取、ingest、analysis、final review 或修复 commit 必须另记，不能覆盖或混淆运行所用代码 commit。
