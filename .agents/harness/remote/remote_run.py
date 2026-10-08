@@ -507,6 +507,50 @@ def resolve_rrctl() -> str:
     return executable
 
 
+def _extract_diagnostic_tail(diagnostic_value: dict) -> tuple[str | None, str | None, str | None]:
+    dest = diagnostic_value.get("result", {}).get("destination")
+    if not dest:
+        return None, None, None
+    dest_path = Path(dest)
+    if not dest_path.is_dir():
+        return None, None, None
+    candidates: list[Path] = []
+    # 优先排查控制台主日志、输出目录日志和工作进程日志
+    for path in [
+        dest_path / "control" / "console.log",
+        *sorted(dest_path.glob("output/*.log")),
+        dest_path / "control" / "worker.log",
+        dest_path / "control" / "preflight.log",
+    ]:
+        if path.is_file() and path.stat().st_size > 0:
+            candidates.append(path)
+    if not candidates:
+        candidates = [p for p in sorted(dest_path.rglob("*.log")) if p.is_file() and p.stat().st_size > 0]
+    if not candidates:
+        return None, None, None
+    log_file = candidates[0]
+    try:
+        content = log_file.read_text(encoding="utf-8", errors="replace")
+    except Exception:
+        return None, None, None
+    lines = [line for line in content.splitlines() if line.strip()]
+    if not lines:
+        return None, None, None
+    tail_lines = lines[-25:]
+    tail_text = "\n".join(tail_lines)
+    headline = None
+    for line in reversed(tail_lines):
+        if re.search(r"(?:Error|Exception|AssertionError|OutOfMemory|OOM):", line, re.IGNORECASE):
+            headline = line.strip()
+            break
+    if not headline:
+        for line in reversed(tail_lines):
+            if "Traceback (" in line:
+                headline = line.strip()
+                break
+    return tail_text, headline, log_file.name
+
+
 def _emit_stage(stage: str, value: dict, run_id: str, returncode: int, *, full: bool) -> None:
     directory = Path.home() / ".local/state/rrctl/client-results" / run_id
     directory.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -530,6 +574,21 @@ def _emit_stage(stage: str, value: dict, run_id: str, returncode: int, *, full: 
             summary[key] = result[key]
     if "error" in value:
         summary["error"] = {key: value["error"].get(key) for key in ("code", "message", "phase")}
+    if stage == "diagnostic":
+        tail_text, headline, log_name = _extract_diagnostic_tail(value)
+        if tail_text:
+            summary["diagnostic_log"] = log_name
+            summary["error_headline"] = headline
+            summary["diagnostic_tail"] = tail_text
+            sys.stderr.write(
+                f"\n=== REMOTE FAILURE DIAGNOSTIC ({run_id}) ===\n"
+                f"Log: {log_name}\n"
+                f"Headline: {headline or 'Process exited with failure'}\n"
+                f"--- Log Tail (last lines) ---\n"
+                f"{tail_text}\n"
+                f"============================================\n\n"
+            )
+            sys.stderr.flush()
     print(json.dumps(summary, ensure_ascii=False), flush=True)
 
 
