@@ -1,39 +1,58 @@
-# research-harness-workflow
+# Research Harness Workflow
 
-可按项目复制使用的科研工作流模板。用 Spec 明确实验目标，用任务 CSV 跟踪执行，
-用本地科研记录保存和召回结论。
+面向深度学习与科研实验的 AI 实验工作流模板。
 
-训练和评估参数放在项目 `.sh` 脚本中，用 `bash` 启动。模板提供
-[train.sh](scripts/train.sh) 和 [eval.sh](scripts/eval.sh)，也支持项目已有的单个训练评估脚本。
-`project.toml` 登记脚本入口、阶段顺序和产物约定。
-多个模块/消融实验使用命名 `pipelines`，每次通过 `--pipeline <名称>` 选择自己的脚本组合；
-模板中的 baseline 与 module_variant 只是示例名称，支持继续添加其他组合。
+---
 
-远程执行使用 rrctl 0.4 的独立进程后端，运行前检查 Conda 依赖和 GPU 占用。
-`rrctl --json doctor` 显示实际安装路径与能力；公共入口默认持续等待 terminal/attention 事件，不按 900 秒周期唤醒 agent。正值 `--max-wait-seconds` 只用于显式诊断预算。
-接口和退出码见 [rrctl 使用说明](.agents/harness/remote/rrctl/README.md)。
+## 解决什么问题
 
-## 文档
+用 AI 跑科研代码，最大的麻烦从来不是写不出代码，而是算力贵、实验周期长，而且模型容易事后给结果“找补”。
 
-[docs/workflow](docs/workflow/README.md) 介绍工作流设计哲学与配置：
+普通 Coding Agent 跑实验时经常踩这几个坑：
+- **上下文被日志灌满**：数万行终端输出和下载进度把模型聊糊涂了，前面讨论的重点转头就忘。
+- **实验没涨点，事后画靶子**：结果不如预期时，模型总能解释成“发现了有趣的次要现象”，或者建议“再试个变体”。只要事先没定死什么算失败，最后总能圆回来。
+- **显卡空转假死**：远程命令发上去显示“已启动”，其实第一秒就报 CUDA OOM 或死锁退出了，人还以为它在正常跑。
+- **实验做多了认知坍塌**：跑了几十上百轮之后，推翻过的假设又被捡起来重跑，论文结论找不到最初是哪次运行产出的。
 
-- [设计哲学与核心机制](docs/workflow/README.md)
-- [Agent 自动适配协议](docs/workflow/agent-onboarding.md)
-- [日常实验使用指南](docs/workflow/usage.md)
+针对这些问题，这套工作流把规则定在前面：
 
-## 项目组成
+1. **动手前定死判据**：写代码前必须收敛出 Spec 方案，白纸黑字写清科学假设、Baseline 对照口径、主指标达到多少算成功、什么表现算失败该停。
+2. **长任务先跑短验证 (PRERUN)**：改动模型或数据核心逻辑后，先跑 1~100 步短 smoke，由独立的只读审查会话对照 Spec 检查，防止“代码全绿但方法写错”。
+3. **后台托管与首步验收 (`rrctl`)**：长训练交由独立后台进程托管。启动后 30 秒到 2 分钟内必须通过首步检查（确认显存占上、step 走动、Loss 正常），确认正常后再静默挂机，不浪费多余的模型调用。
+4. **实验记录分层隔离**：
+   - 原始巨型日志（`remote_artifacts/`）留在本地但不进 Git，严禁模型批量通读；
+   - 单次实验事实（`record.json`）与分析（`analysis.md`）结构化归档；
+   - 跨实验的长期结论（`research_workspace/`）使用独立 Git 仓库管理，代码切分支、回滚都不会搞丢科研认知。
 
-| 位置 | 内容 |
-|---|---|
-| .codex/skills/ | canonical 技能源，唯一需要手工编辑的一份 |
-| .claude/skills/、.agents/skills/ | 指向 .codex/skills 的符号链接（发现入口，不是副本） |
-| .pi/ | Pi 项目配置、扩展与 Reviewer 入口 |
-| .agents/harness/ | 程序实现、配置与模板 |
-| scripts/train.sh、scripts/eval.sh | 项目训练、评估脚本模板，集中维护各自命令和参数 |
-| issues/、docs/specs/ | 任务台账与实验方案 |
-| research_workspace/ | 科研状态、结论和实验分析 |
-| remote_artifacts/ | 原始运行证据 |
+---
 
-技能统一在 `.codex/skills/` 维护，`.claude/skills/` 与 `.agents/skills/` 均是指向它的符号链接（发现入口，不是副本）。Pi 通过共享入口读取这些技能，只有列为 Pi 适配的 skill（当前是 `pre-run-implementation-review`）读 `.pi/skills/` 下的真实副本，且与 canonical 的差异只允许落在标记的宿主块内。该约束由 `python3 .agents/harness/workflow/check_skill_mirrors.py` 机器校验，避免同一 Mission 前后段读到两套规则。
+## 如何将工作流适配到你的项目
 
-本仓库基于 [Missions](https://github.com/flowing-water1/Missions) 整理科研执行流程。
+不用手动折腾环境。在目标项目的 Agent 会话（Codex / Pi / Claude Code 等）中直接发送这一句：
+
+```text
+请读取 https://github.com/Zhou1317fe5/research-harness-workflow 中的 docs/workflow/agent-onboarding.md，将该工作流完整适配到当前项目中。
+```
+
+---
+
+## 日常实验双会话流
+
+项目适配好后，日常实验建议按两步走：
+
+```text
+【会话 1：方案设计】（使用 GPT-6 / Claude-5 等高级推理模型）
+讨论假设或分析上一轮结果 →「ok 给出spec方案」→ 审阅确认 →「批准，转csv」→ 拿到 CSV 路径
+                                    ↓
+【会话 2：任务执行】（使用 GPT Luna / DeepSeek 等高配额模型）
+输入「mission issues/<任务目录>/<任务清单>.csv」
+自动完成：代码修改 → PRERUN 审查 → 托管训练 (rrctl) → 拉回证据 → 输出 review.md
+```
+
+---
+
+## 核心文档
+
+* **[设计哲学与核心机制](docs/workflow/README.md)**：4 条核心原则与实验生命周期。
+* **[Agent 自主适配协议](docs/workflow/agent-onboarding.md)**：给 Agent 消费的端到端自举接入说明。
+* **[日常实验使用指南](docs/workflow/usage.md)**：日常实验交互与结果分析流转速查。
