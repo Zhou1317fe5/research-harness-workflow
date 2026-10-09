@@ -537,19 +537,16 @@ class Controller:
                 "transport_timeout",
                 "transport_connection",
                 "control_output_truncated",
+                "upload_failed",
             }:
-                ref = RunRef(
-                    spec.run_id,
-                    spec.remote.profile,
-                    spec.remote.stage_root,
-                    spec.remote.control_root,
-                    f"{spec.remote.stage_root}/rrctl-worker.pyz",
-                    spec.remote.python,
-                    spec.digest,
-                )
-                self.index.save(ref, spec)
+                # 尝试安全清理未完成的远端半成品 stage 目录，避免残留引发后续 inspect / collision 死锁
+                with suppress(Exception):
+                    transport.run(["rm", "-rf", spec.remote.stage_root])
+                exc.outcome = "failed"
+                exc.retryable = True
                 exc.details["launch_dispatched"] = False
-                self._unknown(exc, ref, operation="stage")
+                exc.details["stage_transfer_failed"] = True
+                exc.message = f"remote stage transfer failed ({exc.code}); stage artifacts were not fully deployed and directory was cleaned"
             raise
         # 启动失败也保留恢复定位，允许通过同一控制面拉取诊断。
         self.index.save(ref, spec)

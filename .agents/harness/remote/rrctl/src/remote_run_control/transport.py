@@ -134,7 +134,14 @@ class Transport:
     def mkdir_exclusive(self, path: str) -> None:
         raise NotImplementedError
 
-    def upload(self, local_path: Path, remote_path: str, expected_sha256: str) -> None:
+    def upload(
+        self,
+        local_path: Path,
+        remote_path: str,
+        expected_sha256: str,
+        *,
+        timeout_seconds: float = 1800,
+    ) -> None:
         raise NotImplementedError
 
     def download(self, remote_path: str) -> bytes:
@@ -215,7 +222,14 @@ class LocalTransport(Transport):
                 "stage_collision", f"stage directory already exists: {path}", "collision"
             ) from exc
 
-    def upload(self, local_path: Path, remote_path: str, expected_sha256: str) -> None:
+    def upload(
+        self,
+        local_path: Path,
+        remote_path: str,
+        expected_sha256: str,
+        *,
+        timeout_seconds: float = 1800,
+    ) -> None:
         destination = Path(remote_path)
         destination.parent.mkdir(parents=True, exist_ok=True)
         temporary = destination.with_name(f".{destination.name}.rrctl-upload")
@@ -304,7 +318,14 @@ class SSHTransport(Transport):
                 "collision",
             )
 
-    def upload(self, local_path: Path, remote_path: str, expected_sha256: str) -> None:
+    def upload(
+        self,
+        local_path: Path,
+        remote_path: str,
+        expected_sha256: str,
+        *,
+        timeout_seconds: float = 1800,
+    ) -> None:
         temporary = f"{remote_path}.rrctl-upload"
         script = (
             "set -eu; umask 077; "
@@ -314,7 +335,11 @@ class SSHTransport(Transport):
             f"{shlex.quote(expected_sha256)}; "
             f"mv {shlex.quote(temporary)} {shlex.quote(remote_path)}"
         )
-        result = self.run(["bash", "-c", script], input_data=local_path.read_bytes())
+        result = self.run(
+            ["bash", "-c", script],
+            input_data=local_path.read_bytes(),
+            timeout_seconds=timeout_seconds,
+        )
         if result.returncode != 0:
             message = redact(
                 result.stderr.decode("utf-8", errors="replace"), self.profile.secret_values
