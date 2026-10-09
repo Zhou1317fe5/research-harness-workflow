@@ -30,6 +30,9 @@
    - 检查本地 `~/.ssh/config`，提取已配置的 SSH 主机别名作为后续服务器候选项。
 5. **外部工具可用性检查**：
    - 检查环境中是否已有 `humanizer-zh`、`fast-context-mcp` 或 `smart-search`。
+6. **科研方向与 Trick 手册领域推断**：
+   - 模板自带的 `.codex/skills/mission-csv-execute/references/metric-tricks-arsenal.md` 默认面向计算机视觉。
+   - Agent 需分析本项目所处的研究领域（如 NLP/大模型微调、强化学习、多模态、推荐系统、语音、图学习或时间序列等），并在 Phase 2 自动检索并定制该领域的保分 Trick 手册。
 
 ---
 
@@ -346,6 +349,18 @@ chmod 600 .agents/harness/config/profiles.json .agents/harness/config/.env
    ```
 3. 用户输入编号后，Agent 自动将选定的 `REMOTE_CONDA_ENV` 与 `REMOTE_CONDA_SH` 写回 `.env`。全套远程环境装配完成。
 
+### 2.5 领域特化科研 Trick 手册自动定制 (Domain-Specific Tricks Customization)
+
+模板默认自带的 `.codex/skills/mission-csv-execute/references/metric-tricks-arsenal.md` 是专为**计算机视觉**设计的工程保分技巧库。
+
+**Agent 在接入新项目时，必须根据 Phase 0 识别的学科方向自主分析并定制该手册**：
+1. **方向对齐**：
+   - 若项目确实是计算机视觉方向，保留原手册；
+   - 若项目属于其他领域（如 NLP/大模型微调、强化学习、推荐系统、语音、图神经网络、时间序列等），Agent 需自行检索该领域顶会中常用的即插即用涨点与数值稳定 Trick（例如：NLP 中的对比学习温度调节、长序列动态掩码、LoRA rank/scale 补偿；RL 中的优势归一化、Reward 截断平滑；推荐中的负采样温度调节等）；
+2. **重写手册**：
+   将检索提炼的实用 Trick（包含原理说明、触发场景与紧凑 Python 代码片段）写回目标项目的 `.codex/skills/mission-csv-execute/references/metric-tricks-arsenal.md`；
+3. **目的**：确保后续任务在探索期初测指标微亏时，Agent 能够根据专属于该研究方向的保分军火库就地攻坚拉升指标，而不必推翻已确立的核心学术叙事。
+
 ---
 
 ## Phase 3：确定性门禁自检 (Verification Gates)
@@ -372,7 +387,7 @@ rrctl --json doctor
 
 完成上述工作后，向用户输出结构化汇报：
 1. **适配画像**：识别到的框架、宿主环境（Codex/Pi）、训练入口、评估入口、主指标。
-2. **已生成资产列表**：列出 `scripts/train.sh`、`scripts/eval.sh`、`project.toml`、`profiles.json`、`.env` 等路径。
+2. **已生成资产列表**：列出 `scripts/train.sh`、`scripts/eval.sh`、`project.toml`、`profiles.json`、`.env` 等路径，以及定制后的 `metric-tricks-arsenal.md`（注明所适配的研究领域）。
 3. **工具与依赖状态**：
    - `Humanizer-zh` 安装状态；
    - 可选工具（`fast-context-mcp` / `smart-search`）接入情况（若未安装，提示用户如需安装 Agent 可协助配置）。
