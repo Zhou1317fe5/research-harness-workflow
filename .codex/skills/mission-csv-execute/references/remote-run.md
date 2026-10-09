@@ -40,6 +40,8 @@
 
    **Shift-Left 本地张量与契约前置门禁**：在将代码推上远端 GPU 启动 smoke 之前，必须在本地 CPU 上执行极轻量的 dummy-tensor probe，用微型伪张量（如 32×32 或 64×64）验证所有支持的输入维度（单-shot 与多-shot batch 维度布局、dtype、边界条件），2 秒内确认无形状与转换报错，严禁直接把未在本地验证张量维度的代码送上 GPU。
 
+   **计算拓扑与算力防脱落门禁**：GPU 任务的 smoke 必须核验计算拓扑：核心新增/修改算子的输入与输出张量必须位于目标加速设备上（避免无意识默认落在 CPU，导致矩阵乘/高维求解在 CPU 串行爬行而 GPU 空转），且单集/单步耗时必须处于加速执行的合理量级内，严禁将 CPU 瓶颈性能缺陷放行至全量运行。
+
    **失败自愈纪律（严禁报错挂起盲等）**：若远程 smoke 或运行非零退出（如 exit 2），主代理**严禁原地停下等待用户**。必须立即从拉回的诊断目录中读取 `progress.jsonl`、`console.log` 获取真实报错堆栈；若根因或修复方案存在权衡，主动调用 `advisor` 分析决策；在本地修复并跑通 CPU 测试后自动推进下一步动作。
 2. 公共入口执行 `rrctl --json doctor`，要求 process 后端及 observer-deadline、worker-monitoring、unknown-operation-outcome 能力。不可用时修复安装，不回退临时 SSH/nohup。新运行显式声明 CPU 或 GPU 资源；未绑定不重叠 GPU 的任务使用独占资源。需要诊断连接时使用 `rrctl --json --profiles <profiles.json> doctor --profile <profile>`；本地 doctor 不代表远端已 ready。
 3. 从已批准 intent、当前运行行和 route/review evidence 生成 `mission.rrctl-request.v1`；所有用途的 `metadata` 带 `mission_csv`（项目相对路径）与 `mission_row_id`，低风险分流携带现有 `change_manifest`。入口核实际 Git diff、candidate commit 及 `requires_prerun`，不额外要求低风险行有历史 PRERUN。request 通过 stdin 交给 builder，不落盘；命令必须来自批准意图，凭据只传变量名。自定义控制脚本声明沿用 `metadata.custom_control_scripts`，通用 stage/launch/health/cleanup 仍归 rrctl。

@@ -58,7 +58,7 @@ The scientific reviewer checks only:
 1. approved Spec/theory intent and explicit non-goals;
 2. active canonical implementation location and actual module instantiation;
 3. important values across `CLI/CSV -> argparse/config -> train/eval script -> pipeline/model/module -> forward/loss/attention/eval sink`;
-4. selected blocks/layers, optimizer groups, connected losses, dtype/device behavior, and disabled paths;
+4. selected blocks/layers, optimizer groups, connected losses, dtype/device behavior (verify compute topology: ensure heavy mathematical operators, matrix solves, and forward feature paths reside on target accelerator and do not silently fall back to host CPU while holding VRAM), and disabled paths;
 5. sink effect: config presence is not evidence that computation consumes a value;
 6. baseline/disable behavior and unrelated scientific routes — **when the change claims equivalence (see Baseline-Equivalence Probe), the reviewer records the probe verdict; it does not decide equivalence by reading code**;
 7. dataset and label preprocessing, sampling policy, checkpoint, benchmark settings, random seed, metric computation, and result attribution;
@@ -84,6 +84,7 @@ For `full_review`, the final candidate commit must pass an isolated production-r
 - 1 to 10 production steps: training steps or inference batches (or **strictly at most 1 minimal single-shot episode** for episode-driven inference; **forbidden to run multi-shot or multi-episode loops** during smoke);
 - exact candidate commit and production entrypoint;
 - zero exit and a numerical check matching the computation: training requires finite loss; inference requires finite model outputs;
+- compute topology & throughput assertion: verify core modified operators and tensors execute on the intended accelerator (e.g. `tensor.is_cuda` or accelerator device, prohibiting silent fallback to host CPU while holding GPU VRAM); smoke single-step/episode latency must remain within normal accelerated limits (e.g., seconds, not tens of seconds to minutes from CPU bottlenecks);
 - target duration strictly bounded: smoke is a dynamic connectivity probe (verifying no crash, sink activation, finite outputs, memory bounds), not an evaluation; expected runtime is under 5 minutes;
 - isolated fail-on-collision output;
 - `official_metrics_disabled:true` and `artifact_ingest_disabled:true`, except the bounded Baseline-Equivalence Probe below.
