@@ -1,7 +1,5 @@
 # Closing Review 与 Human Handoff
 
-# Vision Review 闭环
-
 `REVIEW-*` 行用于判断整批工作是否按批准文档完成，并把实施结果与科学结果分开记录。
 同一规则适用于目录化 CSV 与 legacy 平铺 CSV。
 
