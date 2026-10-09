@@ -8,9 +8,24 @@
 
 ---
 
-## 一、评估口径与协议
+## 一、基线定义与设计决定 (Decisions)
+<!-- 记录算法基线、评测口径与人工批准的冻结决定，状态多为 ACTIVE / SUPERSEDED -->
 
-### C01 — <结论标题>
+### C01 — <基线或决定标题>
+Type: decision
+Status: **ACTIVE**
+Scope: <对象与适用范围>
+
+<当前决定内容，例如基线锁定版本、评测协议等>
+
+Source: <来源事件 ID、用户指令或文档引用>
+
+---
+
+## 二、核心假设与实验发现 (Findings & Hypotheses)
+<!-- 记录跨实验验证的科学假设与指标涨跌发现，状态为 SUPPORTED / REJECTED / OPEN -->
+
+### C02 — <假设或发现标题>
 Type: hypothesis
 Status: **OPEN**
 Scope: <对象、任务与适用范围>
@@ -23,7 +38,7 @@ Source: <来源事件 ID 或可回查的文档引用>
 
 ---
 
-## 二、已关闭路径
+## 三、已关闭路径 (Closed Paths)
 
 | 路径 | 关闭理由 | 证据 |
 |---|---|---|
