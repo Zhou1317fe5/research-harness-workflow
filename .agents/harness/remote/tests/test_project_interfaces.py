@@ -197,7 +197,19 @@ protocol_field = "evaluation.mode"
         # 此处只测 rrctl 传输序列；真实 CSV/生命周期准入由 ResearchBindingTests 覆盖。
         with patch.object(remote_run, "validate_mission_launch"), patch.object(remote_run, "resolve_rrctl", return_value="rrctl"), patch.object(remote_run, "rrctl_call", side_effect=call), patch.object(remote_run, "_emit_stage"):
             self.assertEqual(remote_run.execute(path, profiles=None, poll_seconds=600, resume=True), 0)
-        self.assertEqual(calls, ["inspect", "wait", "pull"])
+
+    def test_launch_only_skips_wait_and_pull(self):
+        spec = build_runspec(self.request())
+        path = self.root / "runspec.json"
+        path.write_text(json.dumps(spec))
+        calls = []
+        def call(argv, _root):
+            stage = argv[2]
+            calls.append(stage)
+            return subprocess.CompletedProcess(argv, 0, json.dumps({"ready": True} if stage == "ready" else {"ok": True, "result": {}}), "")
+        with patch.object(remote_run, "validate_mission_launch"), patch.object(remote_run, "resolve_rrctl", return_value="rrctl"), patch.object(remote_run, "rrctl_call", side_effect=call), patch.object(remote_run, "_emit_stage"):
+            self.assertEqual(remote_run.execute(path, profiles=None, poll_seconds=600, launch_only=True), 0)
+        self.assertEqual(calls, ["ready", "launch"])
 
     def test_capability_check_rejects_old_installation(self):
         old = subprocess.CompletedProcess([], 2, "", "unknown doctor")

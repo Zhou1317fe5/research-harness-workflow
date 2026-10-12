@@ -95,7 +95,7 @@
    python3 .agents/harness/remote/remote_run.py issues/<stem>/runs/<RunID>/runspec.json --execute
    ```
 
-   `launch` 通过 first-step gate 后才能推进下游步骤。启动后记录 `command_owner:rrctl`、RunID、profile、PID/PGID、control/output root、`pre_run_code_commit` 和恢复命令。若返回 first_step_observer_timeout 且远端进程已启动，记录 `remote_state=running_remote` 与 `first_step_gate:pending`，继续观察同一 RunID，不重新 launch。首步默认预算 600 秒；公共入口的观察预算默认 0，即持续到 terminal/attention，整个训练时长交给 wait。
+   `launch` 通过 first-step gate 后才能推进下游步骤。启动后记录 `command_owner:rrctl`、RunID、profile、PID/PGID、control/output root、`pre_run_code_commit` 和恢复命令。若返回 `first_step_observer_timeout` 或暂时性的 `first_step_attention`（如首个 episode 尚未写出 progress.jsonl 触发的 adapter_exit / progress_missing 告警，但 inspect 证实 worker 与 workload 正常存活），记录 `remote_state=running_remote` 与 `first_step_gate:pending`，按当前 event cursor 或 resume 继续观察同一 RunID，严禁将暂时的首步延迟告警误判为任务硬失败，不重新 launch。首步默认预算 600 秒；公共入口的观察预算默认 0，即持续到 terminal/attention，整个训练时长交给 wait。
 
    控制操作返回 `status:unknown` 或 `error.outcome:unknown` 时，只能确认操作结果暂不确定，不能记为训练失败或停止成功。保留原 RunID 与路径，按返回的 `next_actions` 用 inspect/wait/resume 核对；不要自动重发 launch/abort，也不要换 RunID 重启同一实验。
 8. periodic unhealthy 或 Stop Trigger 不自动转换为 abort：**健康检查负责报告事实，不自动取得停止权**。**硬故障仅包括**：目标进程确认消失、显存 OOM、最新 progress 出现 NaN/Inf、明确未恢复的 fatal traceback，以及 Spec 明确声明的 Stop Condition；确认命中并记录证据后才显式执行 `rrctl abort <RunID> --yes`。单次低 GPU、单次日志延迟、checkpoint 写盘、旧日志历史错误、身份暂时不可读或一次检查失败只记 `degraded`，不得停止训练；至少连续两次复核仍异常才升级诊断。`rrctl wait` 返回一次结构化 attention，远端 workload 保持运行。停止操作必须核对本次独立进程组的 RunID、control root、PID 启动身份和 boot ID，禁止直接按进程名批量终止。

@@ -38,8 +38,11 @@ from harness.remote.build_rrctl_runspec import (
 def validate_mission_launch(spec: dict, *, resume: bool = False, spec_path: Path | None = None) -> None:
     """核对任务绑定；新启动复用路由，恢复只允许观察已绑定的运行。"""
     metadata = spec.get("metadata", {})
-    if not metadata.get("spec_id") or not metadata.get("exp_id"):
-        raise ValueError("Mission RunSpec requires both spec_id and exp_id")
+    purpose = metadata.get("execution_purpose", "official")
+    if not metadata.get("spec_id") or (
+        purpose != "pre_review_smoke" and not metadata.get("exp_id")
+    ):
+        raise ValueError("Mission RunSpec requires spec_id and exp_id outside pre_review_smoke")
     repo = Path(spec["source"]["repo_root"]).resolve()
     value, row_id = metadata.get("mission_csv"), metadata.get("mission_row_id")
     legacy_resume = resume and value is None and row_id is None
@@ -644,6 +647,7 @@ def execute(
     spec_path: Path, *, profiles: Path | None, poll_seconds: float,
     max_wait_seconds: float = 0, heartbeat_seconds: float = 1800,
     resume: bool = False, full_output: bool = False,
+    launch_only: bool = False,
 ) -> int:
     spec = json.loads(spec_path.read_text(encoding="utf-8"))
     if not isinstance(spec, dict):
@@ -656,10 +660,12 @@ def execute(
     prefix = [resolve_rrctl(), "--json"]
     if profiles:
         prefix += ["--profiles", str(profiles.resolve())]
-    stages = ([("inspect", [run_id])] if resume else [("ready", [str(spec_path)]), ("launch", [str(spec_path), "--max-wait-seconds", str(max_wait_seconds)])]) + [
-        ("wait", [run_id, "--poll-seconds", str(poll_seconds), "--max-wait-seconds", str(max_wait_seconds)]),
-        ("pull", [run_id]),
-    ]
+    stages = ([("inspect", [run_id])] if resume else [("ready", [str(spec_path)]), ("launch", [str(spec_path), "--max-wait-seconds", str(max_wait_seconds)])])
+    if not launch_only:
+        stages += [
+            ("wait", [run_id, "--poll-seconds", str(poll_seconds), "--max-wait-seconds", str(max_wait_seconds)]),
+            ("pull", [run_id]),
+        ]
     for stage, arguments in stages:
         heartbeat = None
         if stage == "wait" and heartbeat_seconds > 0:
@@ -691,6 +697,8 @@ def execute(
                 command += ["--profiles", str(profiles.resolve())]
             print(json.dumps({"run_id": run_id, "remote_workload_preserved": True, "resume_argv": command}, ensure_ascii=False), flush=True)
             return result.returncode or 2
+        if launch_only and stage == "launch" and result.returncode == 0 and value.get("ok") is not False:
+            return 0
         failed_state = value.get("result", {}).get("status", {}).get("state") in {"failed", "aborted"}
         if result.returncode or value.get("ok") is False or failed_state:
             if stage in {"launch", "wait"}:
@@ -719,6 +727,7 @@ def main() -> int:
         help="周期性进度心跳秒数，默认 1800（30 分钟）；0 表示禁用",
     )
     parser.add_argument("--resume", action="store_true", help="inspect the bound run and continue wait/pull without launching again")
+    parser.add_argument("--launch-only", action="store_true", help="run ready and launch, then return without wait/pull")
     parser.add_argument("--full-output", action="store_true", help="print full responses instead of summaries and local detail paths")
     parser.add_argument("--request", type=Path, help="prepare the RunSpec from a request before executing")
     parser.add_argument("--project-config", type=Path)
@@ -754,12 +763,17 @@ def main() -> int:
         if profiles is None and default_profiles.is_file():
             profiles = default_profiles
         if args.execute:
+            if args.launch_only and args.resume:
+                raise ValueError("--launch-only cannot be combined with --resume")
             return execute(spec, profiles=profiles, poll_seconds=args.poll_seconds, max_wait_seconds=args.max_wait_seconds,
-                           heartbeat_seconds=args.heartbeat_seconds, resume=args.resume, full_output=args.full_output)
+                           heartbeat_seconds=args.heartbeat_seconds, resume=args.resume, full_output=args.full_output,
+                           launch_only=args.launch_only)
         command = [sys.executable, ".agents/harness/remote/remote_run.py", str(spec), "--execute", "--poll-seconds", str(args.poll_seconds),
                    "--max-wait-seconds", str(args.max_wait_seconds)]
         if args.resume:
             command.append("--resume")
+        if args.launch_only:
+            command.append("--launch-only")
         if args.full_output:
             command.append("--full-output")
         if profiles:
