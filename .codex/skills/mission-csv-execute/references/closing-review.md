@@ -10,7 +10,11 @@
 - 科研 `review.md` 继续承载 remote session、artifact pull/ingest、指标、SpecID/ExpID/RunID 与结果归属；closing reviewer 只消费这些证据，不改写 scientific PRERUN 结论。
 
 - 当前 review 行之前的所有非 review 行必须闭环完成；其中 `RESULT-ANALYSIS-01` 必须位于首个 `REVIEW-*` 之前
-- 若前面仍有未完成的普通 issue，先跳过当前 review 行，继续普通 issue
+- **前置未完成行与遗留台账的收口归档协议（前置卡住时的合规闭环）**：若在进入收尾审查时前面存在卡住、重试废弃或门限跳过的行，按下列规则清算后方可顺利通过 `final_ready` 机械检查，严禁死锁：
+  1. **被取代的重试行**：凡已有更高轮次替代的历史 smoke/probe 行（如已有 r2 替代 r1），自动使用 `supersede_remote_binding.py` 或更新为 `remote_state:not_applicable`、`artifact_policy:pre_review_smoke_only` 并结项；
+  2. **预注册门控跳过行**：因未达单域晋级阈值、探索期无信号（Rule 33）或命中预算上限而合法跳过的后续训练/消融行，统一更新为四项完成 + `remote_state:not_applicable`，并在 notes 标注 `scientific_outcome:gate_failed`（或 `not_run_by_preregistered_gate`）；其关联的所有 Claim 必须在 `<stem>.claims.json` 中同步标记为 `status:not_run_by_preregistered_gate` 并附注决策证据，严禁在台账中遗留 `pending`；
+  3. **已知缺陷与工程债务**：不阻塞本轮核心结论的次要工程缺陷，统一转入 `<stem>.deferred.json`（带有 `DF-NNN` 编号）并在 handoff 隐式引用，其关联 claim 标记为 `status:out_of_scope` 或在 closing notes 记录 `deferred_coverage`，不阻止当前 CSV 机械闭环。
+- 若前面仍有真实未处理的当前 scope 核心 issue，先推进该 issue，不强行 review
 - review 不实现功能；review 只审计、记录、追加可执行工作
 - review 行必须包含任务专属 claim/evidence 检查项；如果 `review_regression_requirements` 仍是纯通用套话，先回读 `source_doc`、当前 CSV 和交付证据，补齐该行后再执行 review
 - 若任意行 `notes` 包含 `claims:CLAIM-*` 但没有可读的 `claim_ledger:<path>`，CSV 不完整；先在 artifact root 补齐 `<csv-basename>.claims.json` 并写回 `claim_ledger:<csv-basename>.claims.json`，不得把 claim id 当作可审计证据

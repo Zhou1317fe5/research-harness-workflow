@@ -100,7 +100,7 @@ Canonical CSV 中，所有正式结果进入 `remote_state=ingested` 后，必�
 - `review_regression_state=已完成`
 - `git_state=已提交`
 
-若任意行 notes 包含 `claims:CLAIM-*`，必须先用 `mission-csv-execute/scripts/validate_claim_ledger.py` 或等价检查确认 ledger 可读、claim id 存在、状态与证据等级一致；否则该 CSV 不完整，不得把最终 `REVIEW-*` 标成通过。`not_run_by_preregistered_gate` 是有决策证据的合规终态，不等于 E2E 通过，也不阻止“按批准协议完成”的 Mission 闭环。
+若任意行 notes 包含 `claims:CLAIM-*`，必须先用 `mission-csv-execute/scripts/validate_claim_ledger.py` 或等价检查确认 ledger 可读、claim id 存在、状态与证据等级一致；否则该 CSV 不完整，不得把最终 `REVIEW-*` 标成通过。`not_run_by_preregistered_gate` 是有决策证据的合规终态，不等于 E2E 通过，也不阻止“按批准协议完成”的 Mission 闭环。**若前序存在卡住、重试废弃或门控跳过的行阻碍收工，按规程清算后方可顺利通过 `final_ready` 机械检查，严禁死锁**：① 被更高轮次取代的历史重试行标记为 `remote_state:not_applicable`、`artifact_policy:pre_review_smoke_only` 并闭环；② 因门控、探索期无信号（规则 33）或预算上限合法跳过的后续行，四项标记为已完成 + `remote_state:not_applicable`，其关联的所有 Claim 在 `<stem>.claims.json` 中批量标记为 `not_run_by_preregistered_gate` 并附注决策证据，严禁遗留 `pending`；③ 非关键缺陷转入 `<stem>.deferred.json` 并在 handoff 隐式引用，不阻断当前 CSV 闭环。
 
 远程训练行额外遵循：
 
