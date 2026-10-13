@@ -84,6 +84,34 @@ class RemoteProgressTests(unittest.TestCase):
         self.assertIn("实际总耗时: 60.0 分钟", detailed)
         self.assertIn("miou=68.2000", detailed)
 
+    def test_estimate_runtime(self):
+        from harness.remote.remote_progress import estimate_runtime, format_estimate
+
+        # 直接指定 marginal 与 init
+        est = estimate_runtime(total_steps=1000, marginal_seconds=2.0, init_seconds=100.0)
+        self.assertEqual(est["total_steps"], 1000)
+        self.assertEqual(est["init_seconds"], 100.0)
+        self.assertEqual(est["marginal_seconds_per_step"], 2.0)
+        self.assertEqual(est["estimated_total_seconds"], 2100.0)
+        self.assertTrue(est["eta_datetime"])
+
+        text = format_estimate(est)
+        self.assertIn("[启动前耗时沙盘推算]", text)
+        self.assertIn("全量规模: 1000 步/样本", text)
+        self.assertIn("单步边际耗时: 2.00 秒/步", text)
+        self.assertIn("一次性初始化/冷启动耗时: 100.0 秒", text)
+        self.assertIn("预计总耗时: 35.0 分钟", text)
+
+        # 尝试从 smoke_summary.json 读取
+        summary_path = self.root / "smoke_summary.json"
+        summary_path.write_text(json.dumps({
+            "schema_version": "rrctl.smoke-summary.v1",
+            "marginal_seconds_per_step": 1.5,
+            "init_seconds": 30.0,
+        }))
+        est_file = estimate_runtime(total_steps=500, smoke_summary_path=summary_path)
+        self.assertEqual(est_file["estimated_total_seconds"], 30.0 + 500 * 1.5)
+
 
 if __name__ == "__main__":
     unittest.main()

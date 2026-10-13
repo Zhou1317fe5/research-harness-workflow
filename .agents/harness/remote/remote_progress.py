@@ -241,6 +241,77 @@ def get_progress(run_id: str, repo_root: Path, profiles: Path | None = None, spe
     }
 
 
+def estimate_runtime(
+    total_steps: int,
+    smoke_summary_path: Path | None = None,
+    marginal_seconds: float | None = None,
+    init_seconds: float | None = None,
+) -> dict[str, Any]:
+    """根据前置 smoke 产物或指定耗时推算全量运行的预计耗时与完成时刻 (时间沙盘)。"""
+    t_init = init_seconds if init_seconds is not None else 0.0
+    t_marg = marginal_seconds
+
+    if smoke_summary_path and smoke_summary_path.is_file():
+        try:
+            sdata = json.loads(smoke_summary_path.read_text(encoding="utf-8"))
+            # 优先从 smoke_summary 中提取耗时指标
+            # 常见字段: marginal_seconds_per_step, init_seconds, elapsed_seconds, steps
+            if init_seconds is None and "init_seconds" in sdata:
+                t_init = float(sdata["init_seconds"])
+            if t_marg is None:
+                if "marginal_seconds_per_step" in sdata:
+                    t_marg = float(sdata["marginal_seconds_per_step"])
+                elif "speed_seconds_per_step" in sdata:
+                    t_marg = float(sdata["speed_seconds_per_step"])
+                elif "elapsed_seconds" in sdata and "steps" in sdata and int(sdata["steps"]) > 0:
+                    steps = int(sdata["steps"])
+                    elapsed = float(sdata["elapsed_seconds"])
+                    if t_init > 0 and elapsed > t_init:
+                        t_marg = (elapsed - t_init) / steps
+                    else:
+                        t_marg = elapsed / steps
+        except Exception:
+            pass
+
+    if t_marg is None or t_marg < 0:
+        raise ValueError("无法推算耗时：缺少单步/单样本边际耗时 (marginal_seconds 或有效的 smoke_summary)")
+
+    total_seconds = t_init + total_steps * t_marg
+    now = datetime.datetime.now(datetime.timezone.utc)
+    eta_datetime = now + datetime.timedelta(seconds=total_seconds)
+
+    return {
+        "total_steps": total_steps,
+        "init_seconds": t_init,
+        "marginal_seconds_per_step": t_marg,
+        "estimated_total_seconds": total_seconds,
+        "eta_datetime": eta_datetime.isoformat(),
+    }
+
+
+def format_estimate(est: dict[str, Any]) -> str:
+    """将时间沙盘推算格式化为清晰的人类可读文本。"""
+    total = est["total_steps"]
+    t_init = est["init_seconds"]
+    t_marg = est["marginal_seconds_per_step"]
+    tot_sec = est["estimated_total_seconds"]
+    eta_iso = est["eta_datetime"]
+
+    dt = datetime.datetime.fromisoformat(eta_iso)
+    eta_local_str = dt.astimezone().strftime("%Y-%m-%d %H:%M %Z")
+
+    lines = [
+        "[启动前耗时沙盘推算]",
+        f"- 全量规模: {total} 步/样本",
+        f"- 单步边际耗时: {t_marg:.2f} 秒/步",
+    ]
+    if t_init > 0:
+        lines.append(f"- 一次性初始化/冷启动耗时: {t_init:.1f} 秒")
+    lines.append(f"- 预计总耗时: {tot_sec/60:.1f} 分钟 ({tot_sec/3600:.2f} 小时)")
+    lines.append(f"- 预计完成时刻: {eta_local_str}")
+    return "\n".join(lines)
+
+
 def format_progress(info: dict[str, Any], mode: str = "detailed") -> str:
     """将进度字典格式化为人类可读文本。
 
@@ -333,7 +404,35 @@ def main() -> int:
     parser.add_argument("--profiles", type=Path, help="凭据 profile 文件路径")
     parser.add_argument("--json", action="store_true", help="以结构化 JSON 输出")
     parser.add_argument("--mode", choices=["detailed", "heartbeat"], default="detailed", help="显示模式")
+    parser.add_argument("--estimate", action="store_true", help="执行启动前耗时沙盘推算")
+    parser.add_argument("--total-steps", type=int, help="全量运行规模总步数/样本数")
+    parser.add_argument("--smoke-summary", type=Path, help="前置 smoke_summary.json 路径")
+    parser.add_argument("--marginal-seconds", type=float, help="单步边际耗时（秒）")
+    parser.add_argument("--init-seconds", type=float, default=0.0, help="一次性初始化/冷启动耗时（秒）")
     args = parser.parse_args()
+
+    if args.estimate:
+        if not args.total_steps:
+            print("[错误] 推算耗时必须指定 --total-steps", file=sys.stderr)
+            return 1
+        try:
+            est = estimate_runtime(
+                total_steps=args.total_steps,
+                smoke_summary_path=args.smoke_summary,
+                marginal_seconds=args.marginal_seconds,
+                init_seconds=args.init_seconds,
+            )
+        except Exception as exc:
+            if args.json:
+                print(json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False))
+            else:
+                print(f"[错误] {exc}", file=sys.stderr)
+            return 1
+        if args.json:
+            print(json.dumps({"ok": True, "result": est}, ensure_ascii=False, indent=2))
+        else:
+            print(format_estimate(est))
+        return 0
 
     profiles = args.profiles
     if profiles is None:
