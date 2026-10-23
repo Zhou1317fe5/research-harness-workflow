@@ -136,6 +136,17 @@ class ProcessBackendTests(unittest.TestCase):
         self.assertEqual(binding["backend"], "process")
         pulled = self.control.pull(spec.run_id)
         destination = Path(pulled["destination"])
+        # Local E2E: real worker receipt is pulled byte-for-byte, not reconstructed.
+        from remote_run_control.finalization import read_completion
+        from remote_run_control.jsonutil import sha256_json
+        control_root = Path(spec.remote.control_root)
+        for filename in ("completion.json", "status.json", "binding.json"):
+            self.assertEqual((destination / ".rrctl" / filename).read_bytes(),
+                             (control_root / filename).read_bytes())
+        receipt = read_completion(spec, control_root, binding)
+        self.assertEqual(receipt["manifest_sha256"],
+                         sha256_json(json.loads((destination / "artifact_manifest.json").read_text())))
+        self.assertEqual(receipt["run_spec_sha256"], spec.digest)
         actual = json.loads((destination / "started.json").read_text())
         self.assertIsNone(actual["old_library"])
         self.assertEqual(actual["declared"], "literal $(no-shell-eval)")
@@ -158,21 +169,22 @@ class ProcessBackendTests(unittest.TestCase):
         self.assertIn("manifest-identical", str(caught.exception))
         self.assertIn(str(destination), str(caught.exception))
 
-    def test_pull_retry_cleans_stale_staging_directory(self):
+    def test_pull_preserves_unknown_staging_directory(self):
         spec = self.spec()
         self.control.launch(spec)
         terminal = self.control.wait(spec.run_id, poll_seconds=0.05, max_wait_seconds=5)
         self.assertEqual(terminal["status"]["state"], "completed")
         destination = Path(spec.local_pull_root) / spec.run_id
-        # 模拟上次 pull 在传输中断后留下的同 RunID staging 残留。
+        # 旧随机 staging 没有可信身份；保留，不得批量删除同 RunID 的证据。
         stale = destination.parent / f".{spec.run_id}.stale00"
         stale.mkdir(parents=True)
         (stale / "partial.json").write_text("{}")
         pulled = self.control.pull(spec.run_id)
         self.assertFalse(pulled["reused"])
-        self.assertFalse(stale.exists())
+        self.assertTrue(stale.exists())
+        self.assertEqual((stale / "partial.json").read_text(), "{}")
         self.assertTrue((destination / "artifact_manifest.json").is_file())
-        # 完整目的地下拉取仍复用；残留清理不影响幂等复用路径。
+        # 完整目的地下拉取仍复用。
         self.assertTrue(self.control.pull(spec.run_id)["reused"])
 
     def test_observation_deadline_preserves_workload_then_resumes(self):

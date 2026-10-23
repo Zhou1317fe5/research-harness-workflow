@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import datetime
 import json
+import subprocess
 from pathlib import Path
 import sys
 import tempfile
@@ -111,6 +112,35 @@ class RemoteProgressTests(unittest.TestCase):
         }))
         est_file = estimate_runtime(total_steps=500, smoke_summary_path=summary_path)
         self.assertEqual(est_file["estimated_total_seconds"], 30.0 + 500 * 1.5)
+
+    def test_zero_progress_and_missing_start_time_are_displayable(self):
+        for count, started in ((0, None), (0, "2026-10-23T00:00:00+00:00"), (5, None)):
+            with self.subTest(count=count, started=started):
+                inspected = {"result": {"status": {"state": "running"},
+                                        "binding": {"workload_started_at": started}}}
+                health = {"result": {"adapter": {"progress": {"count": count, "total": 100}}}}
+                replies = [subprocess.CompletedProcess([], 0, json.dumps(x), "") for x in (inspected, health)]
+                with patch("harness.remote.remote_progress.resolve_rrctl", return_value="rrctl"), patch("harness.remote.remote_progress.rrctl_call", side_effect=replies):
+                    info = get_progress("RUN-ZERO", self.root)
+                self.assertEqual(info["pct"], float(count))
+                for mode in ("heartbeat", "detailed"):
+                    self.assertIn(f"{count}/100", format_progress(info, mode=mode))
+
+    def test_formatter_handles_legacy_snapshot_without_percentage(self):
+        for mode in ("heartbeat", "detailed"):
+            text = format_progress({"run_id": "RUN-ZERO", "state": "running",
+                                    "current_step": 0, "total_steps": 100, "pct": None}, mode=mode)
+            self.assertIn("0/100 (0.0%)", text)
+
+    def test_estimate_reports_source_and_rejects_nonfinite_cost(self):
+        from harness.remote.remote_progress import estimate_runtime, format_estimate
+        estimate = estimate_runtime(10, marginal_seconds=2)
+        self.assertEqual(estimate["estimate_source"], "explicit_input")
+        self.assertEqual(estimate["eta_scope"], "compute_only")
+        self.assertIn("不含回传", format_estimate(estimate))
+        for marginal in (float("nan"), float("inf"), -1, 0):
+            with self.subTest(marginal=marginal), self.assertRaises(ValueError):
+                estimate_runtime(10, marginal_seconds=marginal)
 
 
 if __name__ == "__main__":

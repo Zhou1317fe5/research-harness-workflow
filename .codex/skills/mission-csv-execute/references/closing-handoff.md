@@ -51,13 +51,17 @@ handoff 是**施工交工单**——用户隔一段时间回来打开它，能�
 ## 4. 机械验收与生成降级
 
 1. **生成规则**：
-   - 走 reviewer 脚本时传 `--handoff <path>`；走 self-review 时顶部标注 `WARNING: self-review only, NOT independently verified`；
+   - 走 reviewer 脚本时传 `--handoff <path>`；正文不预写独立性头，由 launcher 按 runtime requested/observed model 与 evidence 生成唯一的 `独立性` 结构化头，和 review JSON 一致。旧稿身份矛盾时拒绝发布，不能改标签冒充独立审查。
+   - 走 self-review 时 review JSON 必须为 `review_agent_mode:self-review` / `review_independence:false`，据此生成结构化头，并保留 `WARNING: self-review only, NOT independently verified`；不得同时出现独立审查头。
    - 生成后在 REVIEW 行 notes 追加 `handoff:<path>`，开放项回填 `deferred_coverage:<covered>/<open>`。
+   - 审查恢复、轮次与材料身份以 [独立审查规范](closing-independent-review.md#恢复与材料身份) 为准；同输入复用，新轮/新材料新建，不搬删旧 job。交工单必须挂到最后 REVIEW 行，JSON 若含 `review_row_id` 必须匹配该行。
 2. **机械合同验收门禁（HARD）**：
    ```bash
    python .codex/skills/mission-csv-execute/scripts/check_handoff_contract.py <handoff-path> --csv <csv-path>
    ```
    - 退出码 0 = 通过：用 `set_note_tags` 更新 REVIEW 行 `handoff_contract:passed`；
    - 退出码 1 = 不合格：修正后重生成；重试后仍失败则记 `handoff_contract:failed <缺项>`，允许代码交付收口，但不得声称 handoff 完成。
+   - 无 Outcome Contract 的兼容任务也校验 JSON、CSV 身份与唯一结构化头的一致性；Outcome answers 和 blocked claims 仍由对应合同逐字段校验。
 3. **生成失败降级**：
    - 若脚本/reviewer 未能产出 markdown，主代理用 review JSON + CSV 手动渲染兜底稿，顶部标 `WARNING: auto-generation failed, rendered by main agent as fallback`，随后必须跑通过 `check_handoff_contract.py`。
+   - 数值结果落在精度容差内，只证明对应数值验收通过，不证明统计显著性或科学假设成立；没有重复实验/协议证据时明确写结论边界。

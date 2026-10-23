@@ -220,7 +220,8 @@ protocol_field = "evaluation.mode"
     def test_capability_check_requires_every_process_contract_capability(self):
         report = {"backends": ["process"], "capabilities": [
             "observer-deadline", "worker-monitoring", "unknown-operation-outcome",
-        ], "wait_default_seconds": 0}
+        ], "wait_default_seconds": 0,
+            "implementation": str(Path(remote_run.__file__).resolve().parent / "rrctl/src/remote_run_control")}
         for missing in (None, "process", *report["capabilities"]):
             with self.subTest(missing=missing):
                 value = {**report}
@@ -229,7 +230,7 @@ protocol_field = "evaluation.mode"
                 result = subprocess.CompletedProcess([], 0, json.dumps(value), "")
                 with patch.object(remote_run.shutil, "which", return_value="/fixture/rrctl"), patch.object(remote_run.subprocess, "run", return_value=result):
                     if missing is None:
-                        self.assertEqual(remote_run.resolve_rrctl(), "/fixture/rrctl")
+                        self.assertEqual(remote_run.resolve_rrctl(), str(Path(remote_run.__file__).resolve().parent / "rrctl/rrctl"))
                     else:
                         with self.assertRaisesRegex(ValueError, missing):
                             remote_run.resolve_rrctl()
@@ -241,6 +242,50 @@ protocol_field = "evaluation.mode"
         result = subprocess.CompletedProcess([], 0, json.dumps(report), "")
         with patch.object(remote_run.shutil, "which", return_value="/old/rrctl"), patch.object(remote_run.subprocess, "run", return_value=result):
             with self.assertRaisesRegex(ValueError, "terminal/attention wait default"):
+                remote_run.resolve_rrctl()
+
+    def test_observe_only_returns_terminal_without_pull(self):
+        spec = build_runspec(self.request())
+        path = self.root / "runspec.json"
+        path.write_text(json.dumps(spec))
+        stages = []
+        def call(argv, _root):
+            stages.append(argv[2])
+            if argv[2] == "pull":
+                self.fail("a slow transfer must not delay terminal notification")
+            return subprocess.CompletedProcess(argv, 0, json.dumps({
+                "ok": True, "result": {"status": {"state": "completed"}}
+            }), "")
+        with patch.object(remote_run, "validate_mission_launch"), patch.object(remote_run, "resolve_rrctl", return_value="rrctl"), patch.object(remote_run, "rrctl_call", side_effect=call), patch.object(remote_run, "_emit_stage"):
+            self.assertEqual(remote_run.execute(path, profiles=None, poll_seconds=600, observe_only=True), 0)
+        self.assertEqual(stages, ["ready", "launch", "wait"])
+
+    def test_control_observations_are_run_bound_and_append_only(self):
+        spec = build_runspec(self.request())
+        spec["metadata"]["mission_csv"] = "issues/T/tasks.csv"
+        failed = {"ok": False, "result": {"status": {
+            "run_id": spec["run_id"], "state": "failed", "detail": {"exit_code": 1}}}}
+        first = remote_run.retain_observation(spec, "wait", failed)
+        self.assertEqual(json.loads(first.read_text())["response"], failed)
+        self.assertEqual(remote_run.retain_observation(spec, "wait", failed), first)
+        complete = {"ok": True, "result": {"status": {
+            "run_id": spec["run_id"], "state": "completed", "detail": {"exit_code": 0}}}}
+        second = remote_run.retain_observation(spec, "wait", complete)
+        self.assertNotEqual(first, second)
+        self.assertEqual(json.loads(first.read_text())["response"], failed)
+        self.assertEqual(json.loads(second.read_text())["run_spec_sha256"], run_spec_digest(spec))
+
+    def test_bundled_launcher_ignores_a_foreign_path_installation(self):
+        with patch.object(remote_run.shutil, "which", return_value="/wrong/project/rrctl"):
+            launcher = remote_run.resolve_rrctl()
+        self.assertEqual(Path(launcher).resolve(), Path(remote_run.__file__).resolve().parent / "rrctl/rrctl")
+
+    def test_capability_check_rejects_foreign_implementation(self):
+        report = {"backends": ["process"], "capabilities": [
+            "observer-deadline", "worker-monitoring", "unknown-operation-outcome",
+        ], "wait_default_seconds": 0, "implementation": "/foreign/remote_run_control"}
+        with patch.object(remote_run.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, json.dumps(report), "")):
+            with self.assertRaisesRegex(ValueError, "repository-local"):
                 remote_run.resolve_rrctl()
 
     def named_config(self, default=True):

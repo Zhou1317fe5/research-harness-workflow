@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
+import { PassThrough } from "node:stream";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
@@ -14,6 +15,8 @@ class FakeChild extends EventEmitter {
 		this.pid = pid;
 		this.exitCode = null;
 		this.signalCode = null;
+		this.stdout = new PassThrough();
+		this.stderr = new PassThrough();
 	}
 
 	kill() {
@@ -34,10 +37,12 @@ class FakeChild extends EventEmitter {
 function fakePi(sessionId) {
 	const handlers = new Map();
 	const messages = [];
+	const progress = [];
 	const pi = {
 		sessionId,
 		handlers,
 		messages,
+		progress,
 		tool: undefined,
 		stale: false,
 		registerTool(tool) {
@@ -52,6 +57,10 @@ function fakePi(sessionId) {
 		sendUserMessage(text, options) {
 			if (pi.stale) throw new Error("This extension ctx is stale after session replacement or reload.");
 			messages.push({ text, options });
+		},
+		sendMessage(message, options) {
+			if (pi.stale) throw new Error("This extension ctx is stale after session replacement or reload.");
+			progress.push({ message, options });
 		},
 		async emit(event, context) {
 			for (const handler of handlers.get(event) ?? []) await handler({ type: event }, context);
@@ -107,6 +116,7 @@ test("Pi rrctl wait uses one indefinite terminal/attention observer", async (t) 
 	assert.equal(command.runId, "RUN-A");
 	assert.equal(command.argv[command.argv.indexOf("--max-wait-seconds") + 1], "0");
 	assert.ok(command.argv.includes("--resume"));
+	assert.ok(command.argv.includes("--observe-only"));
 });
 
 test("Pi rrctl wait rejects paths outside the project", async (t) => {
@@ -405,4 +415,136 @@ test("Pi respawns after the settled tombstone has expired", async (t) => {
 	assert.equal(spawns.length, 2);
 	spawns[1].child.finish(0, null);
 	assert.equal(pi.messages.length, 2);
+});
+
+function heartbeat(message = "训练进度：10/100，预计剩余 30 分钟", extra = {}) {
+	return Buffer.from(`[rrctl-progress] ${JSON.stringify({ schema_version: "rrctl.progress.v1", run_id: "RUN-A", stage: "wait", message, ...extra })}\n`);
+}
+
+test("Pi streams chunked UTF-8 heartbeat to a visible non-waking message and keeps both logs", async (t) => {
+	resetRrctlEventsBroker();
+	let clock = Date.now();
+	t.mock.method(Date, "now", () => clock);
+	const root = await fixture(t);
+	const spawns = [];
+	const pi = await boot(root, "session-a", spawns);
+	const result = await waitOn(pi, root);
+	assert.deepEqual(spawns[0].options.stdio, ["ignore", "pipe", "pipe"]);
+	const frame = heartbeat();
+	const split = frame.indexOf(Buffer.from("训练")) + 1;
+	spawns[0].child.stdout.write("ordinary stdout\n");
+	spawns[0].child.stderr.write(frame.subarray(0, split));
+	assert.equal(pi.progress.length, 0);
+	spawns[0].child.stderr.write(frame.subarray(split));
+	spawns[0].child.stderr.write(frame);
+	assert.equal(pi.progress.length, 1);
+	clock += 30 * 60 * 1000;
+	spawns[0].child.stderr.write(frame); // An unchanged scheduled heartbeat is still user-visible.
+	assert.equal(pi.progress.length, 2);
+	assert.equal(pi.messages.length, 0);
+	assert.equal(pi.progress[0].message.display, true);
+	assert.equal(pi.progress[0].options.triggerTurn, false);
+	assert.match(pi.progress[0].message.content, /训练进度/);
+	assert.match(readFileSync(result.details.log_path, "utf8"), /ordinary stdout/);
+	assert.match(readFileSync(result.details.log_path, "utf8"), /rrctl.progress.v1/);
+	spawns[0].child.finish();
+	assert.match(pi.messages[0].text, /continue pull\/ingest now/);
+});
+
+test("Pi bounds malformed/oversized frames and rejects wrong run or stage", async (t) => {
+	resetRrctlEventsBroker();
+	const root = await fixture(t);
+	const spawns = [];
+	const pi = await boot(root, "session-a", spawns);
+	await waitOn(pi, root);
+	const stream = spawns[0].child.stderr;
+	stream.write("[rrctl-progress] {bad json}\n[rrctl-progress] " + "x".repeat(70000));
+	stream.write(heartbeat()); // Still part of the oversized line.
+	stream.write(heartbeat("wrong", { run_id: "RUN-B" }));
+	stream.write(heartbeat("wrong", { stage: "pull" }));
+	assert.equal(pi.progress.length, 0);
+	stream.write(heartbeat("有效进度"));
+	assert.equal(pi.progress.length, 1);
+	spawns[0].child.finish();
+});
+
+test("Pi heartbeat rebinds across reload and coalesces the replacement gap", async (t) => {
+	resetRrctlEventsBroker();
+	const root = await fixture(t);
+	const spawns = [];
+	const first = await boot(root, "session-a", spawns);
+	const result = await waitOn(first, root);
+	await first.emit("session_shutdown", sessionContext(root, "session-a"));
+	first.stale = true;
+	spawns[0].child.stderr.write(heartbeat("旧进度"));
+	spawns[0].child.stderr.write(heartbeat("最新进度"));
+	assert.equal(rrctlEventsBroker().pending.length, 1);
+	const second = await boot(root, "session-b", spawns);
+	assert.equal(first.progress.length, 0);
+	assert.equal(second.progress.length, 1);
+	assert.equal(second.progress[0].message.content, "最新进度");
+	spawns[0].child.stderr.write(heartbeat("新会话进度"));
+	assert.equal(second.progress.length, 2);
+	assert.equal(second.messages.length, 0);
+	spawns[0].child.finish();
+	assertNoNotificationFailures(result.details.log_path);
+});
+
+test("Pi keeps failed heartbeat pending without waking and discards it at terminal", async (t) => {
+	resetRrctlEventsBroker();
+	const root = await fixture(t);
+	const spawns = [];
+	const first = await boot(root, "session-a", spawns);
+	await waitOn(first, root);
+	first.sendMessage = () => { throw new Error("heartbeat send failed"); };
+	spawns[0].child.stderr.write(heartbeat());
+	assert.equal(first.messages.length, 0);
+	assert.equal(rrctlEventsBroker().pending.length, 1);
+	await first.emit("session_shutdown", sessionContext(root, "session-a"));
+	spawns[0].child.finish();
+	const second = await boot(root, "session-b", spawns);
+	assert.equal(second.progress.length, 0);
+	assert.equal(second.messages.length, 1);
+});
+
+test("Pi real Python observer delivers heartbeat live and terminal without slow pull", async (t) => {
+	resetRrctlEventsBroker();
+	const root = await fixture(t);
+	await writeFile(join(root, ".agents/harness/remote/remote_run.py"), `
+import json, pathlib, sys, time
+root = pathlib.Path.cwd()
+frame = '[rrctl-progress] ' + json.dumps({'schema_version':'rrctl.progress.v1','run_id':'RUN-A','stage':'wait','message':'训练进度 10/100，预计剩余 30 分钟'}, ensure_ascii=False) + '\\n'
+data = frame.encode()
+for piece in (data[:31], data[31:]):
+    sys.stderr.buffer.write(piece)
+    sys.stderr.buffer.flush()
+    time.sleep(0.02)
+print('stdout evidence', flush=True)
+deadline = time.monotonic() + 5
+while not (root / 'release').exists() and time.monotonic() < deadline:
+    time.sleep(0.01)
+(root / 'compute-terminal').touch()
+if '--observe-only' not in sys.argv:
+    (root / 'pull-started').touch()
+    time.sleep(3)
+    (root / 'pull-done').touch()
+`);
+	const pi = fakePi("session-real");
+	registerRrctlEvents(pi);
+	await pi.emit("session_start", sessionContext(root, pi.sessionId));
+	const result = await waitOn(pi, root);
+	const entry = [...rrctlEventsBroker().waits.values()][0];
+	t.after(() => { if (entry.child.exitCode === null) entry.child.kill(); });
+	for (let index = 0; index < 200 && pi.progress.length === 0; index++) await new Promise((r) => setTimeout(r, 10));
+	assert.equal(pi.progress.length, 1);
+	assert.equal(pi.messages.length, 0);
+	assert.equal(entry.child.exitCode, null);
+	assert.match(pi.progress[0].message.content, /预计剩余/);
+	await writeFile(join(root, "release"), "go");
+	for (let index = 0; index < 100 && pi.messages.length === 0; index++) await new Promise((r) => setTimeout(r, 10));
+	assert.equal(pi.messages.length, 1);
+	assert.ok(existsSync(join(root, "compute-terminal")));
+	assert.equal(existsSync(join(root, "pull-started")), false);
+	assert.match(pi.messages[0].text, /continue pull\/ingest now/);
+	assert.match(readFileSync(result.details.log_path, "utf8"), /stdout evidence/);
 });

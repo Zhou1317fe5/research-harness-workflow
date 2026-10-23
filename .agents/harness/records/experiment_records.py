@@ -145,6 +145,207 @@ def csv_projection(repo_root: Path | None = None) -> dict[str, dict]:
     return out
 
 
+RECOVERY_BINDING_SCHEMA = "research.mission-recovery-binding.v1"
+RECOVERY_COVERAGE_SCHEMA = "research.recovery-coverage.v1"
+_TERMINAL_STATES = {"completed", "workload_complete", "failed", "stopped", "cancelled", "aborted"}
+
+
+def _evidence_json(path: Path, root: Path) -> dict:
+    # Reject symlinks in every component, not only the final filename.
+    if not path.absolute().is_relative_to(root):
+        raise ValueError("ingest_evidence_path_outside_workspace")
+    cursor = path
+    while cursor != root:
+        if cursor.is_symlink():
+            raise ValueError("ingest_evidence_symlink")
+        cursor = cursor.parent
+    if not path.resolve().is_relative_to(root):
+        raise ValueError("ingest_evidence_path_outside_workspace")
+    value = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(value, dict):
+        raise ValueError("ingest_evidence_not_object")
+    return value
+
+
+def _status_payload(payload: dict) -> dict:
+    if payload.get("schema_version") == "research.rrctl-observation.v1":
+        payload = payload.get("response") or {}
+    result = payload.get("result", payload)
+    if not isinstance(result, dict):
+        return {}
+    status = result.get("status", result)
+    return status if isinstance(status, dict) else {}
+
+
+def _explicit_failure(data: dict) -> bool:
+    # These are operational verdicts, not scientific outcomes (a negative result is valid).
+    return (any(data.get(key) is False for key in ("complete", "completed", "healthy", "success", "completion_contract_passed"))
+            or any(data.get(key) in {"failed", "failure", "error", "stopped", "cancelled", "aborted"}
+                   for key in ("status", "state", "terminal_state") if isinstance(data.get(key), str))
+            or any(data.get(key) is not None and data[key] != 0
+                   for key in ("exit_code", "workload_exit_code")))
+
+
+def _terminal_evidence(csv_path: Path, run_root: Path, spec: dict, root: Path,
+                       extra_paths: tuple[Path, ...] = ()) -> dict:
+    """Read retained rrctl observations; never infer a remote exit from CSV ingest state."""
+    run_id = spec["run_id"]
+    # Only controller evidence belonging to this Run, never arbitrary workload or Mission JSON.
+    paths = {run_root / ".rrctl/status.json", *extra_paths}
+    run_dir = csv_path.parent / "runs" / run_id
+    paths.update(run_dir / name for name in ("status.json", "inspect.json", "terminal.json"))
+    observations_dir = csv_path.parent / "validation/rrctl-observations" / run_id
+    if observations_dir.is_dir():
+        for stage in ("launch", "inspect", "wait"):
+            paths.update(observations_dir.glob(f"{stage}-*.json"))
+    recovery_binding = csv_path.parent / "validation/recovery-binding.json"
+    if recovery_binding.is_file():
+        payload = _evidence_json(recovery_binding, root)
+        for item in payload.get("bindings", []):
+            if isinstance(item, dict) and item.get("run_id") == run_id:
+                path, _ = _bound_evidence(item["status_evidence"], csv_path.parent, root)
+                paths.add(path)
+    observations = []
+    for path in sorted(paths):
+        if not path.exists() and not path.is_symlink():
+            continue
+        payload = _evidence_json(path, root)
+        wrapper = payload if payload.get("schema_version") == "research.rrctl-observation.v1" else None
+        if path.parent == observations_dir and wrapper is None:
+            raise ValueError("ingest_terminal_observation_schema_invalid")
+        if wrapper:
+            if (wrapper.get("run_id") != run_id or wrapper.get("run_spec_sha256") != run_spec_digest(spec)
+                    or wrapper.get("stage") not in {"launch", "inspect", "wait"}):
+                raise ValueError("ingest_terminal_observation_identity_mismatch")
+            payload = wrapper.get("response")
+            if not isinstance(payload, dict):
+                raise ValueError("ingest_terminal_observation_response_invalid")
+            response_hash = hashlib.sha256(json.dumps(payload, ensure_ascii=False, sort_keys=True,
+                                                       separators=(",", ":")).encode()).hexdigest()
+            if path.parent == observations_dir and path.name != f"{wrapper['stage']}-{response_hash}.json":
+                raise ValueError("ingest_terminal_observation_hash_mismatch")
+        status = _status_payload(payload)
+        # Observer errors/timeouts are not remote terminal verdicts. A later inspect remains usable.
+        if wrapper and status.get("run_id") is None:
+            continue
+        if status.get("run_id") != run_id:
+            raise ValueError("ingest_terminal_run_id_mismatch")
+        digest = status.get("run_spec_sha256", wrapper.get("run_spec_sha256") if wrapper else None)
+        if digest is None and (path.parent / "binding.json").is_file():
+            binding = _evidence_json(path.parent / "binding.json", root)
+            if (binding.get("run_id") != run_id
+                    or binding.get("control_root") != spec["remote"]["control_root"]):
+                raise ValueError("ingest_terminal_binding_mismatch")
+            digest = binding.get("run_spec_sha256")
+        if digest != run_spec_digest(spec):
+            raise ValueError("ingest_terminal_runspec_mismatch")
+        detail = status.get("detail") or {}
+        exit_code = status.get("exit_code", detail.get("exit_code"))
+        state = status.get("state")
+        if state in _TERMINAL_STATES or exit_code is not None:
+            observations.append({"state": state, "exit_code": exit_code,
+                                 "path": path.relative_to(root).as_posix()})
+    failed = [item for item in observations if _explicit_failure(item)]
+    chosen = (failed or [item for item in observations if item["state"] == "completed"] or observations)
+    return {"state": chosen[0]["state"] if chosen else None,
+            "exit_code": chosen[0]["exit_code"] if chosen else None,
+            "evidence": observations}
+
+
+def _bound_evidence(entry: dict, base: Path, root: Path) -> tuple[Path, dict]:
+    path = base / entry["path"]
+    payload = _evidence_json(path, root)
+    if hashlib.sha256(path.read_bytes()).hexdigest() != entry.get("sha256"):
+        raise ValueError("recovery_evidence_hash_mismatch")
+    return path, payload
+
+
+def _recovery_projection(csv_path: Path, run_root: Path, spec: dict, loaded: dict,
+                         expected: dict, root: Path, terminal: dict, *,
+                         proposed: tuple[dict, dict] | None = None) -> dict:
+    """Normalize an original rrctl recovery snapshot in memory, never rewrite it."""
+    binding_path = csv_path.parent / "validation/recovery-binding.json"
+    payload = proposed[0] if proposed else _evidence_json(binding_path, root)
+    if payload.get("schema") != RECOVERY_BINDING_SCHEMA:
+        raise ValueError("recovery_binding_schema_invalid")
+    matches = [item for item in payload.get("bindings", [])
+               if isinstance(item, dict) and item.get("run_id") == spec["run_id"]]
+    if len(matches) != 1:
+        raise ValueError("recovery_binding_missing_or_duplicate")
+    binding = matches[0]
+    manifest_hash = hashlib.sha256((run_root / "artifact_manifest.json").read_bytes()).hexdigest()
+    if (binding.get("run_spec_sha256") != expected["run_spec_sha256"]
+            or loaded.get("run_spec_sha256") != expected["run_spec_sha256"]
+            or binding.get("manifest_sha256") != manifest_hash
+            or not loaded.get("recovery_id") or binding.get("recovery_id") != loaded["recovery_id"]
+            or not isinstance(binding.get("reason"), str) or not binding["reason"].strip()):
+        raise ValueError("recovery_binding_identity_mismatch")
+    status_path, status_payload = _bound_evidence(binding["status_evidence"], csv_path.parent, root)
+    status = _status_payload(status_payload)
+    detail = status.get("detail") or {}
+    state, exit_code = status.get("state"), status.get("exit_code", detail.get("exit_code"))
+    if (status.get("run_id") != spec["run_id"] or state not in _TERMINAL_STATES
+            or not isinstance(exit_code, int) or isinstance(exit_code, bool)):
+        raise ValueError("recovery_terminal_evidence_invalid")
+    if (loaded.get("terminal_state", state) != state or loaded.get("exit_code", exit_code) != exit_code):
+        raise ValueError("recovery_snapshot_terminal_mismatch")
+    # A retained failure cannot be replaced by a newly hand-filled clean observation.
+    if any(item["state"] != state or (item["exit_code"] is not None and item["exit_code"] != exit_code)
+           for item in terminal["evidence"] if (item["state"] in _TERMINAL_STATES - {"workload_complete"}
+                                                or _explicit_failure(item))):
+        raise ValueError("recovery_terminal_evidence_conflict")
+    if proposed:
+        report_path = csv_path.parent / binding["coverage_report"]["path"]
+        report = proposed[1]
+    else:
+        report_path, report = _bound_evidence(binding["coverage_report"], csv_path.parent, root)
+    required = sorted(item["path"] for item in spec["artifacts"] if item["required"])
+    contract = spec["metadata"].get("adapter_contract") or {}
+    if (report.get("schema") != RECOVERY_COVERAGE_SCHEMA or report.get("status") != "passed"
+            or report.get("run_id") != spec["run_id"]
+            or report.get("run_spec_sha256") != expected["run_spec_sha256"]
+            or report.get("manifest_sha256") != manifest_hash
+            or report.get("required_artifacts") != required
+            or report.get("verified_entries") != loaded["entries"]):
+        raise ValueError("recovery_coverage_report_mismatch")
+    for key in ("completion_min_count", "completion_exact_count"):
+        if contract.get(key) is not None:
+            count = report.get("verified_count")
+            if (report.get("count_field") != contract.get("progress_count_field")
+                    or not isinstance(count, int) or isinstance(count, bool)
+                    or (count != contract[key] if key == "completion_exact_count" else count < contract[key])):
+                raise ValueError("recovery_coverage_count_mismatch")
+    entries = []
+    for entry in loaded["entries"]:
+        if not entry["path"].startswith("output/"):
+            raise ValueError("recovery_entry_not_confined")
+        entries.append({**entry, "path": entry["path"][len("output/"):]})
+    from remote_run_control.artifacts import build_artifact_manifest
+    from remote_run_control.models import ArtifactSpec
+    # All recovered files, plus every required artifact, are rehashed. No domain-specific gaps.
+    current = build_artifact_manifest(run_id=spec["run_id"], output_root=run_root / "output",
+        declared=tuple(ArtifactSpec(path) for path in sorted(set(required) | {e["path"] for e in entries})),
+        destination=None)
+    if sorted(current["entries"], key=lambda e: e["path"]) != sorted(entries, key=lambda e: e["path"]):
+        raise ValueError("recovery_artifact_manifest_mismatch")
+    if any(contract.get(key) is not None for key in ("completion_min_count", "completion_exact_count")):
+        from harness.remote.adapters.common import confined_path, load_structured_object
+        progress = load_structured_object(
+            confined_path(run_root / "output", contract["progress_path"], "progress_path"),
+            "progress", contract.get("progress_format", "json"))
+        count = dotted_value(progress, contract["progress_count_field"], "progress")
+        if type(count) is not int or count != report["verified_count"]:
+            raise ValueError("recovery_coverage_progress_mismatch")
+    return {**loaded, "entries": entries, "provenance": expected,
+            "evidence_mode": "recovery", "output_base": str(run_root / "output"),
+            "completion_contract_passed": False,
+            "terminal": {"state": state, "exit_code": exit_code, "evidence": terminal["evidence"]},
+            "recovery_binding_path": binding_path.relative_to(root).as_posix(),
+            "recovery_reason": binding["reason"],
+            "recovery_evidence": {"status_evidence": status_path.relative_to(root).as_posix(),
+                                  "coverage_report": report_path.relative_to(root).as_posix()}}
+
+
 def load_run_provenance(
     csv_path: Path, exp_id: str, run_id: str, *, repo_root: Path,
     artifacts: Path | None = None,
@@ -186,6 +387,15 @@ def load_run_provenance(
         raise ValueError("ingest_manifest_identity_mismatch")
     expected = {"spec_id": metadata["spec_id"], "exp_id": exp_id,
                 "commit": source["commit"], "run_spec_sha256": run_spec_digest(spec)}
+    terminal = _terminal_evidence(csv_path, run_root, spec, project_root)
+    # A recovery_id is never a normal completion, even if local provenance was added.
+    if manifest.get("recovery_id"):
+        try:
+            return spec, _recovery_projection(csv_path, run_root, spec, manifest, expected, project_root, terminal)
+        except RRCError as exc:
+            raise ValueError(f"ingest_recovery_artifact_invalid:{exc.code}: {exc.message}") from exc
+    if _explicit_failure(terminal) or _explicit_failure(manifest):
+        raise ValueError("ingest_completion_conflicts_with_terminal_failure")
     provenance = manifest.get("provenance")
     if not isinstance(provenance, dict) or any(provenance.get(key) != value for key, value in expected.items()):
         raise ValueError("ingest_manifest_provenance_mismatch")
@@ -203,7 +413,78 @@ def load_run_provenance(
     current_entries = {entry["path"]: (entry["size"], entry["sha256"]) for entry in current["entries"]}
     if current_entries != expected_entries:
         raise ValueError("ingest_required_artifact_manifest_mismatch")
-    return spec, manifest
+    contract = metadata.get("adapter_contract") or {}
+    if contract.get("summary_path"):
+        from harness.remote.adapters.common import confined_path, load_structured_object
+        summary_path = confined_path(run_root, contract["summary_path"], "summary_path")
+        summary = load_structured_object(summary_path, "summary", contract.get("summary_format", "json"))
+        if _explicit_failure(summary):
+            raise ValueError("ingest_completion_conflicts_with_summary_failure")
+    # Provenance + hashes establish identity, not a passed remote completion contract.
+    # Old healthy ingests remain readable, but absence of a receipt stays unknown, never True.
+    passed = None
+    receipt_path = run_root / ".rrctl/completion.json"
+    # Legacy root receipts are only control evidence if not declared workload output.
+    legacy_receipt = run_root / "completion.json"
+    if not receipt_path.exists() and legacy_receipt.is_file() and not any(
+            entry["path"] == "completion.json" for entry in manifest["entries"]):
+        receipt_path = legacy_receipt
+    if receipt_path.is_file():
+        receipt = _evidence_json(receipt_path, project_root)
+        binding = _evidence_json(receipt_path.parent / "binding.json", project_root)
+        status = _status_payload(_evidence_json(receipt_path.parent / "status.json", project_root))
+        from remote_run_control.jsonutil import sha256_json
+        identity = sha256_json({"run_id": run_id, "run_spec_sha256": expected["run_spec_sha256"],
+                               "control_root": spec["remote"]["control_root"],
+                               "worker_sha256": binding.get("worker_sha256"),
+                               "created_at": binding.get("created_at")})
+        health = receipt.get("health") or {}
+        if (binding.get("run_id") != run_id
+                or binding.get("run_spec_sha256") != expected["run_spec_sha256"]
+                or binding.get("control_root") != spec["remote"]["control_root"]
+                or status.get("run_id") != run_id or status.get("state") != "completed"
+                or _explicit_failure(status) or _explicit_failure(status.get("detail") or {})
+                or (status.get("detail") or {}).get("completion_sha256") != sha256_json(receipt)
+                or receipt.get("run_identity") != identity
+                or receipt.get("schema_version") != "rrctl.completion.v1"
+                or receipt.get("run_id") != run_id
+                or receipt.get("run_spec_sha256") != expected["run_spec_sha256"]
+                or receipt.get("manifest_sha256") != sha256_json(manifest)
+                or type(receipt.get("exit_code")) is not int or receipt["exit_code"] != 0
+                or health.get("schema_version") != "rrctl.health.v2"
+                or health.get("phase") != "completion"
+                or health.get("healthy") is not True or health.get("complete") is not True):
+            raise ValueError("ingest_completion_receipt_invalid")
+        passed = True
+        terminal = {"state": "completed", "exit_code": 0,
+                    "evidence": [{"state": "completed", "exit_code": 0,
+                                  "path": (receipt_path.parent / "status.json").relative_to(project_root).as_posix()}]}
+    return spec, {**manifest, "evidence_mode": "completion", "terminal": terminal,
+                  "completion_contract_passed": passed, "output_base": str(run_root)}
+
+
+def runs_match_projection(stored: object, projected: list[dict]) -> bool:
+    """Read pre-evidence-metadata healthy records without rewriting historical ledgers.
+
+    Omission means unknown, not a positive completion claim. Recovery/failure requires
+    explicit metadata; all pre-existing identity, metric and artifact fields stay exact.
+    """
+    if not isinstance(stored, list) or len(stored) != len(projected):
+        return False
+    metadata_fields = {"evidence_mode", "terminal", "completion_contract_passed"}
+    for previous, current in zip(stored, projected):
+        if not isinstance(previous, dict):
+            return False
+        missing = metadata_fields - previous.keys()
+        if missing:
+            if (current.get("evidence_mode") != "completion"
+                    or current.get("completion_contract_passed") is False
+                    or _explicit_failure(current.get("terminal") or {})):
+                return False
+            current = {key: value for key, value in current.items() if key not in missing}
+        if previous != current:
+            return False
+    return True
 
 
 def _read_run_projection(
@@ -241,6 +522,7 @@ def _read_run_projection(
             spec, manifest = load_run_provenance(csv_path, exp_id, run_root.name,
                                                  repo_root=project_root, artifacts=root.parent)
             provenance = manifest["provenance"]
+            artifact_base = Path(manifest["output_base"])
             # 该 Run 自己的 RunSpec 合同才是「摘要该有哪些字段」的权威声明。
             # 合同没有要求标量指标时，摘要里没有它只说明该 pipeline 不产出单一指标
             # （例如 matrix_chain 的链摘要，逐臂结果在 evaluate/ 下），
@@ -249,13 +531,13 @@ def _read_run_projection(
             declared_metric = settings.get("primary_metric", "metric") in tuple(
                 contract.get("summary_required_fields") or ())
             run_results: list[dict] = []
-            for summary in sorted(run_root.glob(settings.get("summary_glob", "summary.json"))):
-                if "diagnostics" in summary.relative_to(run_root).parts:
+            for summary in sorted(artifact_base.glob(settings.get("summary_glob", "summary.json"))):
+                if "diagnostics" in summary.relative_to(artifact_base).parts:
                     continue
-                if not summary.resolve().is_relative_to(run_root.resolve()) or summary.is_symlink():
+                if not summary.resolve().is_relative_to(artifact_base.resolve()) or summary.is_symlink():
                     raise ValueError(f"summary path escapes its run: {summary}")
                 summary_bytes = summary.read_bytes()
-                relative = summary.relative_to(run_root).as_posix()
+                relative = summary.relative_to(artifact_base).as_posix()
                 matches = [entry for entry in manifest["entries"] if isinstance(entry, dict) and entry.get("path") == relative]
                 if (len(matches) != 1 or matches[0].get("sha256") != hashlib.sha256(summary_bytes).hexdigest()
                         or matches[0].get("size") != len(summary_bytes)):
@@ -263,6 +545,8 @@ def _read_run_projection(
                 data = json.loads(summary_bytes)
                 if not isinstance(data, dict):
                     raise ValueError(f"summary must be an object: {summary}")
+                if manifest["evidence_mode"] == "completion" and _explicit_failure(data):
+                    raise ValueError(f"ingest_completion_conflicts_with_summary_failure: {summary}")
                 identities = {"run_id": run_root.name, **{key: provenance[key] for key in (
                     "exp_id", "spec_id", "commit", "run_spec_sha256")}}
                 if any(data.get(key) not in (None, value) for key, value in identities.items()):
@@ -302,6 +586,12 @@ def _read_run_projection(
                     "weights_path": optional_summary_value(data, settings.get("checkpoint_field", "checkpoint_path")),
                     "commit": spec["source"]["commit"],
                     "run_spec_sha256": provenance["run_spec_sha256"],
+                    "evidence_mode": manifest["evidence_mode"],
+                    "terminal": manifest["terminal"],
+                    "completion_contract_passed": manifest["completion_contract_passed"],
+                    **({key: manifest[key] for key in (
+                        "recovery_id", "recovery_reason", "recovery_binding_path", "recovery_evidence")}
+                       if manifest["evidence_mode"] == "recovery" else {}),
                     **({"pipeline_name": spec["metadata"]["pipeline_name"]} if spec["metadata"].get("pipeline_name") else {}),
                 })
             if not run_results:
@@ -501,7 +791,9 @@ def cmd_build(args, *, repo_root: Path | None = None) -> int:
                     raise ValueError(f"record contains unknown fields; preserve before migration: {out}")
             dimensions = set(settings.get("dimensions", []))
             run_fields = {"run_id", "summary_path", "eval_dir", "dimensions", "protocol", "metric",
-                          "steps", "metric_aux", "weights_path", "commit", "run_spec_sha256", "pipeline_name"} | dimensions
+                          "steps", "metric_aux", "weights_path", "commit", "run_spec_sha256", "pipeline_name",
+                          "evidence_mode", "terminal", "completion_contract_passed", "recovery_id",
+                          "recovery_reason", "recovery_binding_path", "recovery_evidence"} | dimensions
             old_runs = previous.get("runs", [])
             if not isinstance(old_runs, list):
                 raise ValueError(f"record runs require explicit migration: {out}")
@@ -724,9 +1016,90 @@ def apply_result_analysis_outcomes(
     return patched, skipped
 
 
+def cmd_bind_recovery(args, *, repo_root: Path | None = None) -> int:
+    """Verify a pulled rrctl recovery snapshot and write derived bindings only.
+
+    First use rrctl recover-artifacts to a fresh remote_artifacts/<ExpID>/<RunID>;
+    retain the matching controller status (and sibling binding when status has no digest).
+    This command never changes the snapshot, RunSpec, summary or remote state.
+    """
+    root = (repo_root or REPO_ROOT).resolve()
+    csv_path = Path(args.csv).absolute()
+    if not csv_path.is_relative_to(root) or not csv_path.is_file():
+        raise ValueError("recovery_csv_outside_workspace_or_missing")
+    run_id, exp_id = identifier(args.run), identifier(args.exp)
+    spec = canonical_run_spec(_evidence_json(csv_path.parent / "runs" / run_id / "runspec.json", root))
+    metadata = spec["metadata"]
+    if (spec["run_id"] != run_id or metadata.get("exp_id") != exp_id
+            or not metadata.get("spec_id")
+            or (root / metadata.get("mission_csv", "")).resolve() != csv_path.resolve()
+            or metadata.get("execution_purpose") in {"pre_review_smoke", "preregistered_read_only_probe"}):
+        raise ValueError("recovery_runspec_identity_mismatch")
+    from remote_run_control.artifacts import load_artifact_manifest
+    from remote_run_control.errors import RRCError
+    run_root = root / "remote_artifacts" / exp_id / run_id
+    manifest_path = run_root / "artifact_manifest.json"
+    _evidence_json(manifest_path, root)
+    loaded = load_artifact_manifest(manifest_path, expected_run_id=run_id)
+    status_path = Path(args.status).absolute()
+    _evidence_json(status_path, root)
+    terminal = _terminal_evidence(csv_path, run_root, spec, root, (status_path,))
+    expected = {"spec_id": metadata["spec_id"], "exp_id": exp_id,
+                "commit": spec["source"]["commit"], "run_spec_sha256": run_spec_digest(spec)}
+    manifest_hash = hashlib.sha256(manifest_path.read_bytes()).hexdigest()
+    contract = metadata.get("adapter_contract") or {}
+    report = {"schema": RECOVERY_COVERAGE_SCHEMA, "status": "passed", "run_id": run_id,
+              "run_spec_sha256": expected["run_spec_sha256"], "manifest_sha256": manifest_hash,
+              "required_artifacts": sorted(item["path"] for item in spec["artifacts"] if item["required"]),
+              "verified_entries": loaded["entries"]}
+    if any(contract.get(key) is not None for key in ("completion_min_count", "completion_exact_count")):
+        from harness.remote.adapters.common import confined_path, load_structured_object
+        progress = load_structured_object(confined_path(run_root / "output", contract["progress_path"], "progress_path"),
+                                          "progress", contract.get("progress_format", "json"))
+        report.update(count_field=contract["progress_count_field"],
+                      verified_count=dotted_value(progress, contract["progress_count_field"], "progress"))
+    encode = lambda value: (json.dumps(value, ensure_ascii=False, sort_keys=True, indent=2) + "\n").encode()
+    report_bytes = encode(report)
+    report_path = csv_path.parent / "validation" / f"recovery-coverage-{run_id}.json"
+    binding_path = csv_path.parent / "validation/recovery-binding.json"
+    payload = (_evidence_json(binding_path, root) if binding_path.exists()
+               else {"schema": RECOVERY_BINDING_SCHEMA, "bindings": []})
+    if any(item.get("run_id") == run_id for item in payload.get("bindings", [])):
+        raise ValueError("recovery_binding_already_exists")
+    if report_path.exists() or report_path.is_symlink():
+        raise ValueError("recovery_coverage_already_exists")
+    entry = {"run_id": run_id, "run_spec_sha256": expected["run_spec_sha256"],
+             "manifest_sha256": manifest_hash, "recovery_id": loaded.get("recovery_id"), "reason": args.reason,
+             "status_evidence": {"path": os.path.relpath(status_path, csv_path.parent),
+                                 "sha256": hashlib.sha256(status_path.read_bytes()).hexdigest()},
+             "coverage_report": {"path": report_path.relative_to(csv_path.parent).as_posix(),
+                                 "sha256": hashlib.sha256(report_bytes).hexdigest()}}
+    payload = {**payload, "bindings": [*payload.get("bindings", []), entry]}
+    try:
+        _recovery_projection(csv_path, run_root, spec, loaded, expected, root, terminal, proposed=(payload, report))
+    except RRCError as exc:
+        raise ValueError(f"recovery_artifact_invalid:{exc.code}") from exc
+    # Validation completed before either derived file is published.
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    if report_path.parent.is_symlink() or not report_path.parent.resolve().is_relative_to(root):
+        raise ValueError("recovery_derived_path_invalid")
+    _write_if_changed(report_path, report_bytes)
+    _write_if_changed(binding_path, encode(payload))
+    print(json.dumps({"ok": True, "binding": str(binding_path), "coverage": str(report_path),
+                      "completion_contract_passed": False}))
+    return 0
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     sub = ap.add_subparsers(dest="cmd", required=True)
+    recovery = sub.add_parser("bind-recovery", help="验证 rrctl 恢复快照并生成绑定；不更改原始工件或宣称成功")
+    recovery.add_argument("--csv", type=Path, required=True)
+    recovery.add_argument("--exp", required=True)
+    recovery.add_argument("--run", required=True)
+    recovery.add_argument("--status", type=Path, required=True, help="保留的控制面终态；须含 RunSpec digest 或同目录 binding.json")
+    recovery.add_argument("--reason", required=True)
+    recovery.set_defaults(func=cmd_bind_recovery)
     b = sub.add_parser("build", help="生成 record.json")
     b.add_argument("--exp", help="重算并刷新一个 ExpID；省略时只补建缺失 record")
     b.add_argument("--config", type=Path, default=DEFAULT_CONFIG, help="project TOML containing records field mapping")

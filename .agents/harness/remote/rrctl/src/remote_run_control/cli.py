@@ -144,6 +144,10 @@ def build_parser(*, machine: bool = False) -> argparse.ArgumentParser:
     recover.add_argument("run_id")
     recover.add_argument("--path", action="append", required=True, help="confined output path; repeatable")
     recover.add_argument("--destination", type=Path, required=True)
+    recover.add_argument(
+        "--allow-nonzero-exit", action="store_true",
+        help="preserve failed-run evidence without changing state or accepting completion",
+    )
 
     resume = commands.add_parser("resume", help="rebuild local index from remote control state")
     resume.add_argument("--profile", required=True)
@@ -304,7 +308,8 @@ def main(argv: list[str] | None = None) -> int:
             value = controller.pull(args.run_id, diagnostic=args.diagnostic)
         elif operation == "recover-evidence":
             value = controller.recover_evidence(
-                args.run_id, paths=args.path, destination=args.destination
+                args.run_id, paths=args.path, destination=args.destination,
+                allow_nonzero_exit=args.allow_nonzero_exit
             )
         elif operation == "resume":
             value = controller.resume(profile_name=args.profile, control_root=args.control_path)

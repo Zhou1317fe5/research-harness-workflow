@@ -6,7 +6,9 @@ from __future__ import annotations
 import argparse
 from argparse import Namespace
 import csv
+import hashlib
 import json
+import stat
 import os
 import re
 import shutil
@@ -86,10 +88,13 @@ def existing_file(value: str, workdir: Path) -> str:
 
 
 def resolve_existing_file(value: str, workdir: Path, base_dir: Path | None = None) -> str:
+    if _secret_material(Path(value)):
+        raise argparse.ArgumentTypeError(f"unsafe closing review material: {value}")
     try:
         path = resolve_reference_path(value, base_dir or workdir, workdir)
     except ValueError as exc:
         raise argparse.ArgumentTypeError(str(exc)) from exc
+    _check_material_path(path, workdir)
     if path.is_file():
         return str(path)
     raise argparse.ArgumentTypeError(f"file does not exist: {value}")
@@ -391,6 +396,332 @@ def validate_review_result(result: dict, contract: dict | None) -> list[str]:
     return errors
 
 
+# Only the active REVIEW row's bookkeeping is excluded, not its scope/acceptance
+# criteria, and never ordinary rows or earlier review results.
+_REVIEW_OUTPUT_TAGS = frozenset({
+    "review_agent_mode", "review_independence", "review_requested_model",
+    "review_observed_model", "review_model_evidence", "review_result", "review_json",
+    "claim_coverage", "claim_coverage_status", "scientific_outcome", "handoff",
+    "handoff_contract", "handoff_humanized", "deferred_coverage", "deferred_findings",
+    "commit_hash", "event",
+})
+_REVIEW_STATE_FIELDS = frozenset({
+    "dev_state", "review_initial_state", "review_regression_state", "git_state",
+    "commit_hash", "updated_at", "next_action", "refs",
+})
+_HANDOFF_IDENTITY_RE = re.compile(r"^\s*>?\s*独立性\s*[:：]\s*(.*)$", re.MULTILINE)
+_SELF_REVIEW_WARNING_RE = re.compile(r"WARNING\s*:\s*self-review\s+only", re.IGNORECASE)
+
+
+def validate_handoff_identity(text: str, review: dict | None = None) -> list[str]:
+    """Reject contradictory human-facing identity, including legacy warning-only files."""
+    errors: list[str] = []
+    headers = _HANDOFF_IDENTITY_RE.findall(text)
+    warning = bool(_SELF_REVIEW_WARNING_RE.search(text))
+    identities = []
+    for header in headers:
+        parts = [part.strip() for part in header.split("|")]
+        identities.append((parts[0], dict(
+            part.split("=", 1) for part in parts[1:] if "=" in part
+        )))
+    if review is not None and len(headers) != 1:
+        errors.append("handoff requires exactly one structured 独立性 header matching review JSON")
+    for independence, fields in identities:
+        mode = fields.get("mode")
+        if warning and (independence == "true" or mode == "closing-reviewer-job"):
+            errors.append("handoff self-review WARNING conflicts with independent identity")
+        if mode in {"self-review", "evidence-close"} and independence != "false":
+            errors.append(f"handoff {mode} requires 独立性: false")
+        if mode == "closing-reviewer-job" and independence != "true":
+            errors.append("handoff closing-reviewer-job requires 独立性: true")
+        if review is not None:
+            expected = str(review.get("review_independence")).lower()
+            if independence != expected:
+                errors.append("handoff independence differs from review JSON")
+            for field, key in (("mode", "review_agent_mode"), ("requested_model", "review_requested_model")):
+                if fields.get(field) != review.get(key):
+                    errors.append(f"handoff {field} differs from review JSON")
+            for field, key in (("observed_model", "review_observed_model"), ("model_evidence", "review_model_evidence")):
+                if field in fields and fields[field] != review.get(key):
+                    errors.append(f"handoff {field} differs from review JSON")
+    if warning and review is not None and (
+        review.get("review_agent_mode") != "self-review"
+        or review.get("review_independence") is not False
+    ):
+        errors.append("handoff self-review WARNING differs from review JSON")
+    return errors
+
+
+def render_handoff_identity(text: str, review: dict) -> str:
+    """Generate the header from runtime/structured identity, never prompt claims."""
+    # An absent header is normal in a lean closing verdict; conflicting ones are
+    # not silently repaired, since the report could itself be a self-review.
+    if _HANDOFF_IDENTITY_RE.search(text) or _SELF_REVIEW_WARNING_RE.search(text):
+        errors = validate_handoff_identity(text, review)
+        if errors:
+            raise ValueError("; ".join(errors))
+    body = _HANDOFF_IDENTITY_RE.sub("", text).strip()
+    header = (
+        f"> 独立性: {str(review['review_independence']).lower()}"
+        f" | mode={review['review_agent_mode']}"
+        f" | requested_model={review['review_requested_model']}"
+        f" | observed_model={review['review_observed_model']}"
+        f" | model_evidence={review['review_model_evidence']}"
+    )
+    if body.startswith("# "):
+        title, separator, rest = body.partition("\n")
+        return title + "\n\n" + header + "\n" + (rest if separator else "")
+    return header + "\n\n" + body
+
+
+def _canonical_bytes(value: object) -> bytes:
+    return json.dumps(value, sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+
+
+# Discover implementation/configuration, not every dataset, checkpoint or old
+# experiment. Other material enters only through the explicit review references.
+_SOURCE_SUFFIXES = frozenset({
+    ".py", ".pyi", ".sh", ".bash", ".js", ".mjs", ".cjs", ".jsx",
+    ".ts", ".tsx", ".c", ".h", ".cc", ".cpp", ".hpp", ".cu", ".cuh",
+    ".rs", ".go", ".java", ".jl", ".r", ".m", ".f90", ".ipynb",
+    ".toml", ".yaml", ".yml", ".ini", ".cfg",
+})
+_NON_SOURCE_DIRS = frozenset({
+    "issues", "artifacts", "remote_artifacts", "checkpoints",
+    "outputs", "results", "runs", "logs", "workflow-output", "__pycache__",
+    ".venv", "venv", "node_modules",
+})
+
+
+def _secret_material(path: Path) -> bool:
+    """Name-only check: never open credentials, including symlink targets."""
+    for part in path.parts:
+        name = part.lower()
+        if (name.startswith(".env") or name in {
+            "profiles.json", "credentials", ".credentials", ".secrets",
+            "credentials.json", "credentials.toml", "credentials.yaml", "credentials.yml",
+            "auth.json", "tokens.json", "secrets.json", "secrets.toml", "secrets.yaml",
+            "secrets.yml", ".ssh", ".aws", ".gnupg", "private_key",
+            "id_rsa", "id_dsa", "id_ecdsa", "id_ed25519",
+        } or name.endswith((".pem", ".key", ".p12", ".pfx", ".keystore"))):
+            return True
+    return False
+
+
+def _check_material_path(path: Path, repo_root: Path) -> None:
+    target = path.resolve()
+    if not target.is_relative_to(repo_root) or _secret_material(path) or _secret_material(target):
+        raise ValueError(f"unsafe closing review material: {path}")
+
+
+def _file_sha256(path: Path) -> str:
+    with path.open("rb") as handle:
+        return hashlib.file_digest(handle, "sha256").hexdigest()
+
+
+def closing_review_packet(args: argparse.Namespace, repo_root: Path, prompt: str) -> dict:
+    """Bind a round to explicit evidence and source bytes, not HEAD/index.
+
+    A committed source change still invalidates the verdict. Outputs and this
+    round's own log/state are excluded so completion does not self-invalidate.
+    """
+    csv_path = Path(args.csv)
+    _check_material_path(csv_path, repo_root)
+    with csv_path.open(encoding="utf-8-sig", newline="") as handle:
+        rows = list(csv.DictReader(handle))
+    from mission_completion import review_rows
+    rounds = review_rows(rows)
+    if not rounds or not rounds[-1].get("id"):
+        raise ValueError("CSV contains no final REVIEW row")
+    selected = rounds[-1]
+    if sum(row.get("id") == selected["id"] for row in rows) != 1:
+        raise ValueError("CSV has duplicate final REVIEW row id")
+    for row in rows:
+        parse_note_tags(row.get("notes") or "")
+    active = dict(selected)
+    for field in _REVIEW_STATE_FIELDS:
+        if field in active:
+            active[field] = ""
+    active["notes"] = "; ".join(
+        part.strip() for part in (active.get("notes") or "").split(";")
+        if part.strip() and part.strip().partition(":")[0].strip() not in _REVIEW_OUTPUT_TAGS
+    )
+    normalized_rows = [active if row is selected else row for row in rows]
+
+    excluded = set()
+    for value in (getattr(args, "output", None), getattr(args, "handoff", None)):
+        if value:
+            excluded.add(output_file(value, repo_root, csv_path.parent))
+    tags = parse_note_tags(selected.get("notes") or "")
+    for key in ("review_json", "handoff"):
+        value = tags.get(key)
+        if value and value != "pending":
+            excluded.add(artifact_output_path(value, repo_root, csv_path.parent))
+    excluded.update({csv_path.with_suffix(".progress.md"), csv_path.with_name("." + csv_path.name + ".lock")})
+    job_parent = csv_path.parent / "reviews"
+
+    inputs = {"csv": args.csv}
+    for key in ("source_doc", "claim_ledger", "outcome_contract", "deferred_ledger", "review_log"):
+        if getattr(args, key, None):
+            inputs[key] = getattr(args, key)
+    for value in inputs.values():
+        _check_material_path(Path(value), repo_root)
+    # Explicit review inputs cannot also be writable outputs.
+    if any(Path(value) in excluded for value in inputs.values()):
+        raise ValueError("closing review input aliases output/handoff")
+
+    listed = subprocess.run(
+        ["git", "ls-files", "--cached", "--others", "--exclude-standard", "-z"],
+        cwd=repo_root, capture_output=True, check=True,
+    ).stdout
+    paths = set()
+    for name in listed.split(b"\0"):
+        if not name:
+            continue
+        relative = Path(os.fsdecode(name))
+        path = repo_root / relative
+        if (relative.suffix.lower() not in _SOURCE_SUFFIXES
+                or _NON_SOURCE_DIRS.intersection(relative.parts[:-1])
+                or _secret_material(relative) or _secret_material(path.resolve())):
+            continue
+        paths.add(path)
+    paths.update(Path(value) for value in inputs.values())
+    events_path = csv_path.with_suffix(".events.json")
+    paths.add(events_path)
+    # Ledgers/CSV may point at git-ignored evidence. Hash explicit file refs too;
+    # do not rely on git's index to notice a pulled trace or result changing.
+    references = []
+    for row in rows:
+        references.extend((row.get("refs") or "").split(";"))
+        references.append(row.get("artifact_path") or "")
+        row_tags = parse_note_tags(row.get("notes") or "")
+        references.extend(row_tags.get(key, "") for key in ("artifact_evidence", "result_analysis", "verdict_artifact"))
+
+    def collect_refs(value: object, key: str = "") -> None:
+        if isinstance(value, dict):
+            for name, item in value.items():
+                collect_refs(item, name)
+        elif isinstance(value, list):
+            for item in value:
+                collect_refs(item, key)
+        elif isinstance(value, str) and (key.endswith(("_ref", "_refs")) or key == "production_path"):
+            references.append(value)
+
+    for key in ("claim_ledger", "outcome_contract", "deferred_ledger"):
+        if key in inputs:
+            collect_refs(json.loads(Path(inputs[key]).read_text(encoding="utf-8")))
+    if args.extra:
+        references.extend(args.extra.split(";"))
+    for value in references:
+        value = re.sub(r":\d+(?::\d+)?$", "", value.strip().split("#", 1)[0])
+        if not value:
+            continue
+        if _secret_material(Path(value)):
+            raise ValueError(f"unsafe closing review material: {value}")
+        try:
+            reference = resolve_reference_path(value, csv_path.parent, repo_root)
+        except ValueError:
+            continue  # Not every evidence reference is a file (commands/session ids).
+        _check_material_path(reference, repo_root)
+        if reference.is_file():
+            paths.add(reference)
+        elif reference.is_dir():
+            # Bind the explicit run manifest AND actual listed bytes; no tree scan.
+            manifest_path = reference / "artifact_manifest.json"
+            _check_material_path(manifest_path, repo_root)
+            if not manifest_path.is_file():
+                raise ValueError(f"directory review evidence requires artifact_manifest.json or explicit file refs: {reference}")
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            if not isinstance(manifest, dict) or not isinstance(manifest.get("entries"), list):
+                raise ValueError(f"invalid directory review manifest: {manifest_path}")
+            paths.add(manifest_path)
+            for entry in manifest["entries"]:
+                if not isinstance(entry, dict) or not isinstance(entry.get("path"), str) or not entry["path"]:
+                    raise ValueError(f"invalid directory review manifest entry: {manifest_path}")
+                path = reference / entry["path"]
+                _check_material_path(path, repo_root)
+                if not path.resolve().is_relative_to(reference) or path.is_dir():
+                    raise ValueError(f"directory review manifest entry escapes root or is not a file: {path}")
+                paths.add(path)
+    material = {}
+    for path in sorted(paths):
+        relative = path.relative_to(repo_root)
+        if path in excluded or (
+            path.is_relative_to(job_parent)
+            and path.relative_to(job_parent).parts[0].startswith("closing-reviewer-job-")
+        ):
+            continue
+        _check_material_path(path, repo_root)
+        if path == csv_path:
+            content = _canonical_bytes(normalized_rows)
+        elif path == Path(args.review_log or ""):
+            # Preserve prior rounds, omit the active round's append-only report.
+            text = path.read_text(encoding="utf-8") if path.is_file() else ""
+            text = re.split(r"(?m)^##\s+" + re.escape(selected["id"]) + r"\s*$", text, maxsplit=1)[0]
+            content = text.rstrip().encode("utf-8")
+        elif path == events_path:
+            events = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else []
+            if not isinstance(events, list):
+                raise ValueError("CSV events sidecar must be an array")
+            content = _canonical_bytes([event for event in events if event.get("row_id") != selected["id"]])
+        elif path.is_symlink():
+            target = resolve_reference_path(str(path), repo_root, repo_root)
+            content = os.fsencode(os.readlink(path)) + b"\0" + (_file_sha256(target).encode() if target.is_file() else b"")
+        elif path.is_file():
+            material[str(relative)] = {
+                "sha256": _file_sha256(path),
+                "executable": bool(path.stat().st_mode & stat.S_IXUSR),
+            }
+            continue
+        elif not path.exists():
+            material[str(relative)] = {"missing": True}
+            continue
+        else:
+            continue
+        material[str(relative)] = {
+            "sha256": hashlib.sha256(content).hexdigest(),
+            "executable": bool(path.exists() and path.stat().st_mode & stat.S_IXUSR),
+        }
+    from harness import reviewer_job
+
+    return {
+        "schema_version": "closing.vision-review.v1",
+        # Schema upgrades get a new identity without deleting legacy job evidence.
+        "response_schema_sha256": hashlib.sha256(_canonical_bytes(reviewer_job.closing_output_schema())).hexdigest(),
+        "repo_root": str(repo_root),
+        **{key: str(Path(value).relative_to(repo_root)) for key, value in inputs.items()},
+        "review_row_id": selected["id"],
+        "material_sha256": hashlib.sha256(_canonical_bytes(material)).hexdigest(),
+        "materials": material,
+        "task_sha256": hashlib.sha256(prompt.encode("utf-8")).hexdigest(),
+        "backend": args.backend,
+        "requested_model": args.model,
+        "extra": args.extra or "",
+    }
+
+
+def prepare_closing_job(args: argparse.Namespace, repo_root: Path, prompt: str) -> tuple[Path, Path, Path]:
+    packet = closing_review_packet(args, repo_root, prompt)
+    identity = hashlib.sha256(_canonical_bytes(packet)).hexdigest()
+    # Row id is display-only; the full exact id is also hashed in the packet.
+    row_slug = re.sub(r"[^A-Za-z0-9_.-]", "_", packet["review_row_id"])[:32]
+    csv_slug = re.sub(r"[^A-Za-z0-9_.-]", "_", Path(args.csv).stem)[:64]
+    job_dir = Path(args.csv).parent / "reviews" / f"closing-reviewer-job-{csv_slug}-{row_slug}-{identity}"
+    job_dir.mkdir(parents=True, exist_ok=True)
+    packet_path, task_path = job_dir / "packet.json", job_dir / "task.md"
+    for path, content in (
+        (packet_path, json.dumps(packet, ensure_ascii=False, indent=2) + "\n"),
+        (task_path, prompt),
+    ):
+        try:
+            with path.open("x", encoding="utf-8") as handle:
+                handle.write(content)
+        except FileExistsError:
+            if path.read_text(encoding="utf-8") != content:
+                raise ValueError(f"existing closing job identity conflicts: {path}")
+    return job_dir, packet_path, task_path
+
+
 def build_prompt(args: argparse.Namespace) -> str:
     review_log = args.review_log or "(review log does not exist yet)"
     claim_ledger = args.claim_ledger or "(claim ledger not provided)"
@@ -421,6 +752,8 @@ Inputs:
 
 Return exactly one JSON object and no markdown. Schema:
 {{
+  "reviewer_id": "independent reviewer identifier",
+  "report_markdown": "evidence-grounded review report",
   "result": "vision_met | gaps_found | limited_review (Mission execution only)",
   "scientific_outcome": "hypothesis_supported | hypothesis_not_supported | gate_failed | inconclusive | not_applicable",
   "claim_coverage": "covered/total, for example 12/13; use unknown only with limited_review",
@@ -493,12 +826,12 @@ HARD RULES for handoff style:
 - No review audit jargon: never write "scope checked", "evidence checked", "claim coverage", "vision_met"
 - Honest: if something is degraded or unverified, say so plainly. Thin evidence = thin section, never pad
 - handoff_markdown is REQUIRED even when result is limited_review
+- Do not write an independence/model identity header: the launcher generates the single final header from runtime evidence.
 
 Required structure when an Outcome Contract is provided:
 
 # <task topic> -- 施工交工单
 
-> 独立性: true | mode=closing-reviewer-job | requested_model={args.model}
 > 日期: <date>
 
 ## 先看结论
@@ -716,31 +1049,11 @@ def main() -> int:
     sys.path.insert(0, str(repo_root / ".agents" / "harness"))
     from harness import reviewer_job  # noqa: E402
 
-    job_dir = csv_dir / "reviews" / f"closing-reviewer-job-{Path(args.csv).stem}"
-    job_dir.mkdir(parents=True, exist_ok=True)
-
-    packet_payload = {
-        "schema_version": "closing.vision-review.v1",
-        "repo_root": str(repo_root),
-        "csv": str(Path(args.csv).relative_to(repo_root)),
-    }
-    if args.source_doc:
-        packet_payload["source_doc"] = str(Path(args.source_doc).relative_to(repo_root))
-    if args.claim_ledger:
-        packet_payload["claim_ledger"] = str(Path(args.claim_ledger).relative_to(repo_root))
-    if args.outcome_contract:
-        packet_payload["outcome_contract"] = str(Path(args.outcome_contract).relative_to(repo_root))
-    if args.deferred_ledger:
-        packet_payload["deferred_ledger"] = str(Path(args.deferred_ledger).relative_to(repo_root))
-    if args.review_log:
-        packet_payload["review_log"] = str(Path(args.review_log).relative_to(repo_root))
-    if args.extra:
-        packet_payload["extra"] = args.extra
-
-    packet_path = job_dir / "packet.json"
-    packet_path.write_text(json.dumps(packet_payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    task_path = job_dir / "task.md"
-    task_path.write_text(prompt, encoding="utf-8")
+    try:
+        job_dir, packet_path, task_path = prepare_closing_job(args, repo_root, prompt)
+    except (OSError, ValueError, subprocess.CalledProcessError) as exc:
+        sys.stderr.write(f"closing review identity error: {exc}\n")
+        return 2
 
     rj_args = Namespace(
         packet=packet_path,
@@ -764,7 +1077,11 @@ def main() -> int:
         session_id=None,
         skip_patch_validation=False,
     )
-    code = reviewer_job.execute(rj_args)
+    try:
+        code = reviewer_job.execute(rj_args)
+    except ValueError as exc:
+        sys.stderr.write(f"closing reviewer job error: {exc}\n")
+        return 2
     if code != 0:
         return code
 
@@ -773,97 +1090,39 @@ def main() -> int:
         sys.stderr.write(f"verdict not written: {verdict_path}\n")
         return 2
     verdict = json.loads(verdict_path.read_text(encoding="utf-8"))
-    review_output_text = verdict.get("review_output") or ""
-    if not review_output_text.strip() and all(
-        key in verdict for key in ("reviewer_id", "result", "report_markdown", "gaps")
-    ):
-        # reviewer_job's closing verdict is already the canonical structured
-        # output; older launcher code expected it nested under review_output.
-        review_output_text = json.dumps(
-            {
-                "reviewer_id": verdict["reviewer_id"],
-                "result": verdict["result"],
-                "report_markdown": verdict["report_markdown"],
-                "gaps": verdict["gaps"],
-            },
-            ensure_ascii=False,
-        )
-    if not review_output_text.strip():
-        sys.stderr.write("verdict has empty review_output\n")
-        return 2
-    try:
-        closing_result = json.loads(review_output_text.strip())
-    except json.JSONDecodeError:
-        sys.stderr.write("closing review output was not valid JSON\n")
-        sys.stderr.write(review_output_text + "\n")
-        return 3
-
-    # Schema check: closing.vision-review.v1 has reviewer_id, result, report_markdown, gaps[].
-    # Some reviewer_job versions emit the lean closing verdict without the
-    # launcher compatibility fields. Normalize only fields that are mechanically
-    # derivable from the approved contract and the existing report; do not alter
-    # the reviewer's gaps or scientific narrative.
-    if isinstance(closing_result, dict):
-        report = closing_result.get("report_markdown") or ""
-        closing_result.setdefault("summary", report)
-        closing_result.setdefault("handoff_markdown", report)
-        closing_result.setdefault("assumptions", [])
-        closing_result.setdefault("decision_debt", [])
-        closing_result.setdefault("deferred_findings", [])
-        closing_result.setdefault("human_required_blockers", [])
-        closing_result.setdefault("validation_limited", [
-            "closing verdict was emitted in direct structured form; launcher compatibility fields were normalized",
-        ])
-    # Validate before releasing to callers (downstream verify_report relies on these keys).
-    if not isinstance(closing_result, dict):
-        sys.stderr.write(f"closing review output is not an object\n")
-        return 4
-    if closing_result.get("result") not in {"pass", "issues_found", "not_evaluable"}:
-        sys.stderr.write(f"closing review result is not one of pass|issues_found|not_evaluable: {closing_result.get('result')}\n")
+    # Only transport-owned identity is supplied here. Every review conclusion
+    # must survive unchanged from the model's canonical payload.
+    fields = reviewer_job.closing_output_schema()["properties"]
+    if verdict.get("review_output"):
+        try:
+            closing_result = json.loads(verdict["review_output"])
+        except (json.JSONDecodeError, TypeError):
+            sys.stderr.write("closing review output was not valid JSON\n")
+            return 3
+    else:
+        closing_result = {key: verdict[key] for key in fields if key in verdict}
+    error = reviewer_job.validate_response(closing_result, "closing", None, {})
+    if error:
+        sys.stderr.write(error + "; preserve the old job and rerun closing review\n")
         return 5
-    if not isinstance(closing_result.get("report_markdown"), str):
-        sys.stderr.write("closing review missing report_markdown\n")
-        return 5
-    gaps = closing_result.get("gaps")
-    if gaps is not None and not isinstance(gaps, list):
-        sys.stderr.write("closing review gaps must be a list\n")
-        return 5
-
-    observed_model = verdict.get("observed_model") or "unknown"
-    model_evidence = verdict.get("model_evidence") or "unknown"
     result = {
+        **closing_result,
         "review_agent_mode": "closing-reviewer-job",
         "review_independence": True,
         "review_requested_model": verdict.get("requested_model") or args.model,
-        "review_observed_model": observed_model,
-        "review_model_evidence": model_evidence,
-        # Schema-compatible top-level keys for downstream verify_report / csv checks.
-        "result": {
-            "pass": "vision_met",
-            "issues_found": "gaps_found",
-            "not_evaluable": "limited_review",
-        }.get(closing_result.get("result"), closing_result.get("result")),
-        "report_markdown": closing_result.get("report_markdown"),
-        "claim_coverage": closing_result.get("claim_coverage"),
-        "claim_coverage_status": closing_result.get("claim_coverage_status"),
-        "scientific_outcome": closing_result.get("scientific_outcome", "not_applicable"),
-        "gaps": closing_result.get("gaps") or [],
-        "closing_reason": closing_result.get("closing_reason"),
-        "reviewer_id": closing_result.get("reviewer_id") or "reviewer_job",
-        # Keep legacy aliases for the older reviewers and human reviewers.
-        "vision_met": closing_result.get("vision_met"),
-        "blocking_issues": closing_result.get("blocking_issues") or [],
-        "review_notes": closing_result.get("review_notes"),
-        "summary": closing_result.get("summary"),
-        "validation_limited": closing_result.get("validation_limited"),
-        "assumptions": closing_result.get("assumptions") or [],
-        "decision_debt": closing_result.get("decision_debt") or [],
-        "deferred_findings": closing_result.get("deferred_findings") or [],
-        "human_required_blockers": closing_result.get("human_required_blockers") or [],
-        "outcome_answers": closing_result.get("outcome_answers") or [],
-        "handoff_markdown": closing_result.get("handoff_markdown"),
+        "review_observed_model": verdict.get("observed_model") or "unknown",
+        "review_model_evidence": verdict.get("model_evidence") or "unknown",
     }
     review_errors = validate_review_result(result, outcome_contract_data)
+    try:
+        result["handoff_markdown"] = render_handoff_identity(result["handoff_markdown"], result)
+        packet = json.loads(packet_path.read_text(encoding="utf-8"))
+        if closing_review_packet(args, repo_root, prompt) != packet:
+            raise ValueError("review materials changed during closing review; rerun for the new inputs")
+        result["review_row_id"] = packet["review_row_id"]
+        result["material_sha256"] = packet["material_sha256"]
+    except (OSError, ValueError, subprocess.CalledProcessError) as exc:
+        review_errors.append(str(exc))
     if review_errors:
         for error in review_errors:
             sys.stderr.write(error + "\n")

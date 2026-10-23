@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
-import { closeSync, mkdirSync, openSync, readFileSync, renameSync, writeFileSync, appendFileSync } from "node:fs";
+import { mkdirSync, readFileSync, renameSync, writeFileSync, appendFileSync } from "node:fs";
+import { StringDecoder } from "node:string_decoder";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { spawn, type ChildProcess } from "node:child_process";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -31,7 +32,7 @@ type Waiter = {
 	exitCode?: number;
 };
 
-type Notification = { root: string; message: string; logPath: string };
+type Notification = { root: string; message: string; logPath: string; progressKey?: string };
 
 /** 当前活跃 session 的绑定；只在 `session_start` 建立、`session_shutdown` 同步解除。 */
 type Binding = {
@@ -39,6 +40,7 @@ type Binding = {
 	sessionId: string;
 	token: symbol;
 	send: (message: string) => void;
+	progress: (message: string) => void;
 };
 
 type Broker = {
@@ -105,7 +107,7 @@ export function buildWaitCommand(root: string, params: Params): { argv: string[]
 		throw new Error("expected a valid rrctl.run.v1 RunSpec");
 	}
 	const argv = [
-		join(root, ".agents/harness/remote/remote_run.py"), runspec, "--execute",
+		join(root, ".agents/harness/remote/remote_run.py"), runspec, "--execute", "--observe-only",
 		"--poll-seconds", String(params.poll_seconds ?? 600), "--max-wait-seconds", "0",
 	];
 	if (params.resume) argv.push("--resume");
@@ -133,6 +135,8 @@ export function registerRrctlEvents(pi: ExtensionAPI, options: RrctlEventsOption
 			sessionId: ctx.sessionManager.getSessionId(),
 			token,
 			send: (message) => pi.sendUserMessage(message, { deliverAs: "followUp" }),
+			// Pi ExtensionAPI: display renders in the transcript; triggerTurn:false never wakes the model.
+			progress: (message) => pi.sendMessage({ customType: "rrctl-progress", content: message, display: true }, { triggerTurn: false }),
 		};
 	}
 
@@ -147,7 +151,8 @@ export function registerRrctlEvents(pi: ExtensionAPI, options: RrctlEventsOption
 
 	function send(binding: Binding, notification: Notification): boolean {
 		try {
-			binding.send(notification.message);
+			if (notification.progressKey) binding.progress(notification.message);
+			else binding.send(notification.message);
 			return true;
 		} catch (error) {
 			// 异步 callback 绝不允许异常逃逸成 uncaughtException；失败项保留在 pending，
@@ -161,6 +166,10 @@ export function registerRrctlEvents(pi: ExtensionAPI, options: RrctlEventsOption
 	}
 
 	function deliver(notification: Notification): void {
+		// Replacement gaps retain only the latest heartbeat per waiter, not an unbounded history.
+		if (notification.progressKey) {
+			broker.pending = broker.pending.filter((item) => item.progressKey !== notification.progressKey);
+		}
 		const binding = broker.binding;
 		if (binding && binding.root === notification.root) {
 			send(binding, notification);
@@ -193,6 +202,7 @@ export function registerRrctlEvents(pi: ExtensionAPI, options: RrctlEventsOption
 		entry.settled = true;
 		entry.settledAt = Date.now();
 		entry.exitCode = entry.child.exitCode;
+		broker.pending = broker.pending.filter((item) => item.progressKey !== entry.key);
 		// 不立即从 broker.waits 删除：把本 waiter 留作 tombstone，同 key 的同 event
 		// 后续 execute 会命中该 tombstone 并复用其结果，而不是 spawn 新 child
 		// 再推送一次。清理在 execute 的 getOrCreate 路径上做。
@@ -272,25 +282,62 @@ export function registerRrctlEvents(pi: ExtensionAPI, options: RrctlEventsOption
 				mkdirSync(directory, { recursive: true, mode: 0o700 });
 				const logPath = join(directory, `${digest}.log`);
 				const eventPath = join(directory, `${digest}.event.json`);
-				const log = openSync(logPath, "a", 0o600);
-				let child: ChildProcess;
-				try {
-					child = spawnChild("python3", command.argv, {
-						cwd: root,
-						stdio: ["ignore", log, log],
-						env: process.env,
-					});
-				} finally {
-					closeSync(log);
-				}
+				appendFileSync(logPath, "", { mode: 0o600 });
+				const child = spawnChild("python3", command.argv, {
+					cwd: root,
+					stdio: ["ignore", "pipe", "pipe"],
+					env: process.env,
+				});
 				const entry: Waiter = { child, eventPath, logPath, runId: command.runId, root, key, settled: false };
 				broker.waits.set(key, entry);
+				let lastProgress: string | undefined;
+				let lastProgressAt = 0;
+				for (const stream of [child.stdout, child.stderr]) {
+					if (!stream) continue;
+					const decoder = new StringDecoder("utf8");
+					let line = "";
+					let dropping = false;
+					const parseLine = (value: string) => {
+						if (entry.settled || !value.startsWith("[rrctl-progress] ")) return;
+						try {
+							const event = JSON.parse(value.slice("[rrctl-progress] ".length));
+							if (event.schema_version !== "rrctl.progress.v1" || event.run_id !== entry.runId || event.stage !== "wait" || typeof event.message !== "string" || !event.message.trim()) return;
+							// Deduplicate immediate duplicate frames, not the next scheduled (30m)
+							// heartbeat when a query is unavailable or progress hasn't changed.
+							if (value === lastProgress && Date.now() - lastProgressAt < 1000) return;
+							lastProgress = value;
+							lastProgressAt = Date.now();
+							deliver({ root, message: event.message, logPath, progressKey: key });
+						} catch {} // Non-protocol logs and malformed/oversized frames stay in the log only.
+					};
+					stream.on("data", (chunk: Buffer) => {
+						try {
+							appendFileSync(logPath, chunk, { mode: 0o600 });
+						} catch (error) {
+							settle(entry, "attention", { error: String(error) }, `rrctl attention event for RunID ${entry.runId}: observer log write failed. Do not relaunch the RunID.`);
+						}
+						const parts = decoder.write(chunk).split("\n");
+						for (let index = 0; index < parts.length; index++) {
+							if (!dropping) {
+								if (line.length + parts[index].length > 65536) { line = ""; dropping = true; }
+								else line += parts[index];
+							}
+							if (index < parts.length - 1) {
+								if (!dropping) parseLine(line);
+								line = "";
+								dropping = false;
+							}
+						}
+					});
+					stream.once("end", () => { if (!dropping) parseLine(line + decoder.end()); });
+					stream.once("error", (error) => settle(entry, "attention", { error: String(error) }, `rrctl attention event for RunID ${entry.runId}: observer stream failed. Do not relaunch the RunID.`));
+				}
 				child.once("exit", (code, signal) => {
 					settle(
 						entry,
 						code === 0 ? "terminal" : "attention",
 						{ exit_code: code, signal },
-						`rrctl ${code === 0 ? "terminal" : "attention"} event for RunID ${entry.runId}. Inspect ${entry.eventPath} and continue the existing workflow; do not relaunch the RunID.`,
+						`rrctl ${code === 0 ? "terminal" : "attention"} event for RunID ${entry.runId}. Inspect ${entry.eventPath}. ${code === 0 ? "Compute is terminal; continue pull/ingest now (artifacts have not been pulled)." : "Diagnose the existing run and pull diagnostic artifacts as needed."} Do not relaunch the RunID.`,
 					);
 				});
 				child.once("error", (error) => {

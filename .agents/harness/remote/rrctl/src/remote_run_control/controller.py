@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import fcntl
 import hashlib
 import json
 import math
@@ -9,9 +10,10 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 import time
-from contextlib import suppress
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -27,10 +29,97 @@ from .profiles import DEFAULT_PROFILE_PATH, ProfileStore
 from .readiness import ReadinessResult, validate_run_spec
 from .security import confined_relative_path, redact, redact_data
 from .source_identity import source_content_sha256
-from .transport import CommandResult, Transport, transport_for
+from .transport import CommandResult, Transport, download_timeout_seconds, transport_for
 from .zipapp_builder import build_worker_zipapp
 
 DEFAULT_STATE_ROOT = Path.home() / ".local" / "state" / "rrctl" / "runs"
+
+
+@contextmanager
+def _pull_lock(destination: Path):
+    # Reject symlink ancestors as well as the final lock/staging name.
+    for ancestor in (destination.parent, *destination.parent.parents):
+        if ancestor.is_symlink():
+            raise RRCError("pull_symlink", "pull parent cannot be a symlink", "artifact")
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    # Keep the inode: unlinking a lock file lets a later caller lock a different inode.
+    lock_path = destination.parent / f".{destination.name}.pull.lock"
+    if lock_path.is_symlink():
+        raise RRCError("pull_symlink", "pull lock cannot be a symlink", "artifact")
+    fd = os.open(lock_path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+    try:
+        try:
+            # Separate open() descriptions also exclude threads in this process.
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as exc:
+            raise RRCError(
+                "pull_busy", "另一个拉取正在写入同一目标，请稍后重试", "artifact",
+                details={"destination": str(destination)}, retryable=True,
+            ) from exc
+        yield
+    finally:
+        os.close(fd)
+
+
+def _pull_path(root: Path, relative: str) -> Path:
+    for ancestor in root.parents:
+        if ancestor.is_symlink():
+            raise RRCError("pull_symlink", "pull parent cannot be a symlink", "artifact")
+    path = root
+    for part in ("", *confined_relative_path(relative, field="pull.path").parts):
+        path = path / part
+        if path.is_symlink():
+            raise RRCError("pull_symlink", f"pull path cannot be a symlink: {path}", "artifact")
+    return path
+
+
+def _verified_pull_file(root: Path, entry: dict[str, Any]) -> bool:
+    path = _pull_path(root, entry["path"])
+    return (path.is_file() and path.stat().st_size == entry["size"]
+            and sha256_file(path) == entry["sha256"])
+
+
+class _PullProgress:
+    def __init__(self, run_id: str, manifest: dict[str, Any], timeout: float):
+        self.run_id = run_id
+        self.total_files = len(manifest["entries"])
+        self.total_bytes = sum(item["size"] for item in manifest["entries"])
+        self.timeout = timeout
+        self.started = self.last = time.monotonic()
+        self.files = self.bytes = self.resumed_files = self.resumed_bytes = 0
+        self.last_files = 0
+
+    def emit(self, event: str = "progress", current_bytes: int = 0) -> None:
+        now = time.monotonic()
+        if event == "progress" and now - self.last < 30 and self.files - self.last_files < 32:
+            return
+        elapsed = max(now - self.started, 0.001)
+        message = {"start": "开始拉取并校验产物", "progress": "正在拉取产物",
+                   "end": "产物拉取完成", "error": "拉取中断，已校验文件保留供重试"}[event]
+        transferred = self.bytes + current_bytes
+        speed = max(0, transferred - self.resumed_bytes) / elapsed
+        def human_bytes(value: float) -> str:
+            for unit in ("B", "KiB", "MiB", "GiB", "TiB"):
+                if value < 1024 or unit == "TiB":
+                    return f"{value:.1f} {unit}"
+                value /= 1024
+            return ""  # unreachable
+        message += (f"：文件 {self.files}/{self.total_files}，"
+                    f"已传 {human_bytes(transferred)}/{human_bytes(self.total_bytes)}，"
+                    f"速度 {human_bytes(speed)}/s")
+        value = {
+            "schema_version": "rrctl.progress.v1", "run_id": self.run_id,
+            "stage": "pull", "event": event, "message": message,
+            "files": self.files, "bytes": self.bytes + current_bytes,
+            "total_files": self.total_files, "total_bytes": self.total_bytes,
+            "resumed_files": self.resumed_files, "resumed_bytes": self.resumed_bytes,
+            "speed_bytes_per_second": round(
+                max(0, self.bytes + current_bytes - self.resumed_bytes) / elapsed, 1),
+            "elapsed_seconds": round(elapsed, 1),
+            "download_timeout_seconds": self.timeout, "budget_scope": "per_file",
+        }
+        print("[rrctl-progress] " + json.dumps(value, ensure_ascii=False), file=sys.stderr, flush=True)
+        self.last, self.last_files = now, self.files
 
 _RECOVERY_SCRIPT = r'''\
 import hashlib, json, os, shutil, sys, uuid
@@ -41,6 +130,22 @@ output_root = Path(sys.argv[2]).resolve()
 paths = json.loads(sys.argv[3])
 run_id = sys.argv[4]
 run_spec_sha256 = sys.argv[5]
+expected_exit_code = int(sys.argv[6])
+allow_nonzero_exit = sys.argv[7] == "1"
+binding = json.loads((control_root / "binding.json").read_text())
+status = json.loads((control_root / "status.json").read_text())
+exited = json.loads((control_root / "workload-exit.json").read_text())
+if (binding.get("run_id") != run_id or binding.get("run_spec_sha256") != run_spec_sha256
+        or binding.get("control_root") != str(control_root)
+        or status.get("run_id") != run_id
+        or status.get("state") not in {"workload_complete", "completed", "failed"}
+        or exited.get("run_id") != run_id
+        or exited.get("run_spec_sha256") != run_spec_sha256
+        or type(exited.get("exit_code")) is not int
+        or exited["exit_code"] != expected_exit_code
+        or status.get("detail", {}).get("exit_code") not in (None, expected_exit_code)
+        or (expected_exit_code != 0 and not allow_nonzero_exit)):
+    raise SystemExit("recovery_exit_identity_invalid")
 if not isinstance(paths, list) or not paths or any(not isinstance(p, str) for p in paths):
     raise SystemExit("recovery_paths_invalid")
 
@@ -106,6 +211,9 @@ manifest = {
     "output_root": str(root),
     "entries": entries,
     "source_root": str(output_root),
+    "exit_code": expected_exit_code,
+    "terminal_state": status["state"],
+    "completion_contract_passed": False,
     "recovery_id": recovery_id,
 }
 (root / "artifact_manifest.json").write_text(json.dumps(manifest, sort_keys=True, indent=2) + chr(10), encoding="utf-8")
@@ -1026,13 +1134,14 @@ class Controller:
             self._raise_observer_error(run_id, exc)
 
     def recover_evidence(
-        self, run_id: str, *, paths: list[str], destination: Path
+        self, run_id: str, *, paths: list[str], destination: Path,
+        allow_nonzero_exit: bool = False,
     ) -> dict[str, Any]:
         """Create and pull an identity-bound recovery snapshot for a finished workload.
 
         This deliberately does not mutate the original completion manifest, RunSpec, binding,
-        summary, or remote lifecycle state. It is for result-contract failures where the
-        workload exited successfully but the normal artifact manifest was never published.
+        summary, or remote lifecycle state. Nonzero exits require explicit opt-in;
+        recovered evidence never claims a passed completion contract.
         """
         ref, spec, transport = self._runtime(run_id)
         if not paths:
@@ -1051,8 +1160,15 @@ class Controller:
         state = status.get("state")
         if state not in {"workload_complete", "completed", "failed"}:
             raise RRCError("recovery_state", f"workload is not finished: {state}", "artifact")
-        if status.get("detail", {}).get("exit_code") not in (0, None):
-            raise RRCError("recovery_exit", "workload exit code is not zero", "artifact")
+        exit_evidence = json.loads(transport.download(f"{ref.control_root}/workload-exit.json"))
+        exit_code = exit_evidence.get("exit_code")
+        if (exit_evidence.get("run_id") != run_id
+                or exit_evidence.get("run_spec_sha256") != spec.digest
+                or type(exit_code) is not int
+                or status.get("detail", {}).get("exit_code") not in (None, exit_code)):
+            raise RRCError("recovery_exit", "workload exit evidence is invalid", "artifact")
+        if exit_code != 0 and not allow_nonzero_exit:
+            raise RRCError("recovery_exit", "nonzero exit requires --allow-nonzero-exit", "artifact")
         result = transport.run(
             [
                 spec.remote.python,
@@ -1063,6 +1179,8 @@ class Controller:
                 json.dumps(normalized, separators=(",", ":")),
                 run_id,
                 spec.digest,
+                str(exit_code),
+                "1" if allow_nonzero_exit else "0",
             ],
             timeout_seconds=300,
         )
@@ -1082,8 +1200,11 @@ class Controller:
             handle.write(manifest_bytes)
             handle.flush()
             manifest = load_artifact_manifest(Path(handle.name), expected_run_id=run_id)
-        if manifest.get("run_spec_sha256") != spec.digest:
-            raise RRCError("recovery_manifest_identity", "recovery manifest RunSpec mismatch", "artifact")
+        if (manifest.get("run_spec_sha256") != spec.digest
+                or type(manifest.get("exit_code")) is not int
+                or manifest["exit_code"] != exit_code
+                or manifest.get("terminal_state") != state):
+            raise RRCError("recovery_manifest_identity", "recovery manifest identity/exit mismatch", "artifact")
         destination = destination.expanduser().resolve()
         destination.mkdir(parents=True, exist_ok=True)
         if any(destination.iterdir()):
@@ -1104,6 +1225,9 @@ class Controller:
             "destination": str(destination),
             "entries": len(manifest["entries"]),
             "recovery_id": manifest.get("recovery_id"),
+            "exit_code": exit_code,
+            "terminal_state": state,
+            "completion_contract_passed": False,
             "remote_state_preserved": True,
             "original_completion_manifest_unchanged": True,
         }
@@ -1124,9 +1248,16 @@ class Controller:
                 "artifact",
                 details={"run_id": run_id},
             )
+        destination = Path(spec.local_pull_root).expanduser() / run_id
+        with _pull_lock(destination):
+            return self._pull_artifacts(run_id, ref, spec, transport, destination, diagnostic, binding_bytes)
+
+    def _pull_artifacts(
+        self, run_id: str, ref: RunRef, spec: RunSpec, transport: Transport,
+        destination: Path, diagnostic: bool, binding_bytes: bytes,
+    ) -> dict[str, Any]:
         source_root = spec.remote.output_root
         manifest_root = ref.control_root
-        destination = Path(spec.local_pull_root).expanduser() / run_id
         if diagnostic:
             snapshot = self._worker_lifecycle_command(run_id, ["diagnostics"], phase="diagnostics")
             snapshot_id = snapshot.get("snapshot_id")
@@ -1142,6 +1273,14 @@ class Controller:
             manifest_path = Path(temporary_name) / "artifact_manifest.json"
             manifest_path.write_bytes(manifest_bytes)
             manifest = load_artifact_manifest(manifest_path, expected_run_id=run_id)
+        if manifest.get("run_spec_sha256", spec.digest) != spec.digest:
+            raise RRCError("pull_identity", "artifact manifest RunSpec mismatch", "artifact")
+        if any(entry["path"] == "artifact_manifest.json" or (
+            not diagnostic and Path(entry["path"]).parts[0] == ".rrctl"
+        ) for entry in manifest["entries"]):
+            raise RRCError("pull_manifest_path", "artifact_manifest.json and .rrctl are reserved metadata paths", "artifact")
+        progress = _PullProgress(run_id, manifest, download_timeout_seconds())
+        progress.emit("start")
         diagnostic_only = (
             not diagnostic
             and destination.is_dir()
@@ -1150,7 +1289,7 @@ class Controller:
             and (destination / "diagnostics").is_dir()
             and not (destination / "diagnostics").is_symlink()
         )
-        if destination.exists() and not diagnostic_only:
+        if (destination.exists() or destination.is_symlink()) and not diagnostic_only:
             existing_manifest = destination / "artifact_manifest.json"
             if (
                 not destination.is_symlink()
@@ -1159,19 +1298,23 @@ class Controller:
             ):
                 existing = load_artifact_manifest(existing_manifest, expected_run_id=run_id)
                 if sha256_json(existing) == sha256_json(manifest) and all(
-                    (destination / item["path"]).is_file()
-                    and not (destination / item["path"]).is_symlink()
-                    and (destination / item["path"]).resolve().is_relative_to(destination.resolve())
-                    and (destination / item["path"]).stat().st_size == item["size"]
-                    and sha256_file(destination / item["path"]) == item["sha256"]
+                    _verified_pull_file(destination, item)
                     for item in manifest["entries"]
                 ):
+                    if not diagnostic:
+                        self._pull_completion(spec, ref, transport, destination, manifest, binding_bytes)
+                    progress.files = progress.resumed_files = progress.total_files
+                    progress.bytes = progress.resumed_bytes = progress.total_bytes
+                    progress.emit("end")
                     return {
                         "run_id": run_id,
                         "destination": str(destination),
                         "entries": len(manifest["entries"]),
                         "diagnostic": diagnostic,
                         "reused": True,
+                        "resumed_files": progress.resumed_files,
+                        "resumed_bytes": progress.resumed_bytes,
+                        "download_timeout_seconds": progress.timeout,
                         "layout": "diagnostic_snapshot" if diagnostic else "artifacts",
                     }
             raise RRCError(
@@ -1183,36 +1326,61 @@ class Controller:
                 "artifact",
             )
         destination.parent.mkdir(parents=True, exist_ok=True)
-        temporary = Path(tempfile.mkdtemp(prefix=f".{run_id}.", dir=destination.parent))
-        # 同一次 pull 失败后重试：目标尚不存在但上次残留了同 RunID 的 staging
-        # 目录，直接清理后重来（幂等）。已在传输完成后被 rename 走的目录不受影响。
-        if not temporary.name.startswith(f".{run_id}."):
-            raise RRCError("pull_staging_invalid", "unexpected staging directory name", "artifact")
-        for sibling in destination.parent.iterdir():
-            if (
-                sibling.name.startswith(f".{run_id}.")
-                and sibling != temporary
-                and sibling.is_dir()
-                and not sibling.is_symlink()
-            ):
-                shutil.rmtree(sibling, ignore_errors=True)
+        identity = sha256_json({"manifest": manifest, "run_spec_sha256": spec.digest,
+                                "source_root": source_root})
+        temporary = destination.parent / f".{destination.name}.pull-{identity}"
+        staged_manifest = _pull_path(temporary, "artifact_manifest.json")
+        if temporary.exists():
+            if (not staged_manifest.is_file()
+                    or sha256_json(load_artifact_manifest(staged_manifest, expected_run_id=run_id))
+                    != sha256_json(manifest)):
+                raise RRCError("pull_staging_invalid", "staging identity does not match manifest",
+                               "artifact")
+        else:
+            temporary.mkdir(mode=0o700)
+            atomic_write_json(staged_manifest, manifest)
+        # Unknown/random staging belongs to prior attempts: never sweep siblings.
         try:
             for entry in manifest["entries"]:
                 relative = Path(entry["path"])
-                local_path = temporary / relative
+                local_path = _pull_path(temporary, entry["path"])
+                if _verified_pull_file(temporary, entry):
+                    progress.files += 1
+                    progress.bytes += entry["size"]
+                    progress.resumed_files += 1
+                    progress.resumed_bytes += entry["size"]
+                    progress.emit()
+                    continue
                 local_path.parent.mkdir(parents=True, exist_ok=True)
-                data = transport.download(f"{source_root}/{relative.as_posix()}")
-                local_path.write_bytes(data)
-                if (
-                    local_path.stat().st_size != entry["size"]
-                    or sha256_file(local_path) != entry["sha256"]
-                ):
-                    raise RRCError(
-                        "pull_integrity",
-                        f"downloaded artifact failed size/SHA verification: {relative}",
-                        "artifact",
-                    )
-            atomic_write_json(temporary / "artifact_manifest.json", manifest)
+                local_path.unlink(missing_ok=True)  # only this manifest's unverified file
+                try:
+                    remote_path = f"{source_root}/{relative.as_posix()}"
+                    download = getattr(transport, "download_to_file", None)
+                    if download is None:  # legacy duck-typed FakeTransport
+                        data = transport.download(remote_path)
+                        if len(data) > entry["size"]:
+                            raise RRCError("pull_integrity", "artifact exceeds declared size", "artifact")
+                        local_path.write_bytes(data)
+                    else:
+                        download(remote_path, local_path, timeout_seconds=progress.timeout,
+                                 expected_size=entry["size"],
+                                 progress=lambda count: progress.emit(current_bytes=count))
+                    if not _verified_pull_file(temporary, entry):
+                        raise RRCError(
+                            "pull_integrity",
+                            f"downloaded artifact failed size/SHA verification: {relative}", "artifact",
+                        )
+                except BaseException:
+                    local_path.unlink(missing_ok=True)
+                    raise
+                progress.files += 1
+                progress.bytes += entry["size"]
+                progress.emit()
+            # Recheck every file, including cached files, immediately before publication.
+            if not all(_verified_pull_file(temporary, item) for item in manifest["entries"]):
+                raise RRCError("pull_integrity", "staged artifacts changed before publication", "artifact")
+            if not diagnostic:
+                self._pull_completion(spec, ref, transport, temporary, manifest, binding_bytes)
             if diagnostic_only:
                 if {path.name for path in destination.iterdir()} != {"diagnostics"} or (
                     temporary / "diagnostics"
@@ -1229,16 +1397,67 @@ class Controller:
             else:
                 os.replace(temporary, destination)
         except BaseException:
-            shutil.rmtree(temporary, ignore_errors=True)
+            progress.emit("error")
             raise
+        progress.emit("end")
         return {
             "run_id": run_id,
             "destination": str(destination),
             "entries": len(manifest["entries"]),
             "diagnostic": diagnostic,
             "reused": False,
+            "resumed_files": progress.resumed_files,
+            "resumed_bytes": progress.resumed_bytes,
+            "download_timeout_seconds": progress.timeout,
             "layout": "diagnostic_snapshot" if diagnostic else "artifacts",
         }
+
+    def _pull_completion(
+        self, spec: RunSpec, ref: RunRef, transport: Transport, destination: Path,
+        manifest: dict[str, Any], binding_bytes: bytes,
+    ) -> None:
+        """Keep actual sealed control evidence separate from workload artifacts.
+
+        Legacy runs may lack a receipt: absence is unknown, never synthesized success.
+        Connection errors still fail the pull so a retry can recover the evidence.
+        """
+        try:
+            receipt_bytes = transport.download(f"{ref.control_root}/completion.json")
+        except RRCError as exc:
+            if exc.code == "download_failed":
+                return
+            raise
+        status_bytes = transport.download(f"{ref.control_root}/status.json")
+        from .finalization import read_completion
+        with tempfile.TemporaryDirectory(prefix="rrctl-completion-") as name:
+            evidence = Path(name)
+            payload = {"completion.json": receipt_bytes, "status.json": status_bytes,
+                       "binding.json": binding_bytes}
+            for filename, data in payload.items():
+                (evidence / filename).write_bytes(data)
+            atomic_write_json(evidence / "artifact_manifest.json", manifest)
+            receipt = read_completion(spec, evidence, json.loads(binding_bytes))
+            status = json.loads(status_bytes)
+            if (receipt.get("run_id") != spec.run_id or status.get("run_id") != spec.run_id
+                    or status.get("state") != "completed"):
+                raise RRCError("completion_receipt_invalid", "completion status identity is invalid",
+                               "artifact")
+            metadata = _pull_path(destination, ".rrctl")
+            if metadata.exists():
+                if not metadata.is_dir() or any(
+                    not _pull_path(metadata, filename).is_file()
+                    or _pull_path(metadata, filename).read_bytes() != data
+                    for filename, data in payload.items()
+                ):
+                    raise RRCError("pull_collision", "local completion metadata differs", "artifact")
+                return
+            # Rename a complete directory; no reader sees a half-written receipt set.
+            with tempfile.TemporaryDirectory(prefix=".rrctl-metadata-", dir=destination) as staging:
+                stage = Path(staging) / "evidence"
+                stage.mkdir(mode=0o700)
+                for filename, data in payload.items():
+                    (stage / filename).write_bytes(data)
+                os.replace(stage, metadata)
 
     def resume(self, *, profile_name: str, control_root: str) -> dict[str, Any]:
         profile = self.profile_store.load(profile_name)

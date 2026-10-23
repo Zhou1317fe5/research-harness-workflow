@@ -12,7 +12,7 @@ from pathlib import Path
 
 from mission_completion import parse_note_tags, resolve_reference_path
 from lint_handoff import lint
-from run_vision_review import validate_review_result
+from run_vision_review import validate_handoff_identity, validate_review_result
 from validate_deferred_ledger import COVERAGE_RE, load_csv_deferred
 from validate_outcome_contract import load_contract
 
@@ -146,6 +146,16 @@ def load_review_json(csv_path: Path, *, workdir: Path | None = None) -> tuple[di
         errors.append("latest REVIEW notes missing review_result:<result>")
     elif result_value != data.get("result"):
         errors.append("CSV review_result differs from review JSON result")
+    if "review_row_id" in data and data["review_row_id"] != review_rows[-1].get("id"):
+        errors.append("review JSON belongs to a different REVIEW row")
+    for key in (
+        "review_agent_mode", "review_independence", "review_requested_model",
+        "review_observed_model", "review_model_evidence",
+    ):
+        if key in tags:
+            expected = str(data.get(key)).lower() if key == "review_independence" else data.get(key)
+            if tags[key] != expected:
+                errors.append(f"CSV {key} differs from review JSON")
     return data, errors
 
 
@@ -219,15 +229,20 @@ def check_contract(
 
     outcome_contract, outcome_errors = load_outcome_contract(effective_csv_path, workdir=workdir)
     missing.extend(outcome_errors)
+    review_json, review_errors = load_review_json(effective_csv_path, workdir=workdir)
+    missing.extend(review_errors)
+    missing.extend(validate_handoff_identity(text, review_json))
+    if review_json is not None:
+        # Also enforce structured mode/independence consistency for legacy CSVs
+        # without an Outcome Contract; otherwise a contradictory JSON can bless
+        # an equally contradictory human-facing header.
+        missing.extend(validate_review_result(review_json, outcome_contract))
     if outcome_contract is None:
         missing.extend(lint(text))
     else:
-        review_json, review_errors = load_review_json(effective_csv_path, workdir=workdir)
-        missing.extend(review_errors)
         if review_json is None and not review_errors:
             missing.append("Outcome Contract handoff requires review_json:<path> in CSV notes")
         elif review_json is not None:
-            missing.extend(validate_review_result(review_json, outcome_contract))
             missing.extend(validate_handoff_against_review(text, outcome_contract, review_json))
         missing.extend(
             lint(

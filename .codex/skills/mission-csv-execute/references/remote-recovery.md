@@ -23,6 +23,9 @@ rrctl --json pull <RunID>                                               # 3. 仅
 
 - 终态判断以 `inspect` 为准，不以本地日志猜测为准；未达终态就继续等，已达终态才 pull。
 - 一键入口恢复：`python3 .agents/harness/remote/remote_run.py issues/<stem>/runs/<RunID>/runspec.json --execute --resume`。
+- 直接控制命令中的 `rrctl` 使用项目内 `.agents/harness/remote/rrctl/rrctl`；不要临时改宿主全局安装来切实现。
+- **回传失败不是计算失败**：先核 inspect 与本地传输状态。`pull_busy` 只表示该目标已有活跃拉取，不启动第二条、不清目录。按原 manifest 身份重试会复用已通过 size/SHA 的文件，损坏/缺失项才重传；不得为重试清空同 RunID staging 或不同 RunID 的诊断快照。
+- 默认下载预算为单文件墙钟 1800 秒，可在项目执行环境用 `RRCTL_DOWNLOAD_TIMEOUT_SECONDS` 调整；实际预算见进度事件。预算不等于“无流量超时”，不要用不断加大超时替代带宽/总量诊断，更不要用过短外层 timeout 反复打断有进展的传输。
 
 ## 3. 记账中断后的安全认领 (Reconcile)
 

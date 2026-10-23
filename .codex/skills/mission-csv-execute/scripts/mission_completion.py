@@ -225,6 +225,7 @@ def _record_completion_errors(csv_path: Path, row: dict[str, str], *, workdir: P
     sys.path.insert(0, str(Path(__file__).resolve().parents[4] / ".agents"))
     from harness.records.experiment_records import (
         build_record, csv_projection, identifier, load_run_provenance, record_index_row,
+        runs_match_projection,
     )
     from harness.common.project_config import load_config
     from harness.remote.build_rrctl_runspec import RunSpecBuildError, run_spec_digest
@@ -256,7 +257,7 @@ def _record_completion_errors(csv_path: Path, row: dict[str, str], *, workdir: P
             raise ValueError("ingest_run_evidence_missing_or_mismatched:" + "; ".join(expected["_pending"]))
         record_path = workdir / "research_workspace/experiments" / exp_id / "record.json"
         record = json.loads(record_path.read_text(encoding="utf-8"))
-        if record.get("exp_id") != exp_id or record.get("runs") != actual:
+        if record.get("exp_id") != exp_id or not runs_match_projection(record.get("runs"), actual):
             raise ValueError("ingest_record_stale_or_mismatched")
         source = record.get("source", {})
         for key, value in expected["source"].items():

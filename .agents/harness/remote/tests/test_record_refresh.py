@@ -350,6 +350,312 @@ class RecordRefreshTests(unittest.TestCase):
         self.assertIsNone(record["metrics"]["ours_metric"])
         self.assertIn("runs.R-probe.provenance: artifacts missing", record["_pending"])
 
+    def recovery(self, *, state="failed", exit_code=1, **summary_fields):
+        self.summary(**summary_fields)
+        run_root = self.artifacts / "E1/R1"
+        spec_path = self.root / "issues/E1/runs/R1/runspec.json"
+        spec = json.loads(spec_path.read_text())
+        manifest_path = run_root / "artifact_manifest.json"
+        manifest = json.loads(manifest_path.read_text())
+        manifest.pop("provenance")
+        manifest.update(recovery_id="fixture-recovery", run_spec_sha256=run_spec_digest(spec))
+        for entry in manifest["entries"]:
+            original = run_root / entry["path"]
+            target = run_root / "output" / entry["path"]
+            target.parent.mkdir(parents=True, exist_ok=True)
+            original.rename(target)
+            entry["path"] = "output/" + entry["path"]
+        manifest_path.write_text(json.dumps(manifest))
+        digest = hashlib.sha256(manifest_path.read_bytes()).hexdigest()
+        validation = self.root / "issues/E1/validation"
+        validation.mkdir(parents=True, exist_ok=True)
+        status = validation / "inspect-terminal.json"
+        status.write_text(json.dumps({"result": {"status": {
+            "run_id": "R1", "run_spec_sha256": run_spec_digest(spec),
+            "state": state, "detail": {"exit_code": exit_code}}}}))
+        records.cmd_bind_recovery(Namespace(csv=validation.parent / "tasks.csv", exp="E1", run="R1",
+            status=status, reason="Retain independently verified assets, not a successful execution"), repo_root=self.root)
+        binding_path = validation / "recovery-binding.json"
+        return binding_path, validation / "recovery-coverage-R1.json"
+
+    def test_failure_cannot_be_laundered_by_normal_manifest_provenance(self):
+        for failure in ({"complete": False}, {"status": "failed"}, {"exit_code": 1},
+                        {"workload_exit_code": 2}, {"terminal_state": "failed"},
+                        {"healthy": False}, {"completion_contract_passed": False}):
+            with self.subTest(failure=failure):
+                summary = self.summary(**failure)
+                before = {p: p.read_bytes() for p in summary.parent.rglob("*") if p.is_file()}
+                csv_path = self.root / "issues/E1/tasks.csv"
+                with self.assertRaisesRegex(ValueError, "summary_failure"):
+                    records.load_run_provenance(csv_path, "E1", "R1", repo_root=self.root)
+                self.assertEqual(records.build_record("E1", None)["runs"], [])
+                self.assertTrue(all(p.read_bytes() == content for p, content in before.items()))
+
+    def test_terminal_failure_wins_even_when_summary_and_manifest_look_successful(self):
+        self.summary(complete=True)
+        validation = self.root / "issues/E1/runs/R1"
+        status = validation / "terminal.json"
+        spec = json.loads((validation / "runspec.json").read_text())
+        for state, code in (("failed", 0), ("failed", 1), ("completed", 1)):
+            with self.subTest(state=state, code=code):
+                status.write_text(json.dumps({"result": {"status": {
+                    "run_id": "R1", "run_spec_sha256": run_spec_digest(spec),
+                    "state": state, "detail": {"exit_code": code}}}}))
+                record = records.build_record("E1", None)
+                self.assertEqual(record["runs"], [])
+                self.assertTrue(any("terminal_failure" in gap for gap in record["_pending"]))
+
+    def completion_receipt(self):
+        self.summary(scientific_outcome="gate_failed")
+        run_root = self.artifacts / "E1/R1"
+        spec = json.loads((self.root / "issues/E1/runs/R1/runspec.json").read_text())
+        manifest = json.loads((run_root / "artifact_manifest.json").read_text())
+        from remote_run_control.jsonutil import sha256_json
+        control = run_root / ".rrctl"
+        control.mkdir()
+        binding = {"run_id": "R1", "run_spec_sha256": run_spec_digest(spec),
+                   "control_root": spec["remote"]["control_root"],
+                   "worker_sha256": "b" * 64, "created_at": "2026-01-01T00:00:00Z"}
+        receipt = {"schema_version": "rrctl.completion.v1", "run_id": "R1",
+                   "run_spec_sha256": run_spec_digest(spec), "run_identity": sha256_json(binding),
+                   "manifest_sha256": sha256_json(manifest), "exit_code": 0,
+                   "health": {"schema_version": "rrctl.health.v2", "phase": "completion",
+                              "healthy": True, "complete": True}}
+        status = {"run_id": "R1", "state": "completed", "detail": {
+            "exit_code": 0, "completion_sha256": sha256_json(receipt)}}
+        for name, value in (("completion", receipt), ("status", status), ("binding", binding)):
+            (control / f"{name}.json").write_text(json.dumps(value))
+        return control, spec
+
+    def test_retained_receipt_proves_completion_and_tampering_is_rejected(self):
+        control, spec = self.completion_receipt()
+        run = records.build_record("E1", None)["runs"][0]
+        self.assertIs(run["completion_contract_passed"], True)
+        self.assertEqual((run["terminal"]["state"], run["terminal"]["exit_code"]), ("completed", 0))
+        for name in ("completion", "status", "binding"):
+            path = control / f"{name}.json"
+            before = path.read_bytes()
+            payload = json.loads(before)
+            if name == "completion":
+                payload["manifest_sha256"] = "f" * 64
+            elif name == "status":
+                payload["detail"]["completion_sha256"] = "f" * 64
+            else:
+                payload["run_spec_sha256"] = "f" * 64
+            path.write_text(json.dumps(payload))
+            self.assertEqual(records.build_record("E1", None)["runs"], [])
+            path.write_bytes(before)
+
+    def test_legacy_record_comparison_preserves_strict_identity_and_failure_semantics(self):
+        self.summary()
+        current = records.build_record("E1", None)["runs"]
+        old = [{key: value for key, value in current[0].items()
+                if key not in {"evidence_mode", "terminal", "completion_contract_passed"}}]
+        before = json.dumps(old, sort_keys=True)
+        self.assertTrue(records.runs_match_projection(old, current))
+        proven = [{**current[0], "completion_contract_passed": True}]
+        self.assertTrue(records.runs_match_projection(old, proven))
+        self.assertEqual(json.dumps(old, sort_keys=True), before)
+        for change in ({"metric": 2}, {"run_spec_sha256": "f" * 64}, {"commit": "f" * 40},
+                       {"evidence_mode": "recovery", "completion_contract_passed": False},
+                       {"terminal": {"state": "failed", "exit_code": 1}}):
+            self.assertFalse(records.runs_match_projection(old, [{**current[0], **change}]))
+        claimed = [{**old[0], "completion_contract_passed": True}]
+        self.assertFalse(records.runs_match_projection(claimed, current))
+        self.assertFalse(records.runs_match_projection(claimed, [{**current[0], "evidence_mode": "recovery",
+                                                                 "completion_contract_passed": False}]))
+
+    def test_legacy_receipt_and_workload_completion_filename_are_distinct(self):
+        control, _ = self.completion_receipt()
+        for path in control.iterdir():
+            path.rename(control.parent / path.name)
+        control.rmdir()
+        self.assertIs(records.build_record("E1", None)["runs"][0]["completion_contract_passed"], True)
+        manifest_path = control.parent / "artifact_manifest.json"
+        manifest = json.loads(manifest_path.read_text())
+        workload = control.parent / "completion.json"
+        workload.write_text('{"application_state": "done"}')
+        manifest["entries"].append({"path": "completion.json", "size": len(workload.read_bytes()),
+                                    "sha256": hashlib.sha256(workload.read_bytes()).hexdigest()})
+        manifest_path.write_text(json.dumps(manifest))
+        self.assertIsNone(records.build_record("E1", None)["runs"][0]["completion_contract_passed"])
+
+    def test_retained_failure_cannot_be_overridden_by_real_clean_receipt(self):
+        _, spec = self.completion_receipt()
+        terminal = self.root / "issues/E1/runs/R1/terminal.json"
+        terminal.write_text(json.dumps({"run_id": "R1", "run_spec_sha256": run_spec_digest(spec),
+                                        "state": "failed", "detail": {"exit_code": 1}}))
+        self.assertEqual(records.build_record("E1", None)["runs"], [])
+
+    def test_only_current_run_control_observations_can_block_ingest(self):
+        self.summary(outcome="failed", scientific_outcome="gate_failed")
+        mission = self.root / "issues/E1"
+        validation = mission / "validation"
+        validation.mkdir()
+        (validation / "unrelated-status.json").write_text("[]")
+        (self.artifacts / "E1/R1/model-status.json").write_text("[]")
+        other = validation / "rrctl-observations/R-other"
+        other.mkdir(parents=True)
+        (other / "wait-other.json").write_text("[]")
+        self.assertEqual(len(records.build_record("E1", None)["runs"]), 1)
+        spec = json.loads((mission / "runs/R1/runspec.json").read_text())
+        observations = validation / "rrctl-observations/R1"
+        observations.mkdir()
+        failure = {"schema_version": "research.rrctl-observation.v1", "run_id": "R1",
+                   "run_spec_sha256": run_spec_digest(spec), "stage": "wait", "response": {
+                       "result": {"status": {"run_id": "R1", "state": "failed", "detail": {"exit_code": 2}}}}}
+        from harness.remote.remote_run import retain_observation
+        timeout = {"ok": False, "error": {"code": "observer_timeout", "details": {"remote_workload_preserved": True}}}
+        retain_observation(spec, "wait", timeout)
+        self.assertEqual(len(records.build_record("E1", None)["runs"]), 1)
+        retain_observation(spec, "wait", failure["response"])
+        clean = json.loads(json.dumps(failure))
+        clean["response"]["result"]["status"].update(state="completed", detail={"exit_code": 0})
+        retain_observation(spec, "wait", clean["response"])
+        record = records.build_record("E1", None)
+        self.assertEqual(record["runs"], [])
+        self.assertTrue(any("terminal_failure" in gap for gap in record["_pending"]))
+
+    def test_real_local_worker_pull_and_nonzero_recovery_to_records(self):
+        # Exercise the production Controller + detached worker, not a fabricated recovery manifest.
+        import importlib.util
+        fixture_path = ROOT / ".agents/harness/remote/rrctl/tests/test_process_backend.py"
+        module_spec = importlib.util.spec_from_file_location("record_process_fixture", fixture_path)
+        module = importlib.util.module_from_spec(module_spec)
+        module_spec.loader.exec_module(module)
+        from remote_run_control.models import RunSpec
+        from remote_run_control.errors import RRCError
+        for exit_code in (0, 7):
+            with self.subTest(exit_code=exit_code):
+                fixture = module.ProcessBackendTests()
+                fixture.setUp()
+                try:
+                    spec_dict = fixture.spec(delay=0.1, exit_code=exit_code).to_dict()
+                    spec_dict["metadata"] = {"spec_id": "SPEC", "exp_id": "E1",
+                                             "mission_csv": "issues/E1/tasks.csv"}
+                    spec_dict["local_pull_root"] = str(fixture.repo / "remote_artifacts/E1")
+                    spec = RunSpec.from_dict(spec_dict)
+                    mission = fixture.repo / "issues/E1"
+                    csv_path = mission / "tasks.csv"
+                    try:
+                        fixture.control.launch(spec)
+                    except RRCError as exc:
+                        self.assertEqual(exc.code, "first_step_terminal")
+                    observed = fixture.control.wait(spec.run_id, poll_seconds=0.05, max_wait_seconds=5)
+                    self.assertEqual(observed["status"]["state"], "completed" if exit_code == 0 else "failed")
+                    mission.mkdir(parents=True)
+                    csv_path.write_text(f"exp_id,spec_id,run_id\nE1,SPEC,{spec.run_id}\n")
+                    spec_path = mission / "runs" / spec.run_id / "runspec.json"
+                    spec_path.parent.mkdir(parents=True)
+                    spec_path.write_text(json.dumps(spec.to_dict()))
+                    if exit_code == 0:
+                        fixture.control.pull(spec.run_id)
+                        _, manifest = records.load_run_provenance(csv_path, "E1", spec.run_id, repo_root=fixture.repo)
+                        self.assertIs(manifest["completion_contract_passed"], True)
+                    else:
+                        destination = fixture.repo / "remote_artifacts/E1" / spec.run_id
+                        with self.assertRaises(RRCError):
+                            fixture.control.recover_evidence(spec.run_id, paths=["summary.json", "started.json"],
+                                                            destination=destination)
+                        fixture.control.recover_evidence(spec.run_id, paths=["summary.json", "started.json"],
+                                                        destination=destination, allow_nonzero_exit=True)
+                        raw_before = {p: p.read_bytes() for base in (destination, Path(spec.remote.control_root))
+                                      for p in base.rglob("*") if p.is_file()}
+                        # Use the production Mission observation writer; no hand-filled status/digest.
+                        from harness.remote.remote_run import retain_observation
+                        status_path = retain_observation(spec.to_dict(), "wait", {"ok": True, "result": observed})
+                        with patch.object(records, "REPO_ROOT", fixture.repo), patch.object(sys, "argv", [
+                                "experiment_records.py", "bind-recovery", "--csv", str(csv_path),
+                                "--exp", "E1", "--run", spec.run_id, "--status", str(status_path),
+                                "--reason", "Preserve failed-run assets"]):
+                            self.assertEqual(records.main(), 0)
+                        _, manifest = records.load_run_provenance(csv_path, "E1", spec.run_id, repo_root=fixture.repo)
+                        self.assertIs(manifest["completion_contract_passed"], False)
+                        self.assertEqual(manifest["evidence_mode"], "recovery")
+                        self.assertEqual((manifest["terminal"]["state"], manifest["terminal"]["exit_code"]), ("failed", 7))
+                        self.assertTrue(all(path.read_bytes() == data for path, data in raw_before.items()))
+                finally:
+                    fixture.tearDown()
+
+    def test_healthy_legacy_ingest_does_not_invent_completion_or_terminal_facts(self):
+        self.summary(scientific_outcome="hypothesis_not_supported")
+        run = records.build_record("E1", None)["runs"][0]
+        self.assertEqual(run["evidence_mode"], "completion")
+        self.assertIsNone(run["completion_contract_passed"])
+        self.assertIsNone(run["terminal"]["state"])
+        self.assertIsNone(run["terminal"]["exit_code"])
+
+    def test_recovered_failed_assets_are_not_normal_completion_and_raw_is_unchanged(self):
+        self.recovery(complete=False)
+        before = {p: p.read_bytes() for base in (self.artifacts, self.root / "issues")
+                  for p in base.rglob("*") if p.is_file()}
+        self.assertEqual(self.build(), 0)
+        record = json.loads(self.record().read_text())
+        run = record["runs"][0]
+        self.assertEqual(run["evidence_mode"], "recovery")
+        self.assertIs(run["completion_contract_passed"], False)
+        self.assertEqual((run["terminal"]["state"], run["terminal"]["exit_code"]), ("failed", 1))
+        self.assertIn("/output/summary.json", run["summary_path"])
+        self.build()  # refresh recognizes its own new fields
+        records.cmd_derive(Namespace())
+        self.assertEqual(record, json.loads(self.record().read_text()))
+        self.assertTrue(all(p.read_bytes() == content for p, content in before.items()))
+
+    def test_recovery_binding_is_generic_and_cannot_be_replaced_with_local_provenance(self):
+        binding_path, report = self.recovery(state="workload_complete", exit_code=0)
+        manifest_path = self.artifacts / "E1/R1/artifact_manifest.json"
+        manifest = json.loads(manifest_path.read_text())
+        manifest["provenance"] = {"exp_id": "E1", "spec_id": "SPEC", "commit": "a" * 40,
+                                  "run_spec_sha256": manifest["run_spec_sha256"]}
+        manifest_path.write_text(json.dumps(manifest))
+        record = records.build_record("E1", None)
+        self.assertEqual(record["runs"], [])
+        self.assertTrue(any("binding_identity_mismatch" in gap for gap in record["_pending"]))
+
+    def test_recovery_rejects_unbound_changed_or_incomplete_evidence(self):
+        for bad in ("binding_digest", "manifest_digest", "status_hash", "report_hash", "report_count",
+                    "report_entries", "missing_required", "symlink", "status_running"):
+            with self.subTest(bad=bad):
+                # Recreate the fixture in a fresh isolated root for each mutation.
+                with tempfile.TemporaryDirectory(prefix="record-recovery-") as directory:
+                    old_root, old_artifacts = self.root, self.artifacts
+                    self.root = Path(directory)
+                    self.artifacts = self.root / "remote_artifacts"
+                    try:
+                        binding_path, report_path = self.recovery()
+                        binding = json.loads(binding_path.read_text())
+                        entry = binding["bindings"][0]
+                        if bad == "binding_digest":
+                            entry["run_spec_sha256"] = "f" * 64
+                        elif bad == "manifest_digest":
+                            entry["manifest_sha256"] = "f" * 64
+                        elif bad in ("status_hash", "report_hash"):
+                            entry["status_evidence" if bad == "status_hash" else "coverage_report"]["sha256"] = "f" * 64
+                        elif bad in ("report_count", "report_entries"):
+                            report = json.loads(report_path.read_text())
+                            report["verified_count" if bad == "report_count" else "verified_entries"] = 0 if bad == "report_count" else []
+                            report_path.write_text(json.dumps(report))
+                            entry["coverage_report"]["sha256"] = hashlib.sha256(report_path.read_bytes()).hexdigest()
+                        elif bad == "missing_required":
+                            (self.artifacts / "E1/R1/output/summary.json").unlink()
+                        elif bad == "symlink":
+                            status = self.root / "issues/E1" / entry["status_evidence"]["path"]
+                            saved = status.with_suffix(".saved")
+                            status.rename(saved)
+                            status.symlink_to(saved)
+                        elif bad == "status_running":
+                            status = self.root / "issues/E1" / entry["status_evidence"]["path"]
+                            payload = json.loads(status.read_text())
+                            payload["result"]["status"]["state"] = "running"
+                            status.write_text(json.dumps(payload))
+                            entry["status_evidence"]["sha256"] = hashlib.sha256(status.read_bytes()).hexdigest()
+                        binding_path.write_text(json.dumps(binding))
+                        record = records.build_record("E1", None, repo_root=self.root, artifacts=self.artifacts)
+                        self.assertEqual(record["runs"], [])
+                        self.assertTrue(any("runs.R1.provenance" in gap for gap in record["_pending"]))
+                    finally:
+                        self.root, self.artifacts = old_root, old_artifacts
+
     def test_artifact_symlink_outside_project_stays_pending(self):
         outside_temp = tempfile.TemporaryDirectory(prefix="outside-evidence-")
         self.addCleanup(outside_temp.cleanup)

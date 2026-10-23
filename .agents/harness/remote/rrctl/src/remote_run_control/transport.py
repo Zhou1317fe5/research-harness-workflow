@@ -5,8 +5,12 @@ from __future__ import annotations
 import json
 import math
 import os
+import selectors
 import shlex
 import shutil
+import subprocess
+import time
+from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
@@ -16,6 +20,27 @@ from .models import EnvironmentSpec
 from .output_limits import CONTROL_OUTPUT_LIMIT, OutputCapture, run_bounded
 from .profiles import Profile
 from .security import StreamRedactor, redact, redact_data
+
+
+def _check_download_size(count: int, expected_size: int | None) -> None:
+    if expected_size is not None and count > expected_size:
+        raise RRCError("pull_integrity", "artifact exceeds declared size", "artifact",
+                       details={"expected_size": expected_size})
+
+
+def download_timeout_seconds() -> float:
+    """Each download gets this wall-clock budget, not a fresh budget per chunk."""
+    try:
+        value = float(os.environ.get("RRCTL_DOWNLOAD_TIMEOUT_SECONDS", "1800"))
+    except ValueError as exc:
+        raise RRCError("transport_budget", "invalid RRCTL_DOWNLOAD_TIMEOUT_SECONDS", "transport") from exc
+    if not math.isfinite(value) or not 0 < value <= 86400:
+        raise RRCError(
+            "transport_budget",
+            "RRCTL_DOWNLOAD_TIMEOUT_SECONDS must be finite and in (0, 86400]",
+            "transport",
+        )
+    return value
 
 
 @dataclass(frozen=True, slots=True)
@@ -147,6 +172,16 @@ class Transport:
     def download(self, remote_path: str) -> bytes:
         raise NotImplementedError
 
+    def download_to_file(
+        self, remote_path: str, destination: Path, *,
+        timeout_seconds: float, progress: Callable[[int], None], expected_size: int | None = None,
+    ) -> None:
+        # Compatibility for small/custom transports that only implement download().
+        data = self.download(remote_path)
+        _check_download_size(len(data), expected_size)
+        destination.write_bytes(data)
+        progress(destination.stat().st_size)
+
     def preflight(
         self, *, python: str, environment: EnvironmentSpec, stage_root: str | None = None
     ) -> dict:
@@ -257,6 +292,23 @@ class LocalTransport(Transport):
                 "download_failed", f"cannot read remote path: {remote_path}", "transport"
             ) from exc
 
+    def download_to_file(
+        self, remote_path: str, destination: Path, *,
+        timeout_seconds: float, progress: Callable[[int], None], expected_size: int | None = None,
+    ) -> None:
+        _validate_timeout(timeout_seconds)
+        deadline = time.monotonic() + timeout_seconds
+        count = 0
+        with Path(remote_path).open("rb") as source, destination.open("xb") as target:
+            while chunk := source.read(1024 * 1024):
+                _check_download_size(count + len(chunk), expected_size)
+                target.write(chunk)
+                count += len(chunk)
+                progress(count)
+                if time.monotonic() >= deadline:
+                    raise RRCError("transport_timeout", "artifact download timed out", "artifact",
+                                   details={"timeout_seconds": timeout_seconds}, retryable=True)
+
 
 class SSHTransport(Transport):
     def __init__(self, profile: Profile):
@@ -357,7 +409,7 @@ class SSHTransport(Transport):
             [*base, shlex.join(["cat", remote_path])],
             input_data=None,
             env=environment,
-            timeout_seconds=180,
+            timeout_seconds=download_timeout_seconds(),
             secret_values=self.secret_values,
             stdout_limit=None,
         )
@@ -372,6 +424,70 @@ class SSHTransport(Transport):
                 "transport",
             )
         return result.stdout
+
+    def download_to_file(
+        self, remote_path: str, destination: Path, *,
+        timeout_seconds: float, progress: Callable[[int], None], expected_size: int | None = None,
+    ) -> None:
+        """Stream binary stdout to disk; drain bounded/redacted stderr separately."""
+        _validate_timeout(timeout_seconds)
+        base, environment = self._base_command()
+        stderr = OutputCapture(CONTROL_OUTPUT_LIMIT, StreamRedactor(self.secret_values))
+        deadline = time.monotonic() + timeout_seconds
+        with destination.open("xb", buffering=0) as target:
+            try:
+                process = subprocess.Popen(
+                    [*base, shlex.join(["cat", "--", remote_path])],
+                    stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                    env=environment,
+                )
+            except OSError as exc:
+                raise RRCError("transport_spawn", "download executable could not start",
+                               "transport", retryable=False) from exc
+            try:
+                with selectors.DefaultSelector() as selector:
+                    os.set_blocking(process.stderr.fileno(), False)
+                    selector.register(process.stderr, selectors.EVENT_READ)
+                    os.set_blocking(process.stdout.fileno(), False)
+                    selector.register(process.stdout, selectors.EVENT_READ)
+                    count = 0
+                    while selector.get_map() or process.poll() is None:
+                        remaining = deadline - time.monotonic()
+                        if remaining <= 0:
+                            raise RRCError(
+                                "transport_timeout", "artifact download timed out; verified files are retained",
+                                "artifact", details={"timeout_seconds": timeout_seconds}, retryable=True,
+                            )
+                        for key, _ in selector.select(min(remaining, 0.25)):
+                            try:
+                                data = os.read(key.fd, 65536)
+                            except BlockingIOError:
+                                continue
+                            if data:
+                                if key.fileobj is process.stdout:
+                                    _check_download_size(count + len(data), expected_size)
+                                    target.write(data)
+                                    count += len(data)
+                                else:
+                                    stderr.feed(data)
+                            else:
+                                selector.unregister(key.fileobj)
+                        progress(os.fstat(target.fileno()).st_size)
+            finally:
+                if process.poll() is None:
+                    process.kill()
+                process.wait()
+                process.stderr.close()
+                process.stdout.close()
+                stderr.finish()
+            result = CommandResult(process.returncode, b"", stderr.preview())
+            _check_connection(result)
+            if result.returncode != 0:
+                raise RRCError(
+                    "download_failed", "artifact download failed",
+                    "transport", details={"control_output": result.diagnostics(self.secret_values)},
+                    retryable=True,
+                )
 
 
 def transport_for(profile: Profile) -> Transport:

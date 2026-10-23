@@ -9,6 +9,7 @@ import hashlib
 import json
 import os
 import re
+import selectors
 import shutil
 import subprocess
 import sys
@@ -20,6 +21,8 @@ from typing import Any
 
 SCHEMA = "rrctl.agent-event-wait.v1"
 THREAD_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$")
+PROGRESS_PREFIX = b"[rrctl-progress] "
+CODEX_PROGRESS_INTERVAL_SECONDS = 1800
 
 
 def now() -> str:
@@ -152,9 +155,104 @@ def start(args: argparse.Namespace) -> int:
     print(json.dumps({
         "status": "waiting", "reused": False, "run_id": run_id,
         "state_path": str(path),
-        "message": "No model polling is required; this thread will be queued once on a terminal or attention event.",
+        "message": "No model polling is required. Terminal/attention events queue this thread immediately; changed progress may queue at most once per 30 minutes (Codex queue has no non-waking notification mode).",
     }, ensure_ascii=False))
     return 0
+
+
+def queue_message(codex: str, thread: str, message: str) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        [codex, "queue", "--thread", thread, "--message", message],
+        capture_output=True, text=True, check=False, timeout=10,
+    )
+
+
+def observe(command: list[str], state: dict[str, Any], args: argparse.Namespace) -> tuple[int, str, str]:
+    """Drain both pipes continuously; retain bounded tails and relay real progress changes."""
+    tails = {"stdout": b"", "stderr": b""}
+    line = b""
+    dropping = False
+    last_signature = None
+    last_notification = float("-inf")
+    codex = shutil.which("codex")
+
+    def progress(frame: bytes) -> None:
+        nonlocal last_signature, last_notification
+        if not frame.startswith(PROGRESS_PREFIX):
+            return
+        try:
+            event = json.loads(frame[len(PROGRESS_PREFIX):])
+        except (ValueError, UnicodeError):
+            return
+        if not isinstance(event, dict) or event.get("schema_version") != "rrctl.progress.v1" or event.get("run_id") != state["run_id"] or event.get("stage") != "wait":
+            return
+        message = event.get("message")
+        if not isinstance(message, str) or not message.strip():
+            return
+        # Elapsed time / ETA changes alone must not wake Codex. Unlike Pi, queue has no
+        # display-only flag (checked via `codex queue --help`); don't invent one.
+        snapshot = event.get("progress", event)
+        if not isinstance(snapshot, dict) or not any(snapshot.get(key) is not None for key in (
+            "state", "current_step", "total_steps",
+        )):
+            return  # A failed heartbeat query is not a real progress change.
+        signature = json.dumps({key: snapshot.get(key) for key in (
+            "state", "current_step", "step_field", "total_steps", "metrics",
+        )}, sort_keys=True, ensure_ascii=False)
+        current = time.monotonic()
+        if signature == last_signature or current - last_notification < CODEX_PROGRESS_INTERVAL_SECONDS:
+            return
+        if not codex:
+            state["progress_notification_error"] = "codex executable unavailable"
+            return
+        last_notification = current
+        try:
+            result = queue_message(codex, args.thread, (
+                f"rrctl progress for RunID {state['run_id']}: {message}\n"
+                "仅为低频进度通知（Codex queue 会唤醒会话）；无需轮询、重启或重新 launch，继续等待终态事件。"
+            ))
+            if result.returncode:
+                state["progress_notification_error"] = result.stderr[-2000:]
+            else:
+                last_signature = signature
+                state["progress_notified_at"] = now()
+        except (OSError, subprocess.SubprocessError) as exc:
+            state["progress_notification_error"] = str(exc)
+        atomic_json(args.state.resolve(), state)
+
+    log_path = Path(state.get("log_path", args.state.with_suffix(".log")))
+    with log_path.open("ab") as log, subprocess.Popen(
+        command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+    ) as process, selectors.DefaultSelector() as selector:
+        assert process.stdout is not None and process.stderr is not None  # PIPE above guarantees both.
+        selector.register(process.stdout, selectors.EVENT_READ, "stdout")
+        selector.register(process.stderr, selectors.EVENT_READ, "stderr")
+        while selector.get_map():
+            for key, _ in selector.select():
+                chunk = os.read(key.fd, 8192)
+                if not chunk:
+                    selector.unregister(key.fileobj)
+                    if key.data == "stderr" and line and not dropping:
+                        progress(line)
+                    continue
+                log.write(chunk)
+                log.flush()
+                name = key.data
+                tails[name] = (tails[name] + chunk)[-(12000 if name == "stdout" else 4000):]
+                if name != "stderr":
+                    continue
+                parts = chunk.split(b"\n")
+                for index, part in enumerate(parts):
+                    if not dropping:
+                        if len(line) + len(part) > 65536:
+                            line, dropping = b"", True
+                        else:
+                            line += part
+                    if index < len(parts) - 1:
+                        if not dropping:
+                            progress(line)
+                        line, dropping = b"", False
+        return process.wait(), tails["stdout"].decode("utf-8", errors="replace"), tails["stderr"].decode("utf-8", errors="replace")
 
 
 def run_child(args: argparse.Namespace) -> int:
@@ -166,28 +264,31 @@ def run_child(args: argparse.Namespace) -> int:
     state = load_json(state_path_value)
     script = Path(__file__).resolve().with_name("remote_run.py")
     command = [
-        sys.executable, str(script), str(args.runspec.resolve()), "--execute",
+        sys.executable, str(script), str(args.runspec.resolve()), "--execute", "--observe-only",
         "--poll-seconds", str(args.poll_seconds), "--max-wait-seconds", "0",
     ]
     if args.resume:
         command.append("--resume")
     if args.profiles:
         command += ["--profiles", str(args.profiles.resolve())]
-    result = subprocess.run(command, capture_output=True, text=True, check=False)
+    try:
+        exit_code, output, error = observe(command, state, args)
+    except (OSError, ValueError, subprocess.SubprocessError) as exc:
+        exit_code, output, error = 2, "", str(exc)
     event_path = state_path_value.with_suffix(".event.json")
     event = {
         "schema_version": "rrctl.agent-event.v1",
         "run_id": state["run_id"],
-        "kind": "terminal" if result.returncode == 0 else "attention",
-        "exit_code": result.returncode,
-        "output": result.stdout[-12000:],
-        "error": result.stderr[-4000:],
+        "kind": "terminal" if exit_code == 0 else "attention",
+        "exit_code": exit_code,
+        "output": output,
+        "error": error,
         "created_at": now(),
     }
     atomic_json(event_path, event)
     state.update(
-        status="terminal" if result.returncode == 0 else "attention",
-        exit_code=result.returncode,
+        status="terminal" if exit_code == 0 else "attention",
+        exit_code=exit_code,
         event_path=str(event_path),
         finished_at=now(),
     )
@@ -199,12 +300,16 @@ def run_child(args: argparse.Namespace) -> int:
         return 4
     message = (
         f"rrctl {event['kind']} event for RunID {state['run_id']}. "
-        f"Inspect {event_path} and continue the existing workflow; do not relaunch the RunID."
+        f"Inspect {event_path}. "
+        + ("Compute is terminal; continue pull/ingest now (artifacts have not been pulled). " if exit_code == 0 else "Diagnose the existing run and pull diagnostic artifacts as needed. ")
+        + "Do not relaunch the RunID."
     )
-    notified = subprocess.run(
-        [codex, "queue", "--thread", args.thread, "--message", message],
-        capture_output=True, text=True, check=False,
-    )
+    try:
+        notified = queue_message(codex, args.thread, message)
+    except (OSError, subprocess.SubprocessError) as exc:
+        state.update(status="notification_failed", notification_error=str(exc))
+        atomic_json(state_path_value, state)
+        return 4
     state["notification_exit_code"] = notified.returncode
     state["notified_at"] = now()
     if notified.returncode:

@@ -214,10 +214,11 @@ def get_progress(run_id: str, repo_root: Path, profiles: Path | None = None, spe
     remaining_seconds: float | None = None
     eta_datetime: datetime.datetime | None = None
 
+    if current_step is not None and total_steps is not None and total_steps > 0:
+        pct = min(100.0, (current_step / total_steps) * 100.0)
     if current_step is not None and current_step > 0 and elapsed_seconds is not None:
         speed_seconds_per_step = elapsed_seconds / current_step
         if total_steps is not None and total_steps > 0:
-            pct = min(100.0, (current_step / total_steps) * 100.0)
             if state in {"running", "launched", "workload_started"}:
                 remaining_steps = max(0, total_steps - current_step)
                 remaining_seconds = remaining_steps * speed_seconds_per_step
@@ -238,6 +239,8 @@ def get_progress(run_id: str, repo_root: Path, profiles: Path | None = None, spe
         "remaining_seconds": remaining_seconds,
         "eta_datetime": eta_datetime.isoformat() if eta_datetime else None,
         "metrics": metrics,
+        "estimate_source": "observed_mean_including_initialization" if speed_seconds_per_step is not None else "unknown",
+        "eta_scope": "compute_only",
     }
 
 
@@ -250,6 +253,7 @@ def estimate_runtime(
     """根据前置 smoke 产物或指定耗时推算全量运行的预计耗时与完成时刻 (时间沙盘)。"""
     t_init = init_seconds if init_seconds is not None else 0.0
     t_marg = marginal_seconds
+    estimate_source = "explicit_input" if marginal_seconds is not None else None
 
     if smoke_summary_path and smoke_summary_path.is_file():
         try:
@@ -261,8 +265,10 @@ def estimate_runtime(
             if t_marg is None:
                 if "marginal_seconds_per_step" in sdata:
                     t_marg = float(sdata["marginal_seconds_per_step"])
+                    estimate_source = "smoke_marginal"
                 elif "speed_seconds_per_step" in sdata:
                     t_marg = float(sdata["speed_seconds_per_step"])
+                    estimate_source = "smoke_speed"
                 elif "elapsed_seconds" in sdata and "steps" in sdata and int(sdata["steps"]) > 0:
                     steps = int(sdata["steps"])
                     elapsed = float(sdata["elapsed_seconds"])
@@ -270,10 +276,14 @@ def estimate_runtime(
                         t_marg = (elapsed - t_init) / steps
                     else:
                         t_marg = elapsed / steps
+                    estimate_source = "smoke_elapsed_mean"
         except Exception:
             pass
 
-    if t_marg is None or t_marg < 0:
+    if (not isinstance(total_steps, int) or isinstance(total_steps, bool) or total_steps <= 0
+            or not math.isfinite(t_init) or t_init < 0):
+        raise ValueError("总步数必须为正整数，初始化耗时必须为有限非负数")
+    if t_marg is None or not math.isfinite(t_marg) or t_marg <= 0:
         raise ValueError("无法推算耗时：缺少单步/单样本边际耗时 (marginal_seconds 或有效的 smoke_summary)")
 
     total_seconds = t_init + total_steps * t_marg
@@ -286,6 +296,8 @@ def estimate_runtime(
         "marginal_seconds_per_step": t_marg,
         "estimated_total_seconds": total_seconds,
         "eta_datetime": eta_datetime.isoformat(),
+        "estimate_source": estimate_source,
+        "eta_scope": "compute_only",
     }
 
 
@@ -309,6 +321,7 @@ def format_estimate(est: dict[str, Any]) -> str:
         lines.append(f"- 一次性初始化/冷启动耗时: {t_init:.1f} 秒")
     lines.append(f"- 预计总耗时: {tot_sec/60:.1f} 分钟 ({tot_sec/3600:.2f} 小时)")
     lines.append(f"- 预计完成时刻: {eta_local_str}")
+    lines.append(f"- 估计来源: {est.get('estimate_source', 'unknown')}；仅计算阶段，不含回传、核验与审查")
     return "\n".join(lines)
 
 
@@ -322,6 +335,8 @@ def format_progress(info: dict[str, Any], mode: str = "detailed") -> str:
     step = info.get("current_step")
     total = info.get("total_steps")
     pct = info.get("pct")
+    if pct is None and step is not None and isinstance(total, (int, float)) and total > 0:
+        pct = min(100.0, step / total * 100.0)
     speed = info.get("speed_seconds_per_step")
     elapsed_sec = info.get("elapsed_seconds")
     rem_sec = info.get("remaining_seconds")
@@ -346,7 +361,7 @@ def format_progress(info: dict[str, Any], mode: str = "detailed") -> str:
     if mode == "heartbeat":
         parts = [f"[GPU 进度心跳] RunID: {run_id}"]
         if step is not None:
-            if total:
+            if total and pct is not None:
                 parts.append(f"进度: {step}/{total} ({pct:.1f}%)")
             else:
                 parts.append(f"当前步: {step}")
@@ -365,7 +380,7 @@ def format_progress(info: dict[str, Any], mode: str = "detailed") -> str:
     if state in {"running", "launched", "workload_started"}:
         lines.append(f"- 运行状态: 运行中 ({state})")
         if step is not None:
-            total_text = f"/{total} ({pct:.1f}%)" if total else ""
+            total_text = f"/{total} ({pct:.1f}%)" if total and pct is not None else ""
             lines.append(f"- 当前进度: {step}{total_text} [{info.get('step_field', 'step')}]")
         if speed:
             lines.append(f"- 执行速度: {speed:.1f} 秒/步")
@@ -408,7 +423,7 @@ def main() -> int:
     parser.add_argument("--total-steps", type=int, help="全量运行规模总步数/样本数")
     parser.add_argument("--smoke-summary", type=Path, help="前置 smoke_summary.json 路径")
     parser.add_argument("--marginal-seconds", type=float, help="单步边际耗时（秒）")
-    parser.add_argument("--init-seconds", type=float, default=0.0, help="一次性初始化/冷启动耗时（秒）")
+    parser.add_argument("--init-seconds", type=float, default=None, help="一次性初始化/冷启动耗时（秒）；省略时读取smoke记录")
     args = parser.parse_args()
 
     if args.estimate:

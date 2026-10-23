@@ -393,6 +393,8 @@ class MissionLifecycleE2ETests(unittest.TestCase):
                 "dimensions": {}, "protocol": "fixture-protocol", "metric": 0.5,
                 "steps": None, "metric_aux": None, "weights_path": None,
                 "commit": commit, "run_spec_sha256": digest,
+                "evidence_mode": "completion", "completion_contract_passed": None,
+                "terminal": {"state": None, "exit_code": None, "evidence": []},
             }],
             "outcome": "pending",
             "artifact_path": ARTIFACT_DIR_REL,
@@ -421,6 +423,22 @@ class MissionLifecycleE2ETests(unittest.TestCase):
     # ==================================================================
     # 场景 1：正常闭环
     # ==================================================================
+    def test_legacy_healthy_record_without_new_metadata_remains_readable(self):
+        original = self._write_research_workspace
+        def legacy_fixture(digest, pending, commit):
+            original(digest, pending, commit)
+            path = self.root / f"research_workspace/experiments/{EXP_ID}/record.json"
+            record = json.loads(path.read_text())
+            for run in record["runs"]:
+                for field in ("evidence_mode", "terminal", "completion_contract_passed"):
+                    run.pop(field)
+            path.write_text(json.dumps(record, ensure_ascii=False, indent=2) + "\n")
+        with patch.object(self, "_write_research_workspace", side_effect=legacy_fixture):
+            self.test_normal_lifecycle_closes_with_consistent_csv_sidecar_and_git_evidence()
+        path = self.root / f"research_workspace/experiments/{EXP_ID}/record.json"
+        run = json.loads(path.read_text())["runs"][0]
+        self.assertNotIn("completion_contract_passed", run)  # compatibility never invents True or migrates evidence
+
     def test_normal_lifecycle_closes_with_consistent_csv_sidecar_and_git_evidence(self):
         rows = [
             self.row("CONTRACT-01", phase="contract", remote_state="not_applicable",
@@ -680,7 +698,7 @@ class MissionLifecycleE2ETests(unittest.TestCase):
 
 _HANDOFF = "\n".join([
     "# E2E closing 施工交工单",
-    "独立性: 无 outcome contract，本交工单按通用模板生成",
+    "独立性: false | mode=evidence-close | requested_model=not_applicable | observed_model=not_applicable | model_evidence=not_applicable",
     "",
     "## 先看结论",
     "Mission E2E 闭环 fixture 已完成。",

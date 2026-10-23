@@ -7,7 +7,7 @@
 - **核心职责**：在满足前置审查与路由资格的前提下，通过公共入口安全地 launch、observe 并拉取结果入账。所有状态以控制面结构化工件为准，**严禁从控制台日志文本正则匹配猜测状态**。
 - **执行栈与本地离线评测边界**：
   - 只有需要真实 GPU 计算（前向/反向、特征提取、预测生成、显存与 loss 验证）或远端专用环境依赖的运行才走远程 rrctl；
-  - **纯 CPU 离线指标聚合（如从预测结果计算 mIoU、准确率、混淆矩阵求和）属于本地轻量处理，必须直接在本地执行**，严禁将数据传回远端 CPU 额外启动 rrctl 运行。本地评测行在 CSV 中使用 `test_mcp=local_cli`。
+  - **纯 CPU 离线指标聚合默认本地执行**，不为聚合再启动 GPU 实验或把已有本地数据传回远端。若弱网且原始证据已在远端，经批准 Spec 或用户明确授权，可在原证据所在宿主只读核验并回传报告：报告绑定 RunID、原 RunSpec/manifest 摘要、核验脚本身份、全量覆盖与误差；注明核验位置和本地未保存范围，不冒充完整 pull、不改冻结清单，原先要求完整回传的合同仍须满足或如实受限。仅报告不足以把 CSV 状态伪写为 artifacts_pulled/ingested。
 
 ## 2. 正常运行 Happy Path
 
@@ -40,14 +40,14 @@
    ```bash
    python3 .agents/harness/remote/remote_run.py issues/<stem>/runs/<RunID>/runspec.json --execute
    ```
-   公共入口内部依次执行 ready、launch、前台 wait 和 pull，避免手工重复分阶段调用。
+   公共入口使用仓库内 `.agents/harness/remote/rrctl/rrctl`，不依赖 PATH 指向另一个项目的可编辑安装。普通执行依次 ready、launch、wait、pull；宿主事件等待使用 `--observe-only`，计算终态即交回执行器继续 pull/ingest。二者不改变最终验收要求。
 
 ### Step 3: 长运行监控与透明度
 - **启动前时间沙盘推算**：全量规模启动前，调用 `python3 .agents/harness/remote/remote_progress.py --estimate --total-steps <N> --smoke-summary <path>`，在对话层报备预计总耗时与 CST 完成时刻；
 - **长运行观察与心跳**：遵循 **[references/remote-monitoring.md](remote-monitoring.md)**（内置 30 分钟心跳，秒级 `remote_progress.py` 查询探针，严禁短周期无变化轮询模型）。
 
 ### Step 4: 终态确认与最小产物拉取
-1. 公共入口在 official run 返回 terminal completed 后自动 pull 最小结果集；
+1. 公共入口在 official run 返回 terminal completed 后自动 pull 最小结果集；事件模式先通知计算完成，再由执行器对原 Run 续跑回传，不能重复 launch；
 2. 校验 pull manifest 与文件存在性后，通过 `csv_state.py` 记录 `remote_state=artifacts_pulled`；
 3. pre-review smoke 必须完成终端 checkpoint 清理，保留 `console.log/status.json/smoke_summary.json`，验证 `checkpoint_cleanup_completed:true` 后方可作为 PRERUN 证据。
 

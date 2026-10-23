@@ -150,6 +150,16 @@ class CleanupTests(fixtures.ProcessBackendTests):
             cleanup_output(spec, terminal_state="failed")
         self.assertEqual(caught.exception.code, "cleanup_symlink")
 
+    def test_run_id_substring_does_not_authorize_cleaning_another_run(self):
+        spec, output = self.smoke_spec(policy=self.default_policy(), run_id_suffix="-other")
+        (output / "checkpoints").mkdir()
+        checkpoint = output / "checkpoints/a.pt"
+        checkpoint.write_bytes(b"another run")
+        with self.assertRaises(RRCError) as caught:
+            cleanup_output(spec, terminal_state="failed")
+        self.assertEqual(caught.exception.code, "cleanup_run_binding")
+        self.assertEqual(checkpoint.read_bytes(), b"another run")
+
     def test_absolute_retain_path_is_rejected(self):
         spec, _output = self.smoke_spec(
             policy=self.default_policy(retain=("/etc/passwd",))

@@ -83,7 +83,49 @@ RESULT_ANALYSIS_OUTCOMES = {
     "inconclusive",
     "not_applicable",
 }
-CLOSING_RESULTS = {"pass", "issues_found", "not_evaluable"}
+CLOSING_RESULTS = {"vision_met", "gaps_found", "limited_review"}
+
+
+def closing_output_schema() -> dict[str, Any]:
+    """Canonical model-authored closing payload; runtime identity is separate."""
+    text = {"type": "string", "minLength": 1}
+    strings = {"type": "array", "items": text}
+
+    def record(properties: dict[str, Any]) -> dict[str, Any]:
+        return {"type": "object", "additionalProperties": False,
+                "required": sorted(properties), "properties": properties}
+
+    def entries(properties: dict[str, Any]) -> dict[str, Any]:
+        return {"type": "array", "items": record(properties)}
+
+    return {"$schema": "https://json-schema.org/draft/2020-12/schema", **record({
+        "reviewer_id": text,
+        "result": {"type": "string", "enum": sorted(CLOSING_RESULTS)},
+        "report_markdown": text,
+        "summary": text,
+        "scientific_outcome": {"type": "string", "enum": sorted(RESULT_ANALYSIS_OUTCOMES)},
+        "claim_coverage": {"type": "string", "pattern": r"^(unknown|[0-9]+/[0-9]+)$"},
+        "claim_coverage_status": {"type": "string", "enum": ["complete", "gaps", "unknown"]},
+        "validation_limited": strings,
+        "gaps": entries({key: text for key in (
+            "id", "title", "source_ref", "evidence_ref", "why_it_matters", "suggested_followup_issue")}),
+        "assumptions": strings,
+        "decision_debt": strings,
+        "deferred_findings": entries({
+            **{key: text for key in ("id", "title", "summary", "why_deferred", "discussion_question")},
+            "kind": {"type": "string", "enum": ["deferred_improvement", "future_decision"]},
+            "source_issue_ids": {**strings, "minItems": 1},
+            "evidence_refs": {**strings, "minItems": 1},
+        }),
+        "human_required_blockers": strings,
+        "outcome_answers": entries({
+            **{key: text for key in ("question_id", "answer", "boundary", "next_action")},
+            "verdict": {"type": "string", "enum": ["pass", "fail", "partial", "unknown", "not_run"]},
+            "confidence": {"type": "string", "enum": ["high", "moderate", "low", "unknown"]},
+            "evidence_refs": {**strings, "minItems": 1},
+        }),
+        "handoff_markdown": text,
+    })}
 
 
 def now() -> str:
@@ -318,31 +360,7 @@ def output_schema(review_kind: str, mode: str | None = None) -> dict[str, Any]:
             },
         }
     if review_kind == "closing":
-        return {
-            "$schema": "https://json-schema.org/draft/2020-12/schema",
-            "type": "object",
-            "additionalProperties": False,
-            "required": ["reviewer_id", "result", "report_markdown", "gaps"],
-            "properties": {
-                "reviewer_id": {"type": "string", "minLength": 1},
-                "result": {"type": "string", "enum": sorted(CLOSING_RESULTS)},
-                "report_markdown": {"type": "string", "minLength": 1},
-                "gaps": {
-                    "type": "array",
-                    "items": {
-                        "type": "object",
-                        "additionalProperties": False,
-                        "required": ["source_ref", "evidence_ref", "why_it_matters", "suggested_followup_issue"],
-                        "properties": {
-                            "source_ref": {"type": "string", "minLength": 1},
-                            "evidence_ref": {"type": "string", "minLength": 1},
-                            "why_it_matters": {"type": "string", "minLength": 1},
-                            "suggested_followup_issue": {"type": "string", "minLength": 1},
-                        },
-                    },
-                },
-            },
-        }
+        return closing_output_schema()
     raise ValueError(f"unknown review kind: {review_kind}")
 
 
@@ -393,23 +411,36 @@ def _validate_result_analysis_payload(value: dict[str, Any], packet: dict[str, A
 
 
 def _validate_closing_payload(value: dict[str, Any]) -> str | None:
-    if value.get("result") not in CLOSING_RESULTS:
-        return "closing result is invalid"
-    if not isinstance(value.get("reviewer_id"), str) or not value["reviewer_id"].strip():
-        return "reviewer_id is missing"
-    if not isinstance(value.get("report_markdown"), str) or not value["report_markdown"].strip():
-        return "report_markdown is missing"
-    gaps = value.get("gaps")
-    if not isinstance(gaps, list):
-        return "gaps is invalid"
-    for gap in gaps:
-        if not isinstance(gap, dict):
-            return "gap entry is not an object"
-        for key in ("source_ref", "evidence_ref", "why_it_matters", "suggested_followup_issue"):
-            if not isinstance(gap.get(key), str) or not gap[key].strip():
-                return f"gap entry missing {key}"
-    return None
+    # Pi has no provider-enforced JSON schema. Apply the same shape locally,
+    # including nested Outcome answers, before preserving a completed verdict.
+    def check(item: Any, schema: dict[str, Any], path: str) -> str | None:
+        kind = schema["type"]
+        if kind == "object":
+            if not isinstance(item, dict):
+                return f"{path} must be an object"
+            if set(item) != set(schema["properties"]):
+                return f"{path} keys do not match canonical closing schema; rerun review (legacy lean verdicts cannot be completed)"
+            for key, child in schema["properties"].items():
+                error = check(item[key], child, f"{path}.{key}")
+                if error:
+                    return error
+        elif kind == "array":
+            if not isinstance(item, list) or len(item) < schema.get("minItems", 0):
+                return f"{path} must be an array with the required entries"
+            for index, child in enumerate(item):
+                error = check(child, schema["items"], f"{path}[{index}]")
+                if error:
+                    return error
+        elif kind == "string":
+            if not isinstance(item, str) or (schema.get("minLength") and not item.strip()):
+                return f"{path} must be a non-empty string"
+            if "enum" in schema and item not in schema["enum"]:
+                return f"{path} is invalid"
+            if "pattern" in schema and not re.fullmatch(schema["pattern"], item):
+                return f"{path} is invalid"
+        return None
 
+    return check(value, closing_output_schema(), "closing")
 
 def validate_response(
     value: dict[str, Any] | None,
@@ -755,14 +786,13 @@ def reviewer_prompt(task: str, review_kind: str, mode: str | None = None) -> str
             "Do not wrap the JSON in code fences or prose.\n"
         )
     if review_kind == "closing":
-        allowed = ", ".join(sorted(CLOSING_RESULTS))
         return (
             task.rstrip()
-            + "\n\nTransport output contract: return only one JSON object with keys "
-            "reviewer_id, result, report_markdown, gaps. "
-            f"result must be one of {allowed}. "
-            "Each gap must have source_ref, evidence_ref, why_it_matters, suggested_followup_issue. "
-            "Do not wrap the JSON in code fences or prose.\n"
+            + "\n\nTransport output contract (canonical JSON schema):\n"
+            + json.dumps(closing_output_schema(), ensure_ascii=False, sort_keys=True)
+            + "\nReturn only one JSON object. Do not infer missing evidence or invent coverage, "
+            "Outcome answers, or scientific conclusions. Use limited_review and unknown coverage "
+            "when inspection is insufficient; without an Outcome Contract use outcome_answers=[].\n"
         )
     raise ValueError(f"unknown review kind: {review_kind}")
 
@@ -844,6 +874,11 @@ def execute(args: argparse.Namespace) -> int:
                 and verdict.get("packet_sha256") == packet_sha
                 and verdict.get("task_sha256") == task_sha
             ):
+                if review_kind == "closing":
+                    fields = closing_output_schema()["properties"]
+                    error = _validate_closing_payload({key: verdict[key] for key in fields if key in verdict})
+                    if error:
+                        raise ValueError(error + "; preserve this job and start a new closing review")
                 print(json.dumps({"status": "completed", "verdict": str(verdict_path)}, ensure_ascii=False))
                 return 0
             raise ValueError("existing verdict artifact belongs to different review inputs")
@@ -1046,14 +1081,7 @@ def execute(args: argparse.Namespace) -> int:
                         }
                     )
                 elif review_kind == "closing":
-                    verdict.update(
-                        {
-                            "reviewer_id": response["reviewer_id"].strip(),
-                            "result": response["result"],
-                            "report_markdown": response["report_markdown"],
-                            "gaps": response["gaps"],
-                        }
-                    )
+                    verdict.update({key: response[key] for key in closing_output_schema()["properties"]})
                 atomic_json(verdict_path, verdict)
                 state.update(status="completed", verdict_path=str(verdict_path), updated_at=now())
                 atomic_json(state_path, state)

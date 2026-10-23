@@ -15,6 +15,14 @@ from remote_run_control.security import confined_relative_path
 
 class RecoverySnapshotTests(unittest.TestCase):
     def run_helper(self, control: Path, output: Path, paths: list[str]):
+        control.mkdir(parents=True, exist_ok=True)
+        for filename, value in (
+            ("binding.json", {"run_id": "run-1", "run_spec_sha256": "a" * 64,
+                              "control_root": str(control)}),
+            ("status.json", {"run_id": "run-1", "state": "failed", "detail": {"exit_code": 0}}),
+            ("workload-exit.json", {"run_id": "run-1", "run_spec_sha256": "a" * 64, "exit_code": 0}),
+        ):
+            (control / filename).write_text(json.dumps(value))
         result = subprocess.run(
             [
                 sys.executable,
@@ -25,6 +33,8 @@ class RecoverySnapshotTests(unittest.TestCase):
                 json.dumps(paths),
                 "run-1",
                 "a" * 64,
+                "0",
+                "0",
             ],
             capture_output=True,
             text=True,

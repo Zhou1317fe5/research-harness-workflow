@@ -68,7 +68,7 @@ def cleanup_output(spec: RunSpec, *, terminal_state: str) -> dict[str, Any] | No
             "cleanup",
         )
     output_root = Path(spec.remote.output_root)
-    if spec.run_id not in output_root.as_posix():
+    if spec.run_id not in output_root.parts:
         raise RRCError(
             "cleanup_run_binding",
             "output root must contain the bound run_id",

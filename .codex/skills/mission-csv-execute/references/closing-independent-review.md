@@ -32,13 +32,23 @@ python .codex/skills/mission-csv-execute/scripts/run_vision_review.py \
   --backend codex \
   --model <当前会话模型（默认自动探测，严禁传高级审查模型）>
 ```
-兼容 CSV 没有 source doc 时省略 `--source-doc`。脚本失败时显式分类（`quota_error` / `transport_error` / `timeout`）后进入 self-review。
+兼容 CSV 没有 source doc 时省略 `--source-doc`。脚本失败时显式分类（`quota_error` / `transport_error` / `timeout`）；供应商额度耗尽必须暂停并告知用户，不自动切模型或以自审掩盖额度失败。其他 capability failure 可如实记录后进入 self-review。
+
+### 恢复与材料身份
+
+- runtime 选 CSV 最后一个 REVIEW 行为当前轮；job 目录为 `reviews/closing-reviewer-job-<截短CSV展示名>-<截短轮次展示名>-<完整SHA256>/`。展示名不承担唯一性，完整路径/轮次/材料/任务/模型/backend 一起确定身份。
+- 同轮、同输入重跑复用原 job、verdict 和持久化 invocation 记账；`REVIEW-02` 或材料变化生成新 job，不搬移、不删除、不改名旧 job，也不删除 verdict/job.json 来重置预算。
+- 材料集合是 CSV、批准文档、指定 ledgers/review log、CSV/ledger/extra 明确引用的证据，以及 Git 列出的实现/配置源码（含未忽略的新源码）。显式引用 RunID 目录时绑定 `artifact_manifest.json` 和其中 `entries[].path` 的实际文件内容（流式 hash）；不能只信 manifest 声称的旧 digest。无 manifest 的目录拒绝，需改为明确文件引用。不递归盲扫数据集、checkpoint、旧实验目录或无关大产物；未列入 manifest 的额外文件不自动纳入，关键证据须在清单或显式引用中。未识别的源码类型也须显式引用。
+- 凭据（`.env*`、`profiles.json`、私钥等）不得进入材料；自动发现跳过，显式输入/证据引用拒绝，软链接目标同样检查。只传所需配置说明，不传秘密本体。
+- 按工作树内容而非 HEAD/diff 散列：已提交科学代码变化也会使旧结论失效；空提交与暂存动作不会。当前 REVIEW 状态、输出 tags、当前轮 review-log 段、事件、progress/lock 和 reviewer job 不作为本轮新材料，避免结账自失效；其他行与历史审查仍保留。
+- reviewer_job 的本地 invocation 上限只约束此 job 启动/恢复次数，不代表供应商剩余额度；新材料可有新 job，但不是额度恢复证据。供应商 quota 错误仍按上面的暂停规则处理。
 
 ## 3. Reviewer Prompt 硬要求
 
 - 独立路径的请求模型 = 当前会话（执行）模型；
 - 只基于批准文档、CSV、claim/evidence ledger、diff/commit、测试证据与交付声明；
 - 不信任主 agent 的结论性总结；
+- 交工单正文不自报独立性/模型；最终唯一身份头由 launcher 从结构化 runtime 证据生成，不能把自审稿直接改标为独立审查。
 - 不为了找问题而找问题，只有让结论不可信或让声明超出证据的差距才算 gap；
 - 必须检查声明与证据等级是否一致，尤其严查 mock 是否冒充通过；
 - 结论分类：
@@ -46,6 +56,7 @@ python .codex/skills/mission-csv-execute/scripts/run_vision_review.py \
   - `gaps_found`: 存在 current-scope 实施或证据差距；
   - `limited_review`: 证据不足无法判断。
 - `scientific_outcome` 单独记录（`hypothesis_supported / hypothesis_not_supported / gate_failed / inconclusive / not_applicable`），严禁将 `gate_failed` 转化为 `gaps_found`。
+- 数值精度容差用于判断实现/复现是否在约定误差内，不等于统计显著性；不能据此声称涨点可信，统计结论仍按批准协议与实际重复实验的证据判定。
 
 ## 4. Review Log 格式 (`<stem>.review.md`)
 

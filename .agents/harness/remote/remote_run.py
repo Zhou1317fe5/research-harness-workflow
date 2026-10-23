@@ -11,6 +11,7 @@ if __name__ == "__main__":
     raise SystemExit(main())
 
 import argparse
+import hashlib
 import json
 import math
 import os
@@ -21,6 +22,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 from pathlib import Path, PurePosixPath
 
 from harness.common.paths import REPO_ROOT
@@ -469,18 +471,23 @@ def validate_mission_launch(spec: dict, *, resume: bool = False, spec_path: Path
 
 
 def rrctl_call(argv: list[str], repo_root: Path) -> subprocess.CompletedProcess:
+    # pull reports transfer progress on stderr; do not buffer it until the
+    # entire transfer finishes. Other control calls retain captured diagnostics.
+    stream_progress = "pull" in argv
     env_file = repo_root / ".agents/harness/config/.env"
     if env_file.is_file():
         # 只传文件路径和参数，凭据由 shell 在进程内读取。
         argv = ["bash", "-c", 'set -e; set -a; source "$1"; set +a; shift; exec "$@"', "harness", str(env_file), *argv]
-    return subprocess.run(argv, capture_output=True, text=True, check=False)
+    return subprocess.run(argv, stdout=subprocess.PIPE,
+                          stderr=None if stream_progress else subprocess.PIPE,
+                          text=True, check=False)
 
 
 def resolve_rrctl() -> str:
-    executable = shutil.which("rrctl")
-    install_hint = "python -m pip install -e .agents/harness/remote/rrctl"
-    if executable is None:
-        raise ValueError(f"rrctl is unavailable; install with {install_hint}")
+    package_root = Path(__file__).resolve().parent / "rrctl"
+    executable = str(package_root / "rrctl")
+    if not Path(executable).is_file() or not os.access(executable, os.X_OK):
+        raise ValueError(f"repository rrctl launcher is missing or not executable: {executable}")
     try:
         capability = subprocess.run(
             [executable, "--json", "doctor"], capture_output=True, text=True,
@@ -498,6 +505,8 @@ def resolve_rrctl() -> str:
     required = {"observer-deadline", "worker-monitoring", "unknown-operation-outcome"}
     available = {item for item in capabilities if isinstance(item, str)} if isinstance(capabilities, list) else set()
     missing = sorted(required - available)
+    if report.get("implementation") != str(package_root / "src/remote_run_control"):
+        missing.append("repository-local implementation")
     if not isinstance(backends, list) or "process" not in backends:
         missing.insert(0, "process backend")
     if report.get("wait_default_seconds") != 0:
@@ -505,8 +514,7 @@ def resolve_rrctl() -> str:
     if capability.returncode or missing:
         raise ValueError(
             f"rrctl at {executable} failed doctor or lacks required capabilities: {', '.join(missing)}; "
-            f"install this repository's control package with {install_hint} "
-            "and place that environment first in PATH"
+            "restore this checkout's bundled control package; a global PATH installation is not used"
         )
     return executable
 
@@ -596,6 +604,44 @@ def _emit_stage(stage: str, value: dict, run_id: str, returncode: int, *, full: 
     print(json.dumps(summary, ensure_ascii=False), flush=True)
 
 
+def retain_observation(spec: dict, stage: str, response: dict) -> Path | None:
+    """Keep exact control replies beside the Mission; ingest never needs HOME logs."""
+    csv_value = spec.get("metadata", {}).get("mission_csv")
+    if stage not in {"launch", "inspect", "wait"} or not csv_value:
+        return None
+    root = Path(spec["source"]["repo_root"]).resolve()
+    csv_path = (root / csv_value).resolve()
+    if not csv_path.is_relative_to(root):
+        raise ValueError("observation mission CSV escapes source repository")
+    directory = csv_path.parent / "validation/rrctl-observations" / spec["run_id"]
+    cursor = directory
+    while cursor != root:
+        if cursor.is_symlink():
+            raise ValueError("observation directory cannot contain symlinks")
+        cursor = cursor.parent
+    encoded = json.dumps(response, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
+    value = {"schema_version": "research.rrctl-observation.v1", "run_id": spec["run_id"],
+             "run_spec_sha256": run_spec_digest(spec), "stage": stage, "response": response}
+    content = json.dumps(value, ensure_ascii=False, sort_keys=True, indent=2) + "\n"
+    directory.mkdir(parents=True, exist_ok=True)
+    destination = directory / f"{stage}-{hashlib.sha256(encoded).hexdigest()}.json"
+    try:
+        with destination.open("x", encoding="utf-8") as stream:
+            stream.write(content)
+    except FileExistsError:
+        if destination.is_symlink() or destination.read_text(encoding="utf-8") != content:
+            raise ValueError("retained control observation conflicts with existing evidence")
+    return destination
+
+
+def emit_progress(run_id: str, stage: str, message: str, **detail) -> None:
+    """One bounded, machine-readable notification; stdout remains CLI JSON."""
+    value = {"schema_version": "rrctl.progress.v1", "run_id": run_id,
+             "stage": stage, "message": message, **detail}
+    sys.stderr.write("[rrctl-progress] " + json.dumps(value, ensure_ascii=False) + "\n")
+    sys.stderr.flush()
+
+
 class ProgressHeartbeat:
     """在长时间等待 (wait) 期间，每隔固定周期（默认 30 分钟）打印一次进度心跳与 ETA。"""
 
@@ -627,6 +673,7 @@ class ProgressHeartbeat:
     def _run(self) -> None:
         from harness.remote.remote_progress import format_progress, get_progress
 
+        previous = None
         while not self._stop_event.wait(timeout=self.interval_seconds):
             try:
                 info = get_progress(
@@ -635,20 +682,38 @@ class ProgressHeartbeat:
                     profiles=self.profiles,
                     spec_path=self.spec_path,
                 )
+                observed = time.monotonic()
+                step = info.get("current_step")
+                if previous and isinstance(step, int) and step > previous[1]:
+                    speed = (observed - previous[0]) / (step - previous[1])
+                    info["speed_seconds_per_step"] = speed
+                    info["estimate_source"] = "observed_interval"
+                    total = info.get("total_steps")
+                    if isinstance(total, int) and info.get("state") == "running":
+                        from datetime import datetime, timedelta, timezone
+                        remaining = max(0, total - step) * speed
+                        info["remaining_seconds"] = remaining
+                        info["eta_datetime"] = (datetime.now(timezone.utc) + timedelta(seconds=remaining)).isoformat()
+                if isinstance(step, int):
+                    previous = (observed, step)
                 msg = format_progress(info, mode="heartbeat")
                 if msg:
-                    sys.stderr.write(f"\n{msg}\n")
-                    sys.stderr.flush()
-            except Exception:
-                pass
+                    emit_progress(self.run_id, "wait", msg, progress=info)
+            except Exception as exc:
+                # One message per heartbeat interval, without secrets or raw
+                # transport stderr. A broken query must not look like silence.
+                emit_progress(self.run_id, "wait", "进度暂不可用；远端任务未因此停止，继续观察。",
+                              query_error=type(exc).__name__)
 
 
 def execute(
     spec_path: Path, *, profiles: Path | None, poll_seconds: float,
     max_wait_seconds: float = 0, heartbeat_seconds: float = 1800,
     resume: bool = False, full_output: bool = False,
-    launch_only: bool = False,
+    launch_only: bool = False, observe_only: bool = False,
 ) -> int:
+    if launch_only and observe_only:
+        raise ValueError("--launch-only cannot be combined with --observe-only")
     spec = json.loads(spec_path.read_text(encoding="utf-8"))
     if not isinstance(spec, dict):
         raise ValueError("RunSpec must be a JSON object")
@@ -662,10 +727,9 @@ def execute(
         prefix += ["--profiles", str(profiles.resolve())]
     stages = ([("inspect", [run_id])] if resume else [("ready", [str(spec_path)]), ("launch", [str(spec_path), "--max-wait-seconds", str(max_wait_seconds)])])
     if not launch_only:
-        stages += [
-            ("wait", [run_id, "--poll-seconds", str(poll_seconds), "--max-wait-seconds", str(max_wait_seconds)]),
-            ("pull", [run_id]),
-        ]
+        stages.append(("wait", [run_id, "--poll-seconds", str(poll_seconds), "--max-wait-seconds", str(max_wait_seconds)]))
+        if not observe_only:
+            stages.append(("pull", [run_id]))
     for stage, arguments in stages:
         heartbeat = None
         if stage == "wait" and heartbeat_seconds > 0:
@@ -689,19 +753,22 @@ def execute(
             if binding.get("run_spec_sha256") != run_spec_digest(spec):
                 raise ValueError("resume RunSpec differs from the bound remote run")
         _emit_stage(stage, value, run_id, result.returncode, full=full_output)
+        retain_observation(spec, stage, value)
         preserved = value.get("error", {}).get("details", {}).get("remote_workload_preserved")
         if result.returncode == 124 or preserved:
             command = [sys.executable, str(Path(__file__).resolve()), str(spec_path), "--execute", "--resume",
                        "--poll-seconds", str(poll_seconds), "--max-wait-seconds", str(max_wait_seconds)]
             if profiles:
                 command += ["--profiles", str(profiles.resolve())]
+            if observe_only:
+                command.append("--observe-only")
             print(json.dumps({"run_id": run_id, "remote_workload_preserved": True, "resume_argv": command}, ensure_ascii=False), flush=True)
             return result.returncode or 2
         if launch_only and stage == "launch" and result.returncode == 0 and value.get("ok") is not False:
             return 0
         failed_state = value.get("result", {}).get("status", {}).get("state") in {"failed", "aborted"}
         if result.returncode or value.get("ok") is False or failed_state:
-            if stage in {"launch", "wait"}:
+            if stage in {"launch", "wait"} and not observe_only:
                 diagnostic = rrctl_call([*prefix, "pull", run_id, "--diagnostic"], REPO_ROOT)
                 # 诊断拉取失败不能覆盖原始运行错误。
                 if diagnostic.stdout.strip():
@@ -710,6 +777,9 @@ def execute(
                     except ValueError:
                         pass
             return 2
+        if stage == "wait":
+            emit_progress(run_id, "completed", "远端计算已完成；继续回传、核验和入账。",
+                          remote_state=value.get("result", {}).get("status", {}).get("state"))
     return 0
 
 
@@ -728,6 +798,7 @@ def main() -> int:
     )
     parser.add_argument("--resume", action="store_true", help="inspect the bound run and continue wait/pull without launching again")
     parser.add_argument("--launch-only", action="store_true", help="run ready and launch, then return without wait/pull")
+    parser.add_argument("--observe-only", action="store_true", help="return at remote terminal/attention without waiting for pull; the host continues recovery/ingest")
     parser.add_argument("--full-output", action="store_true", help="print full responses instead of summaries and local detail paths")
     parser.add_argument("--request", type=Path, help="prepare the RunSpec from a request before executing")
     parser.add_argument("--project-config", type=Path)
@@ -767,13 +838,15 @@ def main() -> int:
                 raise ValueError("--launch-only cannot be combined with --resume")
             return execute(spec, profiles=profiles, poll_seconds=args.poll_seconds, max_wait_seconds=args.max_wait_seconds,
                            heartbeat_seconds=args.heartbeat_seconds, resume=args.resume, full_output=args.full_output,
-                           launch_only=args.launch_only)
+                           launch_only=args.launch_only, observe_only=args.observe_only)
         command = [sys.executable, ".agents/harness/remote/remote_run.py", str(spec), "--execute", "--poll-seconds", str(args.poll_seconds),
                    "--max-wait-seconds", str(args.max_wait_seconds)]
         if args.resume:
             command.append("--resume")
         if args.launch_only:
             command.append("--launch-only")
+        if args.observe_only:
+            command.append("--observe-only")
         if args.full_output:
             command.append("--full-output")
         if profiles:

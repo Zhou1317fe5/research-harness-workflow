@@ -28,6 +28,7 @@ Use this workflow to turn a completed experiment result ingest into one auditabl
    - Always consider `experiments/<ExpID>/`, `EXPERIMENTS.csv`, and `STATE.md`.
    - Include other `research_workspace` files only when they are clearly tied to the current ExpID, such as command records, search evidence, analysis drafts visualization notes, or next-step documents.
    - Exclude unrelated dirty files and unrelated experiments, even if they are already present in `research_workspace`.
+   - If a Run failed, has nonzero exit or an explicitly incomplete summary, or assets were recovered without normal completion, read [evidence boundaries](references/evidence-boundaries.md) before committing. Keep recovery/negative evidence distinct from a passed completion; never rewrite raw evidence to make ingest pass.
 
 4. Stage deliberately.
    - Use explicit `git add` paths, for example:
