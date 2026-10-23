@@ -26,4 +26,5 @@
 - **Pi 宿主**：`rrctl_event_wait` 运行 `--observe-only`；已启动 Run 必须 `resume:true`。心跳显示为用户可见的非唤醒消息，不调用模型。计算到达 terminal/attention 即唤醒，执行器立即继续原 Run 的 pull/诊断/ingest，不等回传才通知，也不等用户说“继续”。
 - **Codex 宿主**：`python3 .agents/harness/remote/agent_event_wait.py start <runspec> --resume` 结束当前 turn；relay 同样只观察计算终态。当前 `codex queue` 无非唤醒通知接口，因此仅对真实变化的进度至多每 30 分钟队列通知一次（会唤醒会话），禁止借通知再做周期 shell 轮询；终态独立立即通知并续跑 pull/ingest。
 - **回传阶段**：与计算 ETA 分开。pull 的 stderr 报文件数、已传/总字节、速度和单文件有效预算；中断只重试同 Run 的缺项。`pull_busy` 表示已有传输，不能另起同目标 pull 或清空其 staging。
+- **先定位再交接**：pull 成功后的第一个动作是把产物发布到该 Run 的规范目录（`remote_artifacts/<ExpID>/<RunID>/`）并落 manifest，然后才把收尾交给 relay 或后台观察。在此之前不得先手工搬动、改名或重排目录——relay 补拉会按 manifest 重建路径，与人工规整互相覆盖，产生“文件突然不存在”。已手工动过产物时，先按 manifest 核验现有位置，只补缺项，不整批重拉。
 - **无本地守护进程**：不得创建 systemd user unit、全局 nohup 守护或常驻后台 watcher。rrctl 保持 daemonless，远端由独立会话管理。
