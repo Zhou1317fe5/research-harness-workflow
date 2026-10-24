@@ -12,6 +12,7 @@ import math
 import os
 import re
 import sys
+import zoneinfo
 from pathlib import Path
 from typing import Any
 
@@ -23,6 +24,53 @@ if str(AGENT_DIR) not in sys.path:
     sys.path.insert(0, str(AGENT_DIR))
 
 from harness.remote.remote_run import rrctl_call, resolve_rrctl  # noqa: E402
+
+
+def local_timezone() -> datetime.tzinfo:
+    """操作者本地时区：显式配置优先，否则取宿主本地时区。
+
+    宿主 TZ 缺失时 ``astimezone()`` 会静默给出 UTC，读起来像"世界时间"；
+    因此允许 ``HARNESS_TZ`` / ``TZ``（如 ``Asia/Shanghai``）显式指定。
+    """
+    for name in (os.environ.get("HARNESS_TZ"), os.environ.get("TZ")):
+        if not name:
+            continue
+        try:
+            return zoneinfo.ZoneInfo(name.lstrip(":"))
+        except (zoneinfo.ZoneInfoNotFoundError, ValueError):
+            continue
+    return datetime.datetime.now().astimezone().tzinfo or datetime.timezone.utc
+
+
+def to_local(value: datetime.datetime) -> datetime.datetime:
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=datetime.timezone.utc)
+    return value.astimezone(local_timezone())
+
+
+def timezone_label(tz: datetime.tzinfo | None = None) -> str:
+    """显示为 UTC+8 这类无歧义偏移，不用 CST 等可指多地的缩写。"""
+    tz = tz or local_timezone()
+    offset = datetime.datetime.now(tz).utcoffset() or datetime.timedelta(0)
+    minutes = int(offset.total_seconds() // 60)
+    sign = "+" if minutes >= 0 else "-"
+    hours, rest = divmod(abs(minutes), 60)
+    return f"UTC{sign}{hours}" + (f":{rest:02d}" if rest else "")
+
+
+def format_duration(seconds: float) -> str:
+    """人类可读时长：6h6m / 41m / 2d3h。"""
+    total = max(0, int(round(seconds)))
+    minutes = total // 60
+    if minutes < 1:
+        return f"{total}s"
+    days, rest = divmod(minutes, 24 * 60)
+    hours, mins = divmod(rest, 60)
+    if days:
+        return f"{days}d{hours}h"
+    if hours:
+        return f"{hours}h{mins}m"
+    return f"{mins}m"
 
 
 def resolve_run_target(target: str | None, repo_root: Path) -> tuple[str, Path | None]:
@@ -310,7 +358,9 @@ def format_estimate(est: dict[str, Any]) -> str:
     eta_iso = est["eta_datetime"]
 
     dt = datetime.datetime.fromisoformat(eta_iso)
-    eta_local_str = dt.astimezone().strftime("%Y-%m-%d %H:%M %Z")
+    local_dt = to_local(dt)
+    tz_label = timezone_label()
+    eta_local_str = f"{local_dt.strftime('%Y-%m-%d %H:%M')} {tz_label}"
 
     lines = [
         "[启动前耗时沙盘推算]",
@@ -319,7 +369,7 @@ def format_estimate(est: dict[str, Any]) -> str:
     ]
     if t_init > 0:
         lines.append(f"- 一次性初始化/冷启动耗时: {t_init:.1f} 秒")
-    lines.append(f"- 预计总耗时: {tot_sec/60:.1f} 分钟 ({tot_sec/3600:.2f} 小时)")
+    lines.append(f"- 预计总耗时: {format_duration(tot_sec)}")
     lines.append(f"- 预计完成时刻: {eta_local_str}")
     lines.append(f"- 估计来源: {est.get('estimate_source', 'unknown')}；仅计算阶段，不含回传、核验与审查")
     return "\n".join(lines)
@@ -344,15 +394,18 @@ def format_progress(info: dict[str, Any], mode: str = "detailed") -> str:
     metrics = info.get("metrics") or {}
 
     # 本地时刻显示
+    tz_label = timezone_label()
     eta_local_str = ""
+    eta_local_full = ""
     if eta_iso:
-        dt = datetime.datetime.fromisoformat(eta_iso)
-        eta_local_str = dt.astimezone().strftime("%H:%M %Z")
+        dt = to_local(datetime.datetime.fromisoformat(eta_iso))
+        eta_local_str = f"{dt.strftime('%H:%M')} {tz_label}"
+        eta_local_full = f"{dt.strftime('%Y-%m-%d %H:%M')} {tz_label}"
 
     started_local_str = ""
     if info.get("started_at"):
-        s_dt = datetime.datetime.fromisoformat(info["started_at"])
-        started_local_str = s_dt.astimezone().strftime("%H:%M")
+        s_dt = to_local(datetime.datetime.fromisoformat(info["started_at"]))
+        started_local_str = f"{s_dt.strftime('%H:%M')} {tz_label}"
 
     metrics_str = " | ".join(
         f"{k}={v:.4f}" if isinstance(v, float) else f"{k}={v}" for k, v in metrics.items()
@@ -368,9 +421,9 @@ def format_progress(info: dict[str, Any], mode: str = "detailed") -> str:
         if speed:
             parts.append(f"速度: {speed:.1f}s/步")
         if elapsed_sec is not None:
-            parts.append(f"已用: {elapsed_sec/60:.0f}m")
+            parts.append(f"已用: {format_duration(elapsed_sec)}")
         if rem_sec is not None and eta_local_str:
-            parts.append(f"预计剩余: {rem_sec/60:.0f}m (预计完成: {eta_local_str})")
+            parts.append(f"预计剩余: {format_duration(rem_sec)} (预计完成: {eta_local_str})")
         if metrics_str:
             parts.append(metrics_str)
         return " | ".join(parts)
@@ -386,11 +439,10 @@ def format_progress(info: dict[str, Any], mode: str = "detailed") -> str:
             lines.append(f"- 执行速度: {speed:.1f} 秒/步")
         if elapsed_sec is not None:
             start_hint = f" (启动于 {started_local_str})" if started_local_str else ""
-            lines.append(f"- 已用时长: {elapsed_sec/60:.1f} 分钟{start_hint}")
+            lines.append(f"- 已用时长: {format_duration(elapsed_sec)}{start_hint}")
         if rem_sec is not None and eta_local_str:
-            hours = rem_sec / 3600
-            lines.append(f"- 预计剩余: {rem_sec/60:.1f} 分钟 ({hours:.2f} 小时)")
-            lines.append(f"- 预计完成时刻: {eta_local_str}")
+            lines.append(f"- 预计剩余: {format_duration(rem_sec)}")
+            lines.append(f"- 预计完成时刻: {eta_local_full}")
         if metrics_str:
             lines.append(f"- 阶段指标: {metrics_str}")
     elif state == "completed":
@@ -398,7 +450,7 @@ def format_progress(info: dict[str, Any], mode: str = "detailed") -> str:
         if total:
             lines.append(f"- 最终进度: {total}/{total} (100.0%)")
         if elapsed_sec is not None:
-            lines.append(f"- 实际总耗时: {elapsed_sec/60:.1f} 分钟 ({elapsed_sec/3600:.2f} 小时)")
+            lines.append(f"- 实际总耗时: {format_duration(elapsed_sec)}")
         if metrics_str:
             lines.append(f"- 最终指标: {metrics_str}")
     else:
@@ -407,7 +459,7 @@ def format_progress(info: dict[str, Any], mode: str = "detailed") -> str:
             total_text = f"/{total}" if total else ""
             lines.append(f"- 中断进度: {step}{total_text}")
         if elapsed_sec is not None:
-            lines.append(f"- 运行耗时: {elapsed_sec/60:.1f} 分钟")
+            lines.append(f"- 运行耗时: {format_duration(elapsed_sec)}")
 
     return "\n".join(lines)
 

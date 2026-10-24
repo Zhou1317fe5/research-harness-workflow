@@ -60,8 +60,38 @@ class RemoteProgressTests(unittest.TestCase):
         detailed = format_progress(info, mode="detailed")
         self.assertIn("运行状态: 运行中", detailed)
         self.assertIn("当前进度: 300/600 (50.0%)", detailed)
-        self.assertIn("预计剩余: 30.0 分钟", detailed)
-        self.assertIn("预计完成时刻:", detailed)
+        self.assertIn("预计剩余: 30m", detailed)
+        self.assertIn("预计完成时刻: ", detailed)
+        # 本地时刻 + 明确偏移，不出现 UTC 或地区缩写。
+        self.assertRegex(detailed, r"预计完成时刻: \d{4}-\d{2}-\d{2} \d{2}:\d{2} UTC[+-]\d")
+        self.assertIn("已用时长: ", detailed)
+
+    def test_duration_and_timezone_formatting(self):
+        from harness.remote.remote_progress import format_duration, timezone_label
+
+        self.assertEqual(format_duration(41 * 60), "41m")
+        self.assertEqual(format_duration(366 * 60), "6h6m")
+        self.assertEqual(format_duration(3600 * 25), "1d1h")
+        self.assertEqual(format_duration(45), "45s")
+        self.assertRegex(timezone_label(), r"^UTC[+-]\d+(:\d{2})?$")
+
+    def test_heartbeat_uses_hours_and_minutes(self):
+        now = datetime.datetime.now(datetime.timezone.utc)
+        info = {
+            "run_id": "RUN-MOCK-03", "state": "running", "exit_code": None,
+            "started_at": (now - datetime.timedelta(minutes=41)).isoformat(),
+            "updated_at": now.isoformat(), "elapsed_seconds": 41 * 60.0,
+            "current_step": 60, "step_field": "step", "total_steps": 600, "pct": 10.0,
+            "speed_seconds_per_step": 40.7,
+            "remaining_seconds": 366 * 60.0,
+            "eta_datetime": (now + datetime.timedelta(minutes=366)).isoformat(),
+            "metrics": {"miou": 87.4448},
+        }
+        heartbeat = format_progress(info, mode="heartbeat")
+        self.assertIn("预计剩余: 6h6m", heartbeat)
+        self.assertIn("已用: 41m", heartbeat)
+        self.assertRegex(heartbeat, r"预计完成: \d{2}:\d{2} UTC[+-]\d")
+        self.assertNotIn("m (预计完成: 366", heartbeat)
 
     def test_format_progress_completed(self):
         info = {
@@ -82,7 +112,7 @@ class RemoteProgressTests(unittest.TestCase):
         }
         detailed = format_progress(info, mode="detailed")
         self.assertIn("已完成 (completed, exit_code 0)", detailed)
-        self.assertIn("实际总耗时: 60.0 分钟", detailed)
+        self.assertIn("实际总耗时: 1h0m", detailed)
         self.assertIn("miou=68.2000", detailed)
 
     def test_estimate_runtime(self):
@@ -101,7 +131,7 @@ class RemoteProgressTests(unittest.TestCase):
         self.assertIn("全量规模: 1000 步/样本", text)
         self.assertIn("单步边际耗时: 2.00 秒/步", text)
         self.assertIn("一次性初始化/冷启动耗时: 100.0 秒", text)
-        self.assertIn("预计总耗时: 35.0 分钟", text)
+        self.assertIn("预计总耗时: 35m", text)
 
         # 尝试从 smoke_summary.json 读取
         summary_path = self.root / "smoke_summary.json"
