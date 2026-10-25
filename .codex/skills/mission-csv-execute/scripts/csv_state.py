@@ -432,13 +432,15 @@ def _validate_row_transition(
             raise StateUpdateError(f"git_committed_with_dev_unstarted:{original['id']}")
 
 
-def _validate_claims(csv_path: Path, rows: list[dict[str, str]]) -> None:
+def _validate_claims(csv_path: Path, rows: list[dict[str, str]], target_id: str | None = None) -> None:
     from validate_claim_ledger import resolve_path, validate_ledger
 
     root = Path(_git(["rev-parse", "--show-toplevel"], csv_path.parent) or csv_path.parent)
     ledgers: dict[Path, set[str]] = {}
     try:
         for row in rows:
+            if target_id and row["id"] != target_id:
+                continue
             tags = parse_note_tags(row["notes"])
             claims = {x.strip() for x in tags.get("claims", "").split(",") if x.strip()}
             value = tags.get("claim_ledger")
@@ -605,7 +607,14 @@ def _assert_write_context(csv_path: Path, row: dict[str, str]) -> None:
     if csv_repo is None:
         return
     here_repo = _git(["rev-parse", "--show-toplevel"], Path.cwd())
-    if here_repo is not None and Path(here_repo) != Path(csv_repo):
+    csv_common = _git(["rev-parse", "--git-common-dir"], csv_path.parent.resolve())
+    here_common = _git(["rev-parse", "--git-common-dir"], Path.cwd())
+    same_repo = False
+    if csv_repo and here_repo and Path(csv_repo).resolve() == Path(here_repo).resolve():
+        same_repo = True
+    elif csv_common and here_common and Path(csv_common).resolve() == Path(here_common).resolve():
+        same_repo = True
+    if here_repo is not None and not same_repo:
         raise StateUpdateError(
             "write_context_repo_mismatch: "
             f"cwd 属于 {here_repo}，但 CSV 属于 {csv_repo}；"
@@ -617,9 +626,10 @@ def _assert_write_context(csv_path: Path, row: dict[str, str]) -> None:
     # 用 branch --show-current 而非 rev-parse --abbrev-ref HEAD：
     # 后者在尚无 commit 的仓库上失败，会让断言被静默跳过。
     current = _git(["branch", "--show-current"], Path(csv_repo))
-    if current is None:
+    worktree_branch = _git(["branch", "--show-current"], csv_path.parent.resolve())
+    if current is None and worktree_branch is None:
         return
-    if current != declared:
+    if current != declared and worktree_branch != declared:
         raise StateUpdateError(
             "write_context_branch_mismatch: "
             f"当前分支 {current}，但该行 branch 字段为 {declared}；"
@@ -651,11 +661,15 @@ def _apply_update_locked(csv_path, request, *, replace):
         "commit_boundary",
         "expected_sha256",
         "retry_binding",
+        "supersession_binding",
         "remote_binding_reconciliation",
+        "restricted_terminal_reconciliation",
     }
     unknown = sorted(set(request) - allowed)
     if unknown:
         raise StateUpdateError("request_unknown_fields: " + ",".join(unknown))
+    if "supersession_binding" in request and "retry_binding" not in request:
+        request["retry_binding"] = request["supersession_binding"]
     if request.get("schema_version") != SCHEMA:
         raise StateUpdateError(f"schema_version_invalid: expected {SCHEMA}")
     row_id = request.get("row_id")
@@ -762,7 +776,7 @@ def _apply_update_locked(csv_path, request, *, replace):
     except ValueError as exc:
         raise StateUpdateError(f"{exc}:row={row['id']}") from exc
     _validate_single_prerun(rows, row_id)
-    _validate_claims(csv_path, rows)
+    _validate_claims(csv_path, rows, target_id=row_id)
     from git_isolation import row_git_errors
     git_errors = row_git_errors(csv_path, target)
     if git_errors:
