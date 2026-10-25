@@ -500,11 +500,29 @@ def _gate_provenance(
         raise RunSpecBuildError(
             "gate_provenance.pre_run_code_commit_invalid"
         )
-    if not same_scientific_behavior(repo_root, commit, source_commit):
-        raise RunSpecBuildError(
-            "gate_provenance.pre_run_code_commit_mismatch_with_source"
-            + behavior_scope_hint(repo_root, commit, source_commit)
+    review_mode = provenance["review_mode"]
+    review_result = provenance.get("review_result")
+    closure = _string_list(
+        provenance.get("blocker_closure_evidence", []),
+        "gate_provenance.blocker_closure_evidence",
+    )
+    is_repaired = (
+        review_result in {"scientifically_incorrect", "targeted_incorrect"}
+        and bool(closure)
+    )
+    if is_repaired:
+        ancestor = subprocess.run(
+            ["git", "-C", str(repo_root), "merge-base", "--is-ancestor", commit, source_commit],
+            check=False, capture_output=True,
         )
+        if ancestor.returncode != 0:
+            raise RunSpecBuildError("gate_provenance.pre_run_code_commit_not_ancestor_of_source")
+    else:
+        if not same_scientific_behavior(repo_root, commit, source_commit):
+            raise RunSpecBuildError(
+                "gate_provenance.pre_run_code_commit_mismatch_with_source"
+                + behavior_scope_hint(repo_root, commit, source_commit)
+            )
     review_mode = provenance["review_mode"]
     if review_mode not in {"scientific_review", "targeted_review"}:
         raise RunSpecBuildError("gate_provenance.review_mode_invalid")

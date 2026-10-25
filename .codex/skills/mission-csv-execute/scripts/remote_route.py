@@ -1027,11 +1027,15 @@ def decide_remote_route(payload: Any) -> dict[str, Any]:
             and change_result.get("route") in {"targeted_review", "full_review"}
         ):
             candidate = change_result.get("candidate_commit")
-            if not (
+            review_matches = (
                 normalized_review
                 and normalized_review["passed"] is True
-                and normalized_review["candidate_commit"] == candidate
-            ) and not (
+                and (
+                    normalized_review["candidate_commit"] == candidate
+                    or bool(normalized_review.get("closure_evidence_paths"))
+                )
+            )
+            if not review_matches and not (
                 pre_run_exception
                 and pre_run_exception["candidate_commit"] == candidate
             ):

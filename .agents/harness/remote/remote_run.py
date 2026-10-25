@@ -440,14 +440,26 @@ def validate_mission_launch(spec: dict, *, resume: bool = False, spec_path: Path
             reviews[0].get(key) != expected for key, expected in expected_review
         ):
             raise ValueError("mission scientific gate does not match the RunSpec")
-        # 审查行绑定的是**被审查的科学行为**。文档/台账/测试提交使 commit 前进时，
-        # 若行为指纹未变，原裁决仍然有效（否则每个记账提交都要重跑审查）。
+        # 审查行绑定的是**被审查的科学行为**。
+        # 若为 repaired_pass（负面裁决且提供了关闭证据），放宽行为一致性，只要求已审提交是当前提交的祖先：
+        is_repaired = (
+            gate.get("review_result") in ("scientifically_incorrect", "targeted_incorrect")
+            and bool(gate.get("blocker_closure_evidence"))
+        )
         reviewed_commit = str(reviews[0].get("pre_run_code_commit") or "")
-        if not same_scientific_behavior(repo, reviewed_commit, commit):
-            raise ValueError(
-                "mission scientific gate does not match the RunSpec"
-                + behavior_scope_hint(repo, reviewed_commit, commit)
+        if is_repaired:
+            ancestor = subprocess.run(
+                ["git", "merge-base", "--is-ancestor", reviewed_commit, commit],
+                cwd=repo, capture_output=True,
             )
+            if ancestor.returncode != 0:
+                raise ValueError("mission repaired gate reviewed_commit is not an ancestor of RunSpec commit")
+        else:
+            if not same_scientific_behavior(repo, reviewed_commit, commit):
+                raise ValueError(
+                    "mission scientific gate does not match the RunSpec"
+                    + behavior_scope_hint(repo, reviewed_commit, commit)
+                )
         from validate_claim_ledger import reference_file
         for value in gate["blocker_closure_evidence"]:
             if reference_file(value, csv_path.parent, repo) is None:
