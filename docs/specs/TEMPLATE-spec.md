@@ -62,9 +62,13 @@ created: <YYYY-MM-DD>
 ### 6. 功能与前置门禁
 - **本地 CPU 验证**：<CPU 微型 dummy 张量验通全部输入维度，无 NaN/Shape 错误，耗时 <10s>
 - **Pre-review Smoke**：<隔离 GPU 极小规模验证（1–10 步或 1 episode，<5 分钟，确认核心算子在加速设备上执行且耗时合理，禁脱落 CPU；判定只认进程 exit 0 与 smoke_summary.json 数值工件，严禁脆弱控制台文本抓取），严禁多-shot循环，仅验连通性>
+- **门禁豁免铁律**：若本轮任务为纯超参数微调、参数网格扫描、全量评估重跑或基线复现，门禁填 `not_applicable`，**严禁执行 GPU Smoke 与 PRERUN-REVIEW，严禁在源码中硬编码超参，通过启动参数直接放行**。
 
 ### 7. 本轮判据清单 (Research Contract)
 > 规则：判据分类在首次运行前冻结。**前提判据**（机制到达输出、无泄漏、对照公平、算子理论一致、改变排序的精度疑点）未过**阻塞**；**诊断判据**（非关键精度、工程完备性）未过**记录**。
+> **轻量指标与无缝调度铁律**：
+> 1. **严禁声明本地二次重算**：指标一律直接采信远端评测落盘的官方 `summary.json`，严禁要求把海量原始掩码（.npz）拉回本地做逐像素 recount；
+> 2. **严禁阻塞性拉取门禁**：多任务/多数据集调度只认远端计算终态（`completed / exit 0`），严禁强加“等待本地产物拉取完毕”作为后续运行的前置门禁，确保 GPU 无缝调度。
 | 判据 | 类别 (前提 / 诊断) | 验证什么 (失真风险 / 诊断项) | 阈值 / 判定条件 | 未通过动作 (阻塞 / 记录) |
 | :--- | :--- | :--- | :--- | :--- |
 | <输出变化> | 前提 | 机制是否真正改变输出（非接线空转） | 输出与 baseline 差异 > 0 | 阻塞排查接线 |
@@ -80,4 +84,4 @@ created: <YYYY-MM-DD>
 
 ### 9. 声称边界与产物归档
 - **Claim Boundary**：依据 Scope 中的 `<experiment_type>`，允许声明：<声称范围，如 tentative 趋势 / 组件贡献度>；禁止声明：<禁止过度外推 / 禁止未对齐协议声称>。
-- **文档与工件**：CSV 各行状态闭环；实验事实与指标写入 `research_workspace/experiments/<ExpID>/record.json`；科研洞察与 Trick 收益写入 `analysis/analysis.md`；最终收口在对话层显式输出 `review.md` 与 `handoff.md` 路径。
+- **文档与工件**：CSV 各行状态闭环；直接使用官方 `summary.json` 指标写入 `research_workspace/experiments/<ExpID>/record.json`（严禁本地二次重算）；科研洞察与 Trick 收益写入 `analysis/analysis.md`；最终收口在对话层显式输出 `review.md` 与 `handoff.md` 路径。

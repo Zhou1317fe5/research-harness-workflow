@@ -132,6 +132,17 @@ def validate_text(text: str) -> tuple[dict[str, str], list[str]]:
     for section in REQUIRED_SECTIONS:
         if not re.search(rf"(?m)^##[ \t]+{re.escape(section)}[ \t]*$", body):
             errors.append(f"missing required section: {section}")
+
+    prohibited_recount = re.search(
+        r"(逐像素recount|逐像素重算|本地重算|本地CPU重算|Evaluator重算|AverageMeter重算|recount[ \t]*≤)",
+        body,
+        re.IGNORECASE,
+    )
+    if prohibited_recount:
+        errors.append(
+            f"spec must not require local pixel recount ({prohibited_recount.group(0)}); "
+            "directly use remote official summary.json metrics instead"
+        )
     return metadata, errors
 
 

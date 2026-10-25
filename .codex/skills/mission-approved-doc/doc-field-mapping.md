@@ -115,3 +115,9 @@ claim_ledger:<stem>.claims.json; claims:CLAIM-001,CLAIM-004; evidence_level:inte
 涉及代码实施后训练、评估、远程运行或实验结果生成时，生成阶段必须在首次 official run 前插入单个 `PRERUN-REVIEW-*`。该行记录 `gated_run`、`review_mode:scientific_review` 和 `pre_run_code_commit`；不生成 Attempt、lineage、generation、strict coverage 或 reviewer liveness。`SpecID/ExpID/RunID`、`remote_state`、artifact path、branch/commit 和 next_action 必须保留在 28 列字段中。
 
 **PRERUN 豁免约束**：若任务为纯超参数微调、参数网格扫描、纯评测评估、主表重跑或基线复现，且不包含模型架构/损失函数/特征计算等算法源码重构，**严禁插入 PRERUN-REVIEW-* 行与 SMOKE-* 行**，任务 CSV 第一行直接进入正式 EVAL 或 TRAIN。
+
+## Ingest 与轻量化产物规则
+
+1. **直接采信官方指标**：生成 `INGEST-*` 或结果入账行时，其验收标准必须直接使用远端官方 `summary.json` / `eval_results.json` 中的指标，**严禁生成要求本地 CPU 逐像素重算（recount）或复现混淆矩阵的验收条件**。若 Spec 中残留此类历史文字，生成器必须自动将其纠正为直接采信官方指标。
+2. **轻量秒级回传**：产物拉取仅限轻量摘要（`summary.json`、`progress.jsonl`、`evaluate.log`，体积 < 100 KB），严禁将成百上千个原始预测掩码（.npz）作为必需拉取产物，避免 SSH 弱网超时卡死。
+3. **GPU 无缝衔接调度**：多运行/多数据集任务之间的前置依赖，仅认远端进程计算完成（`remote_state=completed` / `exit 0`），**严禁将“前序产物拉取到本地”作为后续 GPU 运行的前置门禁**，确保远端 GPU 算力无缝换卡。
