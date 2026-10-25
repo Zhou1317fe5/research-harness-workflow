@@ -58,7 +58,8 @@ REVIEW 行执行后，必须产出面向人类决策者的施工交工单 `<csv-
 - **若 `vision_met`**：
   - 必须同时满足 `handoff_contract:passed`；
   - 标记 `REVIEW-N` 完成；若无其他未完成行，运行 `csv_completion_errors()` 核验后结束 CSV；
-  - **终端对话层最终汇报**：**必须显式提供包含 `review.md`（方案讨论交接）与 `handoff.md`（人类交付交工单）的可一键复制代码块，严禁遗漏 `review.md`**：
+  - **终端对话层最终汇报（严格禁问令）**：
+    终端对话层汇报只包含客观三要素（完成状态、关键科学指标对比、交接文件路径）。**严禁在终端对话层输出任何疑问句、决策请示或向用户发问**；所有实现疑虑、架构讨论、后续实验建议一律沉淀至 `handoff.md` 与 `findings.jsonl`，交由后续方案讨论会话读取：
     ```text
     交接文件路径：
     - 方案讨论交接层：issues/<stem>/<stem>.review.md

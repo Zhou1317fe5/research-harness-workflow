@@ -47,7 +47,8 @@
 - **长运行观察与心跳**：遵循 **[references/remote-monitoring.md](remote-monitoring.md)**（内置 30 分钟心跳，秒级 `remote_progress.py` 查询探针，严禁短周期无变化轮询模型）。
 
 ### Step 4: 终态确认与最小产物拉取
-1. 公共入口在 official run 返回 terminal completed 后自动 pull 最小结果集；事件模式先通知计算完成，再由执行器对原 Run 续跑回传，不能重复 launch；
+1. **终态即报第一铁律**：计算完成唤醒或拉取到 summary 后，执行器的**第一优先级是在终端对话中向用户直接通报核心指标（RunID、评估集数、mIoU、FB-IoU 及对比基线涨跌）**，严禁憋到 CSV 闭环或收尾审查才汇报；
+2. **轻量拉取与禁止二次重算**：公共入口在 official run 返回 terminal completed 后自动 pull 最小结果集（仅 summary.json、progress.jsonl、evaluate.log 等轻量文件，体积 < 100 KB，秒级完成）；**直接采信评测落盘指标，严禁在本地进行二次计算（如逐像素 recount、重算混淆矩阵）**；核验需求一律置于远端就地完成；严禁拉取海量 .npz 或原始预测掩码，杜绝弱网连接卡死；
 2. 校验 pull manifest 与文件存在性后，通过 `csv_state.py` 记录 `remote_state=artifacts_pulled`；
 3. pre-review smoke 必须完成终端 checkpoint 清理，保留 `console.log/status.json/smoke_summary.json`，验证 `checkpoint_cleanup_completed:true` 后方可作为 PRERUN 证据。
 

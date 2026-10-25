@@ -5,7 +5,7 @@
 ## 1. 运行透明度三重机制
 
 1. **启动前时间沙盘（Time Sandbox）**：
-   正式全量运行启动前，调用估算工具：
+   正式全量运行启动时，`remote_run.py` 会自动根据规模与步频推算并输出时间沙盘；亦可手动调用估算工具：
    ```bash
    python3 .agents/harness/remote/remote_progress.py --estimate \
      --total-steps <总步数> --smoke-summary <smoke产物路径>
@@ -18,7 +18,7 @@
    ```bash
    python3 .agents/harness/remote/remote_progress.py
    ```
-   使用原 RunID/RunSpec 显式查询并汇报；耗时取决于连接，不承诺弱网下 1 秒返回，也不为查询重新 launch。
+   默认优先读取本地状态快照（毫秒级响应，不挂起 SSH）；强制穿透远端可加 `--remote`。
 
 ## 2. 等待期唤醒纪律（禁止轮询模型）
 
@@ -28,3 +28,13 @@
 - **回传阶段**：与计算 ETA 分开。pull 的 stderr 报文件数、已传/总字节、速度和单文件有效预算；中断只重试同 Run 的缺项。`pull_busy` 表示已有传输，不能另起同目标 pull 或清空其 staging。
 - **先定位再交接**：pull 成功后的第一个动作是把产物发布到该 Run 的规范目录（`remote_artifacts/<ExpID>/<RunID>/`）并落 manifest，然后才把收尾交给 relay 或后台观察。在此之前不得先手工搬动、改名或重排目录——relay 补拉会按 manifest 重建路径，与人工规整互相覆盖，产生“文件突然不存在”。已手工动过产物时，先按 manifest 核验现有位置，只补缺项，不整批重拉。
 - **无本地守护进程**：不得创建 systemd user unit、全局 nohup 守护或常驻后台 watcher。rrctl 保持 daemonless，远端由独立会话管理。
+
+## 3. 终态即报纪律（禁止隐瞒指标）
+
+- **评估完成即报**：任何实验一旦评估完成（observer 收到 terminal 唤醒）或拉取到 summary，Agent 的**第一动作必须是在终端对话层输出该 Run 的核心指标**（RunID、评估集数、mIoU、FB-IoU 及对比基线），**先向用户通报指标，然后再去做后续的归档与台账**，绝不能憋到整个 CSV 闭环或收尾审查才说。
+
+## 4. 禁止本地二次计算与轻量拉取原则
+
+- **直接采信官方指标**：模型评估完成落盘的 `summary.json` / `eval_results.json` 即为官方权威指标，入账与分析直接取用，**严禁在本地进行二次计算（如逐像素 recount、重算混淆矩阵）**。
+- **核验移至远端**：若确需一致性或完整性核对，必须在远端评估脚本中就地计算，仅回传轻量报告，绝不在拉取后在本地重新计算。
+- **轻量拉取（秒级回传）**：日常实验严格使用 `minimal` 模式拉取轻量摘要文件（`summary.json`、`progress.jsonl`、`evaluate.log`，体积 < 100 KB），严禁将数千个 `.npz` 或原始预测掩码拉回本地，彻底杜绝弱网环境下长耗时与 SSH 断连卡死。

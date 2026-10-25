@@ -301,7 +301,8 @@ export function registerRrctlEvents(pi: ExtensionAPI, options: RrctlEventsOption
 						if (entry.settled || !value.startsWith("[rrctl-progress] ")) return;
 						try {
 							const event = JSON.parse(value.slice("[rrctl-progress] ".length));
-							if (event.schema_version !== "rrctl.progress.v1" || event.run_id !== entry.runId || event.stage !== "wait" || typeof event.message !== "string" || !event.message.trim()) return;
+							const allowedStages = new Set(["wait", "estimate", "metrics", "completed"]);
+							if (event.schema_version !== "rrctl.progress.v1" || event.run_id !== entry.runId || !allowedStages.has(event.stage) || typeof event.message !== "string" || !event.message.trim()) return;
 							// Deduplicate immediate duplicate frames, not the next scheduled (30m)
 							// heartbeat when a query is unavailable or progress hasn't changed.
 							if (value === lastProgress && Date.now() - lastProgressAt < 1000) return;

@@ -323,6 +323,17 @@ class SSHTransport(Transport):
     def _base_command(self) -> tuple[list[str], dict[str, str]]:
         environment = os.environ.copy()
         command = list(self.profile.ssh_argv)
+        if command and Path(command[0]).name == "ssh":
+            existing_opts = {command[i] for i in range(len(command) - 1) if command[i] == "-o"}
+            extra = []
+            if not any("ConnectTimeout" in opt for opt in existing_opts):
+                extra.extend(["-o", "ConnectTimeout=15"])
+            if not any("ServerAliveInterval" in opt for opt in existing_opts):
+                extra.extend(["-o", "ServerAliveInterval=15"])
+            if not any("ServerAliveCountMax" in opt for opt in existing_opts):
+                extra.extend(["-o", "ServerAliveCountMax=3"])
+            if extra:
+                command = [command[0], *extra, *command[1:]]
         if self.profile.password_env:
             password = environment[self.profile.password_env]
             environment["SSHPASS"] = password

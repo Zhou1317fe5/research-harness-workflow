@@ -175,8 +175,89 @@ def _extract_total_from_meta(meta: dict[str, Any]) -> int | None:
     return None
 
 
-def get_progress(run_id: str, repo_root: Path, profiles: Path | None = None, spec_path: Path | None = None) -> dict[str, Any]:
-    """查询指定 RunID 的状态、最新进度与推算的 ETA。"""
+def _refresh_cached_eta(cached: dict[str, Any]) -> None:
+    speed = cached.get("speed_seconds_per_step")
+    curr = cached.get("current_step")
+    total = cached.get("total_steps")
+    state = cached.get("state")
+    if state in {"running", "launched", "workload_started"} and speed and curr is not None and total and total > curr:
+        rem_sec = max(0.0, (total - curr) * speed)
+        cached["remaining_seconds"] = rem_sec
+        now = datetime.datetime.now(datetime.timezone.utc)
+        cached["eta_datetime"] = (now + datetime.timedelta(seconds=rem_sec)).isoformat()
+
+
+def get_progress(
+    run_id: str,
+    repo_root: Path,
+    profiles: Path | None = None,
+    spec_path: Path | None = None,
+    force_remote: bool = False,
+    max_cache_age_seconds: float = 60.0,
+) -> dict[str, Any]:
+    """查询指定 RunID 的状态、最新进度与推算的 ETA。
+
+    默认优先读取本地状态快照或终态状态，毫秒级响应，避免弱网下每次查询执行 2 次 SSH 挂起；
+    force_remote=True 或缓存超期时穿透查询远端。
+    """
+    local_state_dir = Path.home() / f".local/state/rrctl/runs/{run_id}"
+    cache_path = local_state_dir / "latest_progress.json"
+    status_path = local_state_dir / "last_status.json"
+
+    # 1. 尝试从本地高速快照直读
+    if not force_remote and cache_path.is_file():
+        try:
+            cached = json.loads(cache_path.read_text(encoding="utf-8"))
+            if isinstance(cached, dict) and cached.get("run_id") == run_id:
+                state = cached.get("state")
+                cached_at = cached.get("cached_at")
+                is_fresh = False
+                if state in {"completed", "failed", "aborted"}:
+                    is_fresh = True
+                elif cached_at:
+                    age = (datetime.datetime.now(datetime.timezone.utc) - datetime.datetime.fromisoformat(cached_at)).total_seconds()
+                    if 0 <= age <= max_cache_age_seconds:
+                        is_fresh = True
+                if is_fresh:
+                    _refresh_cached_eta(cached)
+                    return cached
+        except Exception:
+            pass
+
+    # 2. 本地已是终态且无缓存文件时，快速直读 last_status.json 避免不必要的远端 SSH
+    if not force_remote and status_path.is_file():
+        try:
+            st = json.loads(status_path.read_text(encoding="utf-8"))
+            st_state = st.get("state")
+            if st_state in {"completed", "failed", "aborted"}:
+                exit_code = st.get("detail", {}).get("exit_code")
+                tot = None
+                if spec_path and spec_path.is_file():
+                    try:
+                        tot = _extract_total_from_meta(json.loads(spec_path.read_text(encoding="utf-8")).get("metadata", {}))
+                    except Exception:
+                        pass
+                return {
+                    "run_id": run_id,
+                    "state": st_state,
+                    "exit_code": exit_code,
+                    "started_at": None,
+                    "updated_at": st.get("updated_at"),
+                    "elapsed_seconds": None,
+                    "current_step": tot,
+                    "step_field": "step",
+                    "total_steps": tot,
+                    "pct": 100.0 if st_state == "completed" else None,
+                    "speed_seconds_per_step": None,
+                    "remaining_seconds": 0.0 if st_state == "completed" else None,
+                    "eta_datetime": None,
+                    "metrics": {},
+                    "estimate_source": "local_status",
+                    "eta_scope": "compute_only",
+                }
+        except Exception:
+            pass
+
     prefix = [resolve_rrctl(), "--json"]
     if profiles:
         prefix += ["--profiles", str(profiles.resolve())]
@@ -272,7 +353,7 @@ def get_progress(run_id: str, repo_root: Path, profiles: Path | None = None, spe
                 remaining_seconds = remaining_steps * speed_seconds_per_step
                 eta_datetime = now + datetime.timedelta(seconds=remaining_seconds)
 
-    return {
+    info = {
         "run_id": run_id,
         "state": state,
         "exit_code": exit_code,
@@ -290,6 +371,13 @@ def get_progress(run_id: str, repo_root: Path, profiles: Path | None = None, spe
         "estimate_source": "observed_mean_including_initialization" if speed_seconds_per_step is not None else "unknown",
         "eta_scope": "compute_only",
     }
+    info["cached_at"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    try:
+        if local_state_dir.is_dir():
+            cache_path.write_text(json.dumps(info, ensure_ascii=False, indent=2), encoding="utf-8")
+    except Exception:
+        pass
+    return info
 
 
 def estimate_runtime(
@@ -297,6 +385,7 @@ def estimate_runtime(
     smoke_summary_path: Path | None = None,
     marginal_seconds: float | None = None,
     init_seconds: float | None = None,
+    fallback_marginal_seconds: float | None = None,
 ) -> dict[str, Any]:
     """根据前置 smoke 产物或指定耗时推算全量运行的预计耗时与完成时刻 (时间沙盘)。"""
     t_init = init_seconds if init_seconds is not None else 0.0
@@ -327,6 +416,10 @@ def estimate_runtime(
                     estimate_source = "smoke_elapsed_mean"
         except Exception:
             pass
+
+    if t_marg is None and fallback_marginal_seconds is not None and fallback_marginal_seconds > 0:
+        t_marg = float(fallback_marginal_seconds)
+        estimate_source = "fallback_heuristic"
 
     if (not isinstance(total_steps, int) or isinstance(total_steps, bool) or total_steps <= 0
             or not math.isfinite(t_init) or t_init < 0):
@@ -365,13 +458,14 @@ def format_estimate(est: dict[str, Any]) -> str:
     lines = [
         "[启动前耗时沙盘推算]",
         f"- 全量规模: {total} 步/样本",
-        f"- 单步边际耗时: {t_marg:.2f} 秒/步",
+        f"- 单步边际耗时: {t_marg:.2f} 秒/步 (核心算子实测，外围残差一律归入冷启动)",
     ]
     if t_init > 0:
-        lines.append(f"- 一次性初始化/冷启动耗时: {t_init:.1f} 秒")
+        lines.append(f"- 一次性初始化/冷启动耗时: {t_init:.1f} 秒 (含模型加载与首次 CUDA 建立)")
     lines.append(f"- 预计总耗时: {format_duration(tot_sec)}")
     lines.append(f"- 预计完成时刻: {eta_local_str}")
     lines.append(f"- 估计来源: {est.get('estimate_source', 'unknown')}；仅计算阶段，不含回传、核验与审查")
+    lines.append("- 裁定原则: 只要核心步单耗合法即推定放行，严禁因外围残差争议额外增开 GPU 计时探针")
     return "\n".join(lines)
 
 
@@ -469,6 +563,7 @@ def main() -> int:
     parser.add_argument("target", nargs="?", help="RunID, runspec.json 路径或 issue 目录；省略则自动探测最新运行")
     parser.add_argument("--repo-root", type=Path, default=REPO_ROOT, help="项目根目录")
     parser.add_argument("--profiles", type=Path, help="凭据 profile 文件路径")
+    parser.add_argument("--remote", action="store_true", help="强制穿透查询远端（绕过本地快照缓存）")
     parser.add_argument("--json", action="store_true", help="以结构化 JSON 输出")
     parser.add_argument("--mode", choices=["detailed", "heartbeat"], default="detailed", help="显示模式")
     parser.add_argument("--estimate", action="store_true", help="执行启动前耗时沙盘推算")
@@ -509,7 +604,10 @@ def main() -> int:
 
     try:
         run_id, spec_path = resolve_run_target(args.target, args.repo_root)
-        info = get_progress(run_id, args.repo_root, profiles=profiles, spec_path=spec_path)
+        info = get_progress(
+            run_id, args.repo_root, profiles=profiles, spec_path=spec_path,
+            force_remote=args.remote,
+        )
     except Exception as exc:
         if args.json:
             print(json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False))

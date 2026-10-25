@@ -702,8 +702,36 @@ class ProgressHeartbeat:
             except Exception as exc:
                 # One message per heartbeat interval, without secrets or raw
                 # transport stderr. A broken query must not look like silence.
-                emit_progress(self.run_id, "wait", "进度暂不可用；远端任务未因此停止，继续观察。",
+                emit_progress(self.run_id, "wait", "进度暂不可用；远端任务未因此停止，继续观察。 ",
                               query_error=type(exc).__name__)
+
+
+def _extract_metrics_from_destination(dest: Path, run_id: str) -> str | None:
+    """从拉取的产物根目录寻找 summary.json / eval_results.json，提取官方指标向终端直报。"""
+    try:
+        candidates = list(dest.rglob("summary.json")) + list(dest.rglob("eval_results.json"))
+        for p in candidates:
+            if "diagnostics" in p.parts:
+                continue
+            data = json.loads(p.read_text(encoding="utf-8"))
+            if not isinstance(data, dict):
+                continue
+            metrics = {}
+            for k in ("miou", "fb_iou", "mIoU", "FB_IoU", "pre_miou", "post_miou", "pre_fb_iou", "post_fb_iou", "accuracy", "loss"):
+                if k in data and isinstance(data[k], (int, float)):
+                    metrics[k] = data[k]
+            delta = data.get("delta_candidate_minus_control") or data.get("delta")
+            delta_str = ""
+            if isinstance(delta, dict):
+                d_parts = [f"Δ{k}={v:+.4f}" for k, v in delta.items() if isinstance(v, (int, float)) and ("iou" in k.lower() or "metric" in k.lower())]
+                if d_parts:
+                    delta_str = " (" + ", ".join(d_parts) + ")"
+            if metrics:
+                m_str = " | ".join(f"{k}={v:.4f}" if isinstance(v, float) else f"{k}={v}" for k, v in metrics.items())
+                return f"📊 [评测指标直报] RunID: {run_id} | {m_str}{delta_str}"
+    except Exception:
+        pass
+    return None
 
 
 def execute(
@@ -737,6 +765,9 @@ def execute(
                 run_id, REPO_ROOT, profiles, spec_path=spec_path, interval_seconds=heartbeat_seconds
             )
             heartbeat.start()
+        if stage == "wait":
+            mins = int(heartbeat_seconds // 60) if heartbeat_seconds > 0 else 30
+            emit_progress(run_id, "wait", f"🚀 远端计算任务已就绪运行 [RunID: {run_id}]，后台监控中 (周期心跳: {mins}m)...")
         try:
             result = rrctl_call([*prefix, stage, *arguments], REPO_ROOT)
         finally:
@@ -766,6 +797,15 @@ def execute(
             return result.returncode or 2
         if launch_only and stage == "launch" and result.returncode == 0 and value.get("ok") is not False:
             return 0
+        if stage == "launch" and result.returncode == 0 and value.get("ok") is not False:
+            try:
+                from harness.remote.remote_progress import _extract_total_from_meta, estimate_runtime, format_estimate
+                tot = _extract_total_from_meta(spec.get("metadata", {}))
+                if tot and tot > 0:
+                    est = estimate_runtime(tot, fallback_marginal_seconds=35.0)
+                    emit_progress(run_id, "estimate", format_estimate(est), estimate=est)
+            except Exception:
+                pass
         failed_state = value.get("result", {}).get("status", {}).get("state") in {"failed", "aborted"}
         if result.returncode or value.get("ok") is False or failed_state:
             if stage in {"launch", "wait"} and not observe_only:
@@ -778,8 +818,14 @@ def execute(
                         pass
             return 2
         if stage == "wait":
-            emit_progress(run_id, "completed", "远端计算已完成；继续回传、核验和入账。",
+            emit_progress(run_id, "completed", "🎉 远端计算已完成；继续回传与入账（直接使用评测指标，不重算）。",
                           remote_state=value.get("result", {}).get("status", {}).get("state"))
+        if stage == "pull" and value.get("ok") is not False:
+            dest = value.get("result", {}).get("destination")
+            if dest:
+                metrics_summary = _extract_metrics_from_destination(Path(dest), run_id)
+                if metrics_summary:
+                    emit_progress(run_id, "metrics", metrics_summary)
     return 0
 
 

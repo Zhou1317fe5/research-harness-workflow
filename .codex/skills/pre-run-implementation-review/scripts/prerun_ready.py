@@ -224,7 +224,7 @@ def validate_smoke(
         add_warning(
             warnings,
             "pre_review_smoke_not_applicable",
-            "no GPU production path; reviewer must inspect the named alternative validation",
+            "no GPU production path or closed evaluation scope; reviewer must inspect the named alternative validation",
         )
         return
     if disposition != "passed":

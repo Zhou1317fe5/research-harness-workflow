@@ -8,8 +8,10 @@
    `rrctl wait` 返回 124 仅代表本地观察期限到达（例如前台会话时间限制），远端进程仍在持续运行。**严禁拉取失败诊断、严禁更改为失败状态、严禁重新 launch**。
 2. **首步暂态告警不判硬失败**：
    若返回 `first_step_observer_timeout` 或暂时性的 `first_step_attention`（如首个 episode 尚未写出 progress.jsonl 触发的暂态告警，但 inspect 证实 worker 与 workload 正常存活），记录 `remote_state=running_remote` 与 `first_step_gate:pending`，沿用当前 RunID 继续观察。
-3. **控制操作未知状态**：
+3. 控制操作未知状态：
    控制操作返回 `status:unknown` 或 `error.outcome:unknown` 时，只能确认操作结果暂不确定，保留原 RunID 与路径，按返回的 `next_actions` 核对，不要自动重发 launch/abort。
+4. **网络中断与远端临时上传残片安全清扫**：
+   若上传过程中发生断线或超时，导致远端残留 `.rrctl-upload` 临时文件，同 RunID 重试会被 `upload destination already exists` 拦截。此时 Agent 具备沙箱内清理权，必须自动清理该 RunID 对应的临时残片（`.rrctl-upload` 后缀文件），然后直接串行重放，严禁停滞等待用户介入。
 
 ## 2. 会话中断后的恢复三部曲
 

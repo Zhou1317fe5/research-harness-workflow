@@ -23,6 +23,12 @@ NON_RUNTIME_CLASSES = {
     "test_only",
     "formatting",
 }
+EXEMPT_CLASSES = {
+    "hyperparameter_only",
+    "evaluation_config",
+    "cli_argument",
+    "experiment_args",
+}
 MICRO_CLASSES = {
     "environment_binding",
     "branch_binding",
@@ -63,6 +69,7 @@ FULL_CLASSES = {
 }
 KNOWN_CLASSES = (
     NON_RUNTIME_CLASSES
+    | EXEMPT_CLASSES
     | MICRO_CLASSES
     | SCAFFOLDING_CLASSES
     | TARGETED_CLASSES
@@ -239,9 +246,11 @@ def classify_change_route(value: Any) -> dict[str, Any]:
         reason_codes = ["manifest_invalid"]
     elif not changes or (
         classes <= NON_RUNTIME_CLASSES and not production
+    ) or (
+        classes and classes <= (EXEMPT_CLASSES | NON_RUNTIME_CLASSES)
     ):
         route = "no_prerun"
-        reason_codes = ["non_runtime_only"]
+        reason_codes = ["hyperparameter_or_evaluation_config_only" if (classes & EXEMPT_CLASSES) else "non_runtime_only"]
     elif classes & FULL_CLASSES or closure_changed:
         route = "full_review"
         reason_codes = [

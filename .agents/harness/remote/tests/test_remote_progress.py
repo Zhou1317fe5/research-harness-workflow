@@ -172,6 +172,33 @@ class RemoteProgressTests(unittest.TestCase):
             with self.subTest(marginal=marginal), self.assertRaises(ValueError):
                 estimate_runtime(10, marginal_seconds=marginal)
 
+    def test_estimate_runtime_with_fallback(self):
+        from harness.remote.remote_progress import estimate_runtime
+        est = estimate_runtime(600, fallback_marginal_seconds=35.0)
+        self.assertEqual(est["total_steps"], 600)
+        self.assertEqual(est["marginal_seconds_per_step"], 35.0)
+        self.assertEqual(est["estimated_total_seconds"], 600 * 35.0)
+        self.assertEqual(est["estimate_source"], "fallback_heuristic")
+
+    def test_get_progress_reads_local_cache_when_fresh(self):
+        run_dir = Path.home() / ".local/state/rrctl/runs/RUN-TEST-CACHE"
+        run_dir.mkdir(parents=True, exist_ok=True)
+        self.addCleanup(lambda: [f.unlink() for f in run_dir.glob("*")] and run_dir.rmdir())
+        cache_file = run_dir / "latest_progress.json"
+        cached_data = {
+            "run_id": "RUN-TEST-CACHE",
+            "state": "running",
+            "current_step": 100,
+            "total_steps": 600,
+            "pct": 16.666666666666668,
+            "cached_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        }
+        cache_file.write_text(json.dumps(cached_data), encoding="utf-8")
+        info = get_progress("RUN-TEST-CACHE", self.root)
+        self.assertEqual(info["run_id"], "RUN-TEST-CACHE")
+        self.assertEqual(info["current_step"], 100)
+        self.assertEqual(info["total_steps"], 600)
+
 
 if __name__ == "__main__":
     unittest.main()

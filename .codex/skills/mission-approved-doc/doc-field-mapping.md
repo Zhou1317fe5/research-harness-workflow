@@ -113,3 +113,5 @@ claim_ledger:<stem>.claims.json; claims:CLAIM-001,CLAIM-004; evidence_level:inte
 4. 关键文件 `ref: path:line`
 
 涉及代码实施后训练、评估、远程运行或实验结果生成时，生成阶段必须在首次 official run 前插入单个 `PRERUN-REVIEW-*`。该行记录 `gated_run`、`review_mode:scientific_review` 和 `pre_run_code_commit`；不生成 Attempt、lineage、generation、strict coverage 或 reviewer liveness。`SpecID/ExpID/RunID`、`remote_state`、artifact path、branch/commit 和 next_action 必须保留在 28 列字段中。
+
+**PRERUN 豁免约束**：若任务为纯超参数微调、参数网格扫描、纯评测评估、主表重跑或基线复现，且不包含模型架构/损失函数/特征计算等算法源码重构，**严禁插入 PRERUN-REVIEW-* 行与 SMOKE-* 行**，任务 CSV 第一行直接进入正式 EVAL 或 TRAIN。
