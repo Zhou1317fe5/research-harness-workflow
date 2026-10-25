@@ -758,8 +758,21 @@ def execute(
         stages.append(("wait", [run_id, "--poll-seconds", str(poll_seconds), "--max-wait-seconds", str(max_wait_seconds)]))
         if not observe_only:
             stages.append(("pull", [run_id]))
+    latest_cursor: str | None = None
+    if resume:
+        obs_file = Path.home() / f".local/state/rrctl/runs/{run_id}/last_observation.json"
+        if obs_file.is_file():
+            try:
+                obs_data = json.loads(obs_file.read_text(encoding="utf-8"))
+                cur = obs_data.get("monitor", {}).get("event_cursor")
+                if cur and isinstance(cur, str):
+                    latest_cursor = cur
+            except Exception:
+                pass
     for stage, arguments in stages:
         heartbeat = None
+        if stage == "wait" and latest_cursor and "--after-event" not in arguments:
+            arguments = [*arguments, "--after-event", latest_cursor]
         if stage == "wait" and heartbeat_seconds > 0:
             heartbeat = ProgressHeartbeat(
                 run_id, REPO_ROOT, profiles, spec_path=spec_path, interval_seconds=heartbeat_seconds
@@ -783,6 +796,9 @@ def execute(
             binding = value.get("result", {}).get("binding", {})
             if binding.get("run_spec_sha256") != run_spec_digest(spec):
                 raise ValueError("resume RunSpec differs from the bound remote run")
+        cur = value.get("result", {}).get("monitor", {}).get("event_cursor")
+        if cur and isinstance(cur, str):
+            latest_cursor = cur
         _emit_stage(stage, value, run_id, result.returncode, full=full_output)
         retain_observation(spec, stage, value)
         preserved = value.get("error", {}).get("details", {}).get("remote_workload_preserved")

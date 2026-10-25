@@ -44,6 +44,7 @@ python <skill-dir>/scripts/prerun_route.py <change-manifest.json>
    - Smoke 必须运行真实生产入口与目标加速设备，仅认进程 `exit 0`、`status.json` 及结构化工件（如 `smoke_summary.json`），严禁抓取控制台文本或以正则断言判失败。详细规约见 [references/smoke-contract.md](references/smoke-contract.md)。
    - **封闭全量评测任务自动豁免**：若任务为封闭全量评测（代码拒绝短运行参数且 Spec 严禁裁剪真实数据），严禁在生产代码增加短分支，直接以 `disposition: not_applicable`、`reason: closed_full_evaluation_scope_no_short_route` 配套本地合成 CUDA 探针及 Adapter 边界合同放行，严禁停滞向用户索要授权。
 4. **等价性数值判定（Baseline-Equivalence）**：当变更声明“保留基线”、“零初始化等价”或“禁用路径等价”时，必须以实际数值证据判定，严禁仅通过阅读代码断言等价。探索阶段 side-by-side 对照具备免跑豁免。详细规约与 Schema 见 [references/baseline-equivalence.md](references/baseline-equivalence.md)。
+5. **禁止审查数据级加密证据链（No Dataset Hash Auditing）**：Reviewer 不得要求代码对数据集图像或掩码计算 SHA256/哈希做防篡改审计，不得要求提供数据级哈希证据。数据集默认采信文件系统既有结构，代码溯源仅认 Git Commit。Smoke 验证仅限极小切片（<=20样本或1~10步），严禁因未遍历或未哈希全量数据集判 Blocker。
 
 ## 4. Formal Review Protocol
 
