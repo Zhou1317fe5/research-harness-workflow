@@ -11,7 +11,7 @@ from datetime import date, datetime
 from pathlib import Path
 
 
-ALLOWED_KEYS = ("mission", "status", "created", "approved_at", "approval_mode", "approval_source")
+ALLOWED_KEYS = ("mission", "status", "created", "approved_at", "approval_mode", "approval_source", "experiment_type")
 REQUIRED_SECTIONS = ("Goal", "Scope", "Design", "Acceptance Criteria")
 KEY_VALUE_RE = re.compile(r"^([A-Za-z][A-Za-z0-9_-]*):[ \t]+([^\r\n]+)$")
 ISO_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
@@ -129,9 +129,20 @@ def validate_text(text: str) -> tuple[dict[str, str], list[str]]:
         errors.append("approval_source must be a bounded source reference")
 
     body = "\n".join(lines[closing + 1 :])
-    for section in REQUIRED_SECTIONS:
+    exp_type = metadata.get("experiment_type", "")
+    is_tuning = exp_type in {"hyperparameter_tuning", "evaluation_only", "baseline_reproduction"}
+    required_sections = ("Goal", "Scope", "Acceptance Criteria") if is_tuning else REQUIRED_SECTIONS
+    for section in required_sections:
         if not re.search(rf"(?m)^##[ \t]+{re.escape(section)}[ \t]*$", body):
             errors.append(f"missing required section: {section}")
+
+    if is_tuning:
+        prohibited_smoke = re.search(r"(pre_review_smoke|prerun_review|gpu smoke|独立review)", body, re.IGNORECASE)
+        if prohibited_smoke:
+            errors.append(
+                f"tuning/evaluation spec must not require smoke/prerun ({prohibited_smoke.group(0)}); "
+                "directly pass parameters and run"
+            )
 
     prohibited_recount = re.search(
         r"(逐像素recount|逐像素重算|本地重算|本地CPU重算|Evaluator重算|AverageMeter重算|recount[ \t]*≤)",

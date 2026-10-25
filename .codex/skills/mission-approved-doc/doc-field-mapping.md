@@ -46,24 +46,15 @@ claim_ledger:<stem>.claims.json; claims:CLAIM-001,CLAIM-004; evidence_level:inte
 
 `REVIEW-01` 的 `review_regression_requirements` 必须要求逐条读取 `<stem>.claims.json`，检查三件事：claim 是否覆盖、生产路径是否接上、证据等级是否支撑交付声明。若 CSV notes 出现 `claims:CLAIM-*` 但没有 `claim_ledger:<path>`，该 CSV 不完整，必须先补 ledger 再执行。
 
-### 闭环路径规则（HARD — 组件 issue 不能代替接线 issue）
+### 闭环路径规则（科研算法实现优先合并，严禁粉末化）
 
-组件 issue 实现的是独立模块的内部逻辑。但 spec 的愿景通常还要求这些模块**被连接到生产路径**。以下情形必须生成独立的"接线 issue"，不能把接线行为当作某个组件 issue 的隐含产出：
-
-| 信号（在 spec 中看到） | 必须生成的独立 issue |
-|----------------------|---------------------|
-| "A 作为 B 的 consumer/handler/subscriber 运行" | 注册 A 到 B 的 dispatcher/registry |
-| "应用启动时拉起 X worker/scheduler" | 在 main.py / lifespan 中启动 X |
-| "agent 可调用 tool Y" | 把 Y 注册到 agent integration_tools |
-| "组件 C 的输出注入到 flow D" | 在 D 的执行路径中调用 C |
-| "真实 provider/adapter 替换 static placeholder" | 实现并注册真实 adapter（即使 mock 先行） |
-| "从 A 到 Z 的完整路径可跑通" | 端到端路径验证（fake provider 可接受，但链路必须通） |
+在科研算法实现中，模块内部数学与入口接线应**优先合并为单一 Implementation Issue（如 IMPL-01）**，严禁机械拆解为独立的 PREP、CORE、WIRING、ASSET、RESOURCE 多个碎片 issue 增加状态机流转内耗。
+对于纯超参数微调、全量评估重跑或基线复现（Tier 1 任务），**强制生成 1~2 行极简 CSV（RUN-01 + REVIEW-01）**，严禁生成任何前置接线行与微观 Claim。
 
 规则：
-- 接线 issue 的 `priority` 不低于它所连接的组件 issue 中最高的那个
-- 接线 issue 的 `acceptance_criteria` 必须是路径式的："WHEN production startup/flow runs THEN component X is reachable by its documented consumers"，而不是组件式的 "WHEN X input THEN Y output"
-- 如果 spec 明确说"v1 不接线 / 骨架即可"，可以不生成接线 issue，但必须在对应组件 issue 的 `notes` 中写明 `scope:skeleton_only;wiring_deferred_to:<reason>`
-- **REVIEW-01 的 regression requirements 必须包含至少一条路径级检查**："WHEN app starts / agent runs / flow executes THEN documented consumers can reach this component through the production path"
+- 实现 issue 的 `acceptance_criteria` 必须包含端到端执行验证，而不是拆分出多个微观打卡行。
+- 对于纯调参/评测任务，直接通过 `command_argv` 传递运行参数，免除前置实现与接线步骤。
+- **REVIEW-01 的 regression requirements 聚焦于指标真实性与结论交付**。
 
 ## Field inference rules
 

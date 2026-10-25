@@ -10,7 +10,10 @@ created: <YYYY-MM-DD>
 
 <本轮要回答的核心科学问题、预期交付与判断依据。>
 
-> **使用原则**：本模板是查漏脚手架而非僵化八股。轻量改动填核心事实与验收标准即可；不适用的条目填 `not_applicable` 或 `NOT RUN locally`，严禁编造占位。哲学与实验阶段规则以 `AGENTS.md` 为准，不在本文件冗余展开。
+> **使用原则**：本模板是查漏脚手架而非僵化八股。轻量改动填核心事实与验收标准即可；不适用的条目填 `not_applicable` 或 `NOT RUN locally`，严禁编造占位。
+> **分级通道铁律**：
+> - **Tier 1 极简通道（纯调参 / 评测 / 重跑）**：设置 frontmatter 中 `experiment_type: hyperparameter_tuning` 或 `evaluation_only`。正文仅需 `Goal`、`Scope` 与 `Acceptance Criteria` 三部分（<30 行，无表格、无 Design、无 Smoke、无 PRERUN），直接通过 CLI 参数启动运行。
+> - **Tier 2 架构通道（新方法 / 算法创新）**：按下方结构填写核心机制、极小连通性 Smoke 与评估判据。实现代码优先合并为单一 Implementation Issue，严禁过度切分接线 Issue。
 
 ## Scope
 
