@@ -69,6 +69,8 @@ Do not add `--ephemeral`, launch a parallel reviewer, or bypass this job with a 
 <!-- reviewer-launcher:end -->
 
 3. **单一独立 Reviewer 原则**：只派发一次 Reviewer，一次性返回全部可判定 Blockers。严禁通过重复派发换 Reviewer 刷 PASS。服务级故障按 [references/reviewer-runtime.md](references/reviewer-runtime.md) 协议进行有界恢复（严禁使用 `pkill -f reviewer_job`）。
+4. **审查任务聚焦原则（Scoping Rule）**：`<review-task.md>` 必须严格聚焦于 `change-manifest.json` 中声明的变动代码差异（Diff），严禁在 task 中列出与本次改动无关的系统级泛化大题，严禁要求 Reviewer 通读全仓未改动基线。
+5. **禁止执行前过度发散自审**：主执行器在派发 Reviewer 之前严禁进行耗费数十分钟的发散式自我代码通盘排查；有边界疑问通过本地轻量单测或在 Smoke 中快速测通，未考虑到的实现缺陷由唯一的独立 Reviewer 一次性指出。
 
 ## 5. Blocker Repair & Closure
 
@@ -80,7 +82,8 @@ Do not add `--ephemeral`, launch a parallel reviewer, or bypass this job with a 
 1. 主代理在原实施行完成修复，通过本地针对性单测验证；
 2. 将修复代码 Diff 与测试证据写入 `closure.json` 机器闭环；
 3. **若前序 Smoke 已验证动态连通性且本次修复由本地测试确定性覆盖，严禁重复运行耗时 GPU Smoke**；
-4. 严禁创建 Attempt 2、Resolution Review 或新的 PRERUN 行。
+4. 严禁创建 Attempt 2、Resolution Review 或新的 PRERUN 行；
+5. **严禁在 closure 后二次派发全量 Reviewer（No Second Full Review）**：`closure.json` 是定点闭环凭证，控制面门禁（`build_rrctl_runspec.py` / `remote_run.py`）通过 `repaired_pass` 机制直接机械放行。严禁重新拉起 `reviewer_job.py` 开启二次地毯式复审（否则白耗 30 分钟）。
 
 ## 6. Verdict Semantics & Gate Rule
 

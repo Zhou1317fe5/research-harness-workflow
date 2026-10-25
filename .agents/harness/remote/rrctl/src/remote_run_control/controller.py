@@ -937,14 +937,14 @@ class Controller:
                     value = self._timeout(run_id, last)
                     value["remote_state_unknown"] = True
                     return value
-                if failures >= 3:
+                if failures >= 10:
                     raise RRCError(
                         "observation_unavailable",
                         "bounded observation retries exhausted",
                         "observer",
                         details={"run_id": run_id, "remote_workload_preserved": True},
                     ) from exc
-                delay = min(2 ** (failures - 1), 5)
+                delay = min(2 ** (failures - 1), 10)
                 if deadline is not None:
                     delay = min(delay, max(0, deadline - time.monotonic()))
                 time.sleep(delay)
@@ -1290,41 +1290,45 @@ class Controller:
             and not (destination / "diagnostics").is_symlink()
         )
         if (destination.exists() or destination.is_symlink()) and not diagnostic_only:
-            existing_manifest = destination / "artifact_manifest.json"
-            if (
-                not destination.is_symlink()
-                and existing_manifest.is_file()
-                and not existing_manifest.is_symlink()
-            ):
-                existing = load_artifact_manifest(existing_manifest, expected_run_id=run_id)
-                if sha256_json(existing) == sha256_json(manifest) and all(
-                    _verified_pull_file(destination, item)
-                    for item in manifest["entries"]
+            # 允许预先存在或异常残留的空目录，自动清理以便后续顺利落盘
+            if destination.is_dir() and not destination.is_symlink() and not any(destination.iterdir()):
+                destination.rmdir()
+            else:
+                existing_manifest = destination / "artifact_manifest.json"
+                if (
+                    not destination.is_symlink()
+                    and existing_manifest.is_file()
+                    and not existing_manifest.is_symlink()
                 ):
-                    if not diagnostic:
-                        self._pull_completion(spec, ref, transport, destination, manifest, binding_bytes)
-                    progress.files = progress.resumed_files = progress.total_files
-                    progress.bytes = progress.resumed_bytes = progress.total_bytes
-                    progress.emit("end")
-                    return {
-                        "run_id": run_id,
-                        "destination": str(destination),
-                        "entries": len(manifest["entries"]),
-                        "diagnostic": diagnostic,
-                        "reused": True,
-                        "resumed_files": progress.resumed_files,
-                        "resumed_bytes": progress.resumed_bytes,
-                        "download_timeout_seconds": progress.timeout,
-                        "layout": "diagnostic_snapshot" if diagnostic else "artifacts",
-                    }
-            raise RRCError(
-                "pull_collision",
-                f"local artifact destination already exists: {destination}; "
-                f"if its contents are complete and verified, keep it (pull is idempotent only "
-                f"for a manifest-identical destination); otherwise move it aside or remove it "
-                f"before retrying: mv {destination} {destination}.conflict",
-                "artifact",
-            )
+                    existing = load_artifact_manifest(existing_manifest, expected_run_id=run_id)
+                    if sha256_json(existing) == sha256_json(manifest) and all(
+                        _verified_pull_file(destination, item)
+                        for item in manifest["entries"]
+                    ):
+                        if not diagnostic:
+                            self._pull_completion(spec, ref, transport, destination, manifest, binding_bytes)
+                        progress.files = progress.resumed_files = progress.total_files
+                        progress.bytes = progress.resumed_bytes = progress.total_bytes
+                        progress.emit("end")
+                        return {
+                            "run_id": run_id,
+                            "destination": str(destination),
+                            "entries": len(manifest["entries"]),
+                            "diagnostic": diagnostic,
+                            "reused": True,
+                            "resumed_files": progress.resumed_files,
+                            "resumed_bytes": progress.resumed_bytes,
+                            "download_timeout_seconds": progress.timeout,
+                            "layout": "diagnostic_snapshot" if diagnostic else "artifacts",
+                        }
+                raise RRCError(
+                    "pull_collision",
+                    f"local artifact destination already exists: {destination}; "
+                    f"if its contents are complete and verified, keep it (pull is idempotent only "
+                    f"for a manifest-identical destination); otherwise move it aside or remove it "
+                    f"before retrying: mv {destination} {destination}.conflict",
+                    "artifact",
+                )
         destination.parent.mkdir(parents=True, exist_ok=True)
         identity = sha256_json({"manifest": manifest, "run_spec_sha256": spec.digest,
                                 "source_root": source_root})

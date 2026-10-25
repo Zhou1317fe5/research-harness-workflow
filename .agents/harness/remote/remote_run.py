@@ -214,7 +214,7 @@ def validate_mission_launch(spec: dict, *, resume: bool = False, spec_path: Path
         request[purpose] = metadata[purpose]
     if gate is not None:
         request["formal_review"] = {
-            "passed": True, "candidate_commit": gate["pre_run_code_commit"],
+            "passed": True, "candidate_commit": commit,
             "review_mode": gate["review_mode"], "review_result": gate["review_result"],
             "reviewer_id": gate["reviewer_id"], "closure_evidence_paths": gate["blocker_closure_evidence"],
         }

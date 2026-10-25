@@ -71,9 +71,9 @@ CSV 的 artifact root 按以下规则确定：
 ### A. Pre-run Scientific Implementation Review
 - **触发条件**：当前行为 `PRERUN-REVIEW-*`，或涉及模型/数据流/指标/loss/算子等代码改动且后续需正式运行。
 - **协议委托**：进入 [pre-run-implementation-review](../pre-run-implementation-review/SKILL.md)。主执行器负责桥接：
-  1. 确认前置实现与本地验证闭环；
+  1. 确认前置实现与本地针对性验证闭环，严禁在提审前进行耗费数十分钟的发散性过度自审通读；
   2. 运行 `prerun_ready.py` 核验 lean packet；
-  3. 审查发现 blocker 时，在原 implementation row 修复并通过 `closure.json` 闭环，不新增 Attempt/PRERUN 行；
+  3. 审查发现 blocker 时，在原 implementation row 修复并通过 `closure.json` 闭环，不新增 Attempt/PRERUN 行；门禁直接机械放行（repaired_pass），严禁二次拉起全量 Reviewer；
   4. 审查通过后记录 `pre_run_result:pass`。未获 pass 前严禁启动受 gate 的 official run。
 
 ### B. 远程实验运行（Remote Run）

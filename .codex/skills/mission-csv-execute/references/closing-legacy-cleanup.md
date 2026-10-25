@@ -5,7 +5,7 @@
 ## 1. 前置未完成行清算协议
 
 1. **被取代的历史重试行**：
-   - 凡已有更高轮次替代的历史 smoke/probe 行（如已有 r2 替代 r1），自动使用 `scripts/supersede_remote_binding.py` 或更新为 `remote_state:not_applicable`、`artifact_policy:pre_review_smoke_only` 并结项。
+   - 凡已有更高轮次替代的历史 smoke/probe 行（如已有 r2 替代 r1），在 csv_state 请求中传入 `retry_binding: {"prior_run_id": "...", "new_run_id": "...", "reason": "..."}` 或更新为 `remote_state:not_applicable`、`artifact_policy:pre_review_smoke_only` 并结项。严禁依赖或寻找已废弃的历史辅助脚本。
 2. **预注册门控合法跳过行**：
    - 因未达单域晋级阈值、探索期无信号（Rule 33）或命中预算上限而合法跳过的后续训练/消融行，统一更新为四项完成 + `remote_state:not_applicable`，并在 notes 标注 `scientific_outcome:gate_failed`（或 `not_run_by_preregistered_gate`）；
    - 关联的所有 Claim 必须在 `<stem>.claims.json` 中同步标记为 `status:not_run_by_preregistered_gate` 并附注决策证据，严禁遗留 `pending`。
