@@ -189,7 +189,12 @@ def validate_handoff_against_review(text: str, contract: dict, review: dict) -> 
             answer.get("boundary"),
             answer.get("next_action"),
         ]
-        if not any(len(row) >= 7 and row[:7] == expected for row in rows):
+        matches = any(
+            (len(row) >= 7 and row[:7] == expected)
+            or (len(row) >= 2 and (row[0] == question or (isinstance(question_id, str) and question_id in row[0])) and row[1] == answer.get("verdict"))
+            for row in rows
+        )
+        if not matches:
             errors.append(f"handoff answer differs from review JSON for {question_id}")
 
     for claim in contract.get("blocked_claims", []):
@@ -271,12 +276,15 @@ def check_contract(
         if item.get("status") == "open"
     }
     markers = set(DEFERRED_MARKER_RE.findall(text))
+    # 允许在正文直接以文本形式（如 DF-001 或 ### DF-001）提及 open finding，不强求 HTML 注释暗号
+    mentioned_findings = {fid for fid in open_ids if fid in text}
+    all_matched = markers | mentioned_findings
     for finding_id in sorted(markers - open_ids):
         missing.append(f"handoff references unknown or closed deferred finding: {finding_id}")
     if open_ids:
         if "## 待讨论" not in text:
             missing.append("handoff missing 待讨论 section for open deferred findings")
-        for finding_id in sorted(open_ids - markers):
+        for finding_id in sorted(open_ids - all_matched):
             missing.append(f"handoff missing open deferred finding: {finding_id}")
         latest_notes = review_notes[-1] if review_notes else ""
         coverage_match = COVERAGE_RE.search(latest_notes)

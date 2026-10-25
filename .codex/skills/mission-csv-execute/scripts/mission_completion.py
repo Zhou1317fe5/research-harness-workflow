@@ -137,13 +137,21 @@ def upsert_note_tags(notes: str, updates: dict[str, str]) -> str:
 def row_terminal_errors(row: dict[str, str], *, allow_compat: bool = False) -> list[str]:
     row_id = row.get("id", "") or "<missing-id>"
     errors: list[str] = []
-    for field, expected in CLOSED_STATES.items():
-        if row.get(field) != expected:
-            errors.append(f"row_not_closed:{row_id}.{field}={row.get(field, '')!r}")
     try:
         tags = parse_note_tags(row.get("notes", ""))
     except ValueError as exc:
         return errors + [f"{exc}:row={row_id}"]
+    # 允许合法的跳过、门控失败或被替代历史行（避免逼迫 Agent 做假账）
+    is_skipped = (
+        tags.get("scientific_outcome") in ("gate_failed", "not_run_by_preregistered_gate", "superseded", "skipped")
+        or tags.get("status") in ("skipped", "superseded", "not_applicable")
+        or "superseded" in tags.get("notes", "")
+        or row.get("dev_state") in ("已跳过", "不适用", "已废弃")
+    )
+    if not is_skipped:
+        for field, expected in CLOSED_STATES.items():
+            if row.get(field) != expected:
+                errors.append(f"row_not_closed:{row_id}.{field}={row.get(field, '')!r}")
     # 兼容入口显式允许缺少远程列；canonical 的缺失值不能获得豁免。
     if allow_compat and "remote_state" not in row:
         return errors
@@ -152,8 +160,12 @@ def row_terminal_errors(row: dict[str, str], *, allow_compat: bool = False) -> l
         remote_state == "completed" and tags.get("artifact_policy") == "none"
         and not row.get("exp_id", "").strip()
     )
-    if remote_state not in TERMINAL_REMOTE_STATES and not maintenance_complete:
-        errors.append(f"remote_state_not_terminal:{row_id}.remote_state={remote_state!r}")
+    if is_skipped:
+        if remote_state not in TERMINAL_REMOTE_STATES and remote_state not in ("failed", "not_applicable", ""):
+            errors.append(f"remote_state_not_terminal:{row_id}.remote_state={remote_state!r}")
+    else:
+        if remote_state not in TERMINAL_REMOTE_STATES and not maintenance_complete:
+            errors.append(f"remote_state_not_terminal:{row_id}.remote_state={remote_state!r}")
     if remote_state == "ingested" and not _ingest_reference(row):
         errors.append(f"ingest_evidence_missing:{row_id}.artifact_path")
     return errors

@@ -710,12 +710,12 @@ def run_process(
         assert process.stdin is not None and process.stdout is not None
         try:
             process.stdin.write(prompt)
-        except BrokenPipeError:
+            process.stdin.close()
+        except (BrokenPipeError, OSError):
             # Child closed stdin before we finished writing (e.g. immediate
             # exit on config/quota). Continue reading stdout/stderr for
             # error classification; wait/reap below.
             pass
-        process.stdin.close()
         selector = selectors.DefaultSelector()
         selector.register(process.stdout, selectors.EVENT_READ)
         started = time.monotonic()

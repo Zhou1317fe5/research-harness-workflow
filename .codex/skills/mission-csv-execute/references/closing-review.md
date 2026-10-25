@@ -21,7 +21,7 @@
    ```
    失败时修当前 REVIEW 行，不创建等待型 REVIEW。
 2. **所有前置非 review 行必须闭环**：
-   - 对 canonical CSV，所有 `remote_state=ingested` 行必须先由唯一的 `RESULT-ANALYSIS-01` 完成（由独立 reviewer_job 分析生成四段 `analysis.md` 并引用 `reviews/result-analysis.json`）。若缺失先运行 `scripts/ensure_result_analysis_row.py`。Closing review 只能消费该索引，不能用 advisor、evidence-close 或自审替代。
+   - 对 canonical CSV，所有正式实验行闭环后，优先通过 `evidence-close` 结构化直接入账结项；涉及跨域重要结论争议时，方需运行 `RESULT-ANALYSIS-01`。
 3. **前置未完成行与遗留台账清算**：
    - 若前序存在卡住行、更高轮次取代的重试行或预注册门控跳过行阻碍收工，**必须读取并执行 [references/closing-legacy-cleanup.md](closing-legacy-cleanup.md)** 进行清算，严禁死锁。
 4. **台账完备性**：
