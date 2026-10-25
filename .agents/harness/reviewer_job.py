@@ -774,6 +774,8 @@ def reviewer_prompt(task: str, review_kind: str, mode: str | None = None) -> str
             "reviewer_id, review_mode, result, decision, report_markdown. "
             f"review_mode must be {mode}; result must be one of {allowed}. "
             "Use allow_run only for a correct result; every other result uses do_not_run.\n"
+            "Efficiency rule: focus strictly on the provided code diff and core scientific invariants. "
+            "Do NOT read unchanged baseline files. Complete review within 10 tool calls and return the verdict.\n"
         )
     if review_kind == "result-analysis":
         keys = ", ".join(sorted(RESULT_ANALYSIS_KEYS))
@@ -920,7 +922,25 @@ def execute(args: argparse.Namespace) -> int:
 
         schema_path = job_dir / "response-schema.json"
         atomic_json(schema_path, output_schema(review_kind, mode))
-        initial_prompt = reviewer_prompt(task_text, review_kind, mode)
+        diff_text = ""
+        diff_base = packet.get("diff_base")
+        reviewed_commit = packet.get("pre_run_code_commit") or packet.get("candidate_commit")
+        if diff_base and reviewed_commit:
+            try:
+                proc = subprocess.run(
+                    ["git", "-C", str(cwd), "diff", f"{diff_base}..{reviewed_commit}"],
+                    capture_output=True, text=True, timeout=10, check=False,
+                )
+                if proc.returncode == 0 and proc.stdout.strip():
+                    diff_lines = proc.stdout.strip().splitlines()
+                    if len(diff_lines) > 500:
+                        trimmed = "\n".join(diff_lines[:500]) + f"\n... [diff truncated: {len(diff_lines)} total lines]"
+                    else:
+                        trimmed = proc.stdout.strip()
+                    diff_text = f"\n\n## Actual Code Diff (`git diff {diff_base}..{reviewed_commit}`)\nFocus your review strictly on these changes. Do NOT read unchanged baseline files.\n```diff\n{trimmed}\n```\n"
+            except Exception:
+                pass
+        initial_prompt = reviewer_prompt(task_text + diff_text, review_kind, mode)
         prompt_path = job_dir / "review-task.txt"
         prompt_path.write_text(initial_prompt, encoding="utf-8")
         os.chmod(prompt_path, 0o600)
@@ -1236,7 +1256,7 @@ def main() -> int:
     parser.add_argument("--model")
     parser.add_argument("--max-resumes", type=int, default=3)
     parser.add_argument("--max-replacements", type=int, default=1)
-    parser.add_argument("--attempt-timeout-seconds", type=float, default=1800)
+    parser.add_argument("--attempt-timeout-seconds", type=float, default=600)
     args = parser.parse_args()
     try:
         if args.max_resumes < 0 or args.max_replacements < 0 or args.attempt_timeout_seconds <= 0:
