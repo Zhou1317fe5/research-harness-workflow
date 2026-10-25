@@ -30,7 +30,7 @@ python <skill-dir>/scripts/prerun_route.py <change-manifest.json>
 ```
 
 - `no_prerun`：文档、状态、纯单测或格式改动。不创建 PRERUN 行。
-- `hyperparameter_or_evaluation_config_only`（映射至 `no_prerun`）：纯超参数微调、评测配置、命令行参数调整。不创建 PRERUN 行，直接放行。
+- `hyperparameter_or_evaluation_config_only`（映射至 `no_prerun`）：纯超参数微调、评测配置、命令行参数调整、工程优化（去哈希/I/O加速/惰性加载/异常补丁）。不创建 PRERUN 行，直接放行。
 - `micro_validation`：确定性运行时绑定变更，且保持科学契约并通过生产探针。不调用 Reviewer。
 - `smoke_validation`：进程监管、监控、调度或产物传输。通过生产环境 Launcher Smoke 验证，不调用 Reviewer。
 - `targeted_review`：凭据安全或破坏性生命周期变更。仅审查相邻安全不变式。

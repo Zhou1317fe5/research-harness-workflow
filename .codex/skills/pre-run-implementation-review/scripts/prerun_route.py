@@ -28,6 +28,10 @@ EXEMPT_CLASSES = {
     "evaluation_config",
     "cli_argument",
     "experiment_args",
+    "engineering_optimization",
+    "data_loading_optimization",
+    "logging_diagnostics",
+    "bugfix_patch",
 }
 MICRO_CLASSES = {
     "environment_binding",
