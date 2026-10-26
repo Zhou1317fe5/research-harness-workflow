@@ -489,7 +489,7 @@ class Controller:
             "home = Path.home()\n"
             "for base_dir in (spec_repo.parent.parent, home / 'cdfss-dinov3-workspace', home, home / 'workspace', spec_repo.parent.parent.parent):\n"
             "    if base_dir.is_dir():\n"
-            "        for n in ('ref_repo', local_name, clean_name, 'cdfss-dinov3', 'fss-diff-calp'):\n"
+            "        for n in (local_name, clean_name, 'cdfss-dinov3', 'fss-diff-calp'):\n"
             "            target = base_dir / n\n"
             "            if (target / '.git').is_dir() and str(target) not in candidates:\n"
             "                candidates.append(str(target))\n"
@@ -577,12 +577,8 @@ class Controller:
                 check=True,
                 stdout=subprocess.DEVNULL,
             )
-            if base_commit:
-                # 若远端基线与目标 commit 一致，增量只需打入包含 HEAD 的单提交即可（1.6 KB）
-                if base_commit == spec.source.commit:
-                    args = [temporary_ref, f"^{spec.source.commit}~1"]
-                else:
-                    args = [temporary_ref, f"^{base_commit}"]
+            if base_commit and base_commit != spec.source.commit:
+                args = [temporary_ref, f"^{base_commit}"]
                 try:
                     subprocess.run(
                         [
