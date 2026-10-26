@@ -579,7 +579,7 @@ class Controller:
                     stdout=subprocess.DEVNULL,
                 )
             subprocess.run(
-                ["git", "bundle", "verify", str(destination)], check=True, capture_output=True
+                ["git", "-C", str(repo), "bundle", "verify", str(destination)], check=True, capture_output=True
             )
         finally:
             subprocess.run(
@@ -589,7 +589,7 @@ class Controller:
                 stderr=subprocess.DEVNULL,
             )
         heads = subprocess.run(
-            ["git", "bundle", "list-heads", str(destination)],
+            ["git", "-C", str(repo), "bundle", "list-heads", str(destination)],
             check=True,
             capture_output=True,
             text=True,
