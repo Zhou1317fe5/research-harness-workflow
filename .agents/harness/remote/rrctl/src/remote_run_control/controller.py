@@ -477,18 +477,29 @@ class Controller:
         """Probe remote machine for an existing repository with common history for delta staging."""
         if getattr(spec.source, "bundle_sha256", None):
             return None, None
+        local_repo_name = Path(spec.source.repo_root).name
+        clean_name = local_repo_name.replace("-worktrees", "").split("-")[0]
         probe_code = (
             "import sys, subprocess\n"
             "from pathlib import Path\n"
             f"spec_repo = Path({spec.remote.repo_root!r})\n"
+            f"local_name = {local_repo_name!r}\n"
+            f"clean_name = {clean_name!r}\n"
             "candidates = []\n"
+            "home = Path.home()\n"
+            "for base_dir in (home, home / 'workspace', spec_repo.parent.parent.parent):\n"
+            "    if base_dir.is_dir():\n"
+            "        for n in (local_name, clean_name, 'cdfss-dinov3', 'fss-diff-calp'):\n"
+            "            target = base_dir / n\n"
+            "            if (target / '.git').is_dir() and str(target) not in candidates:\n"
+            "                candidates.append(str(target))\n"
             "for runs_dir in (spec_repo.parent, spec_repo.parent.parent):\n"
             "    if runs_dir.is_dir():\n"
             "        for d in sorted(runs_dir.iterdir(), key=lambda p: p.stat().st_mtime if p.exists() else 0, reverse=True):\n"
             "            repo = d / 'repo'\n"
-            "            if (repo / '.git').is_dir():\n"
+            "            if (repo / '.git').is_dir() and str(repo) not in candidates:\n"
             "                candidates.append(str(repo))\n"
-            "                if len(candidates) >= 10:\n"
+            "                if len(candidates) >= 15:\n"
             "                    break\n"
             "    if candidates:\n"
             "        break\n"
