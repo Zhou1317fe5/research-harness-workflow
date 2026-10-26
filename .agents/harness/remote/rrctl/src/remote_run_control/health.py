@@ -299,11 +299,16 @@ def sample_health(
                 ),
                 env=adapter_env,
             )
-            if adapter and not adapter.healthy:
-                issue("adapter_unhealthy", "adapter reported unhealthy")
+            if adapter:
+                if not adapter.healthy:
+                    issue("adapter_unhealthy", "adapter reported unhealthy")
+                if phase == "first_step" and adapter.observations.get("waiting_for_first_step"):
+                    first_step_ready = False
         except RRCError as exc:
             observations["adapter_error"] = {"code": exc.code, "phase": exc.phase}
-            issue(exc.code, f"adapter check failed: {exc.code}", retryable=True)
+            issue(exc.code, f"adapter check failed: {exc.code}", retryable=True, required=(phase != "first_step"))
+            if phase == "first_step":
+                first_step_ready = False
 
     complete = status.get("state") in {"workload_complete", "completed"}
     if phase == "completion" and adapter is not None:

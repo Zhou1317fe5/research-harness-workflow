@@ -110,6 +110,18 @@ def evaluate(context: dict[str, Any]) -> dict[str, Any]:
         contract["progress_path"],
         "adapter_contract.progress_path",
     )
+    if phase == "first_step" and (not progress_path.is_file() or progress_path.stat().st_size == 0):
+        return {
+            "healthy": True,
+            "complete": False,
+            "progress": {},
+            "observations": {
+                "phase": phase,
+                "progress_path": contract["progress_path"],
+                "waiting_for_first_step": True,
+            },
+            "artifacts": [],
+        }
     progress = load_structured_object(
         progress_path,
         "progress",
@@ -129,9 +141,18 @@ def evaluate(context: dict[str, Any]) -> dict[str, Any]:
     if phase == "first_step":
         minimum = contract.get("first_step_min_count", 1 if count is not None else None)
         if minimum is not None and count is not None and count < minimum:
-            raise AdapterContractError(
-                f"first_step_count_incomplete: expected>={minimum} actual={count}"
-            )
+            return {
+                "healthy": True,
+                "complete": False,
+                "progress": {},
+                "observations": {
+                    "phase": phase,
+                    "progress_path": contract["progress_path"],
+                    "waiting_for_first_step": True,
+                    "first_step_count_incomplete": {"expected": minimum, "actual": count},
+                },
+                "artifacts": [],
+            }
 
     observations: dict[str, Any] = {
         "phase": phase,
