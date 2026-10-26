@@ -579,12 +579,36 @@ def _read_run_projection(
                             or not isinstance(metric, (int, float)) or not math.isfinite(metric)):
                         raise ValueError(f"summary primary metric is not finite: {summary}")
                 auxiliary = settings.get("secondary_metric")
+                # 辅助指标与主指标遵循同一条合同感知规则：RunSpec 合同未声明必需时，
+                # 缺失只说明该 pipeline 不产出该辅助指标（如训练/探针 Run），属于「无值」，
+                # 投影为 None；合同声明必需时仍然硬失败。字段存在但值非法（null/NaN/字符串）仍报错。
+                declared_auxiliary = bool(auxiliary) and auxiliary in tuple(
+                    contract.get("summary_required_fields") or ()
+                )
                 # 只在合同未声明标量指标时容许维度缺失；指标在册时维度仍必须存在，
                 # 避免该实验的协议/维度拼写错误被静默降级成 None。
                 dimension_fields = settings.get("dimensions", [])
                 dimensions = ({k: dotted_value(data, k, "summary") for k in dimension_fields}
                               if declared_metric
                               else {k: optional_summary_value(data, k) for k in dimension_fields})
+                if auxiliary:
+                    try:
+                        metric_aux_value = dotted_value(data, auxiliary, "summary")
+                    except AdapterContractError:
+                        if declared_auxiliary:
+                            raise
+                        metric_aux_value = None
+                    else:
+                        if metric_aux_value is not None and (
+                            isinstance(metric_aux_value, bool)
+                            or not isinstance(metric_aux_value, (int, float))
+                            or not math.isfinite(metric_aux_value)
+                        ):
+                            raise ValueError(
+                                f"summary auxiliary metric is not finite: {summary}"
+                            )
+                else:
+                    metric_aux_value = None
                 protocol = optional_summary_value(data, settings.get("protocol_field", "protocol"))
                 if protocol is not None and (not isinstance(protocol, str) or not protocol.strip()):
                     raise ValueError(f"summary protocol must be non-empty text: {summary}")
@@ -597,7 +621,7 @@ def _read_run_projection(
                     "protocol": protocol,
                     "metric": metric,
                     "steps": optional_summary_value(data, settings.get("steps_field", "steps")),
-                    "metric_aux": dotted_value(data, auxiliary, "summary") if auxiliary else None,
+                    "metric_aux": metric_aux_value,
                     "weights_path": optional_summary_value(data, settings.get("checkpoint_field", "checkpoint_path")),
                     "commit": spec["source"]["commit"],
                     "run_spec_sha256": provenance["run_spec_sha256"],

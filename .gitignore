@@ -7,7 +7,12 @@ remote_artifacts/*
 *.jsonl
 *.pt
 *.ckpt
+*.pth
+*.npz
+*.npy
 issues/**/readiness*.json
+issues/**/eval-artifacts/
+issues/**/smoke-artifacts/
 
 .agents/harness/config/profiles.json
 
