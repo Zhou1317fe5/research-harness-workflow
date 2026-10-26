@@ -471,30 +471,113 @@ class Controller:
         )
         return result, transport
 
-    def _create_bundle(self, spec: RunSpec, destination: Path) -> str:
+    def _probe_remote_reference(
+        self, spec: RunSpec, transport: Transport
+    ) -> tuple[str | None, str | None]:
+        """Probe remote machine for an existing repository with common history for delta staging."""
+        if getattr(spec.source, "bundle_sha256", None):
+            return None, None
+        probe_code = (
+            "import sys, subprocess\n"
+            "from pathlib import Path\n"
+            f"spec_repo = Path({spec.remote.repo_root!r})\n"
+            "candidates = []\n"
+            "for runs_dir in (spec_repo.parent, spec_repo.parent.parent):\n"
+            "    if runs_dir.is_dir():\n"
+            "        for d in sorted(runs_dir.iterdir(), key=lambda p: p.stat().st_mtime if p.exists() else 0, reverse=True):\n"
+            "            repo = d / 'repo'\n"
+            "            if (repo / '.git').is_dir():\n"
+            "                candidates.append(str(repo))\n"
+            "                if len(candidates) >= 10:\n"
+            "                    break\n"
+            "    if candidates:\n"
+            "        break\n"
+            "for c in candidates:\n"
+            "    try:\n"
+            "        commit = subprocess.check_output(['git', '-C', c, 'rev-parse', 'HEAD'], text=True).strip()\n"
+            "        if commit:\n"
+            "            print(f'{commit}\\t{c}')\n"
+            "            sys.exit(0)\n"
+            "    except Exception:\n"
+            "        pass\n"
+            "sys.exit(1)\n"
+        )
+        try:
+            result = transport.run(
+                [spec.remote.python, "-c", probe_code],
+                timeout_seconds=5,
+            )
+            if result.returncode == 0 and result.stdout:
+                line = result.stdout.decode("utf-8", errors="replace").strip().splitlines()[-1]
+                parts = line.split("\t", 1)
+                if len(parts) == 2:
+                    remote_commit, remote_repo = parts[0].strip(), parts[1].strip()
+                    repo = Path(spec.source.repo_root)
+                    mb_res = subprocess.run(
+                        ["git", "-C", str(repo), "merge-base", remote_commit, spec.source.commit],
+                        capture_output=True,
+                        text=True,
+                    )
+                    if mb_res.returncode == 0:
+                        merge_base = mb_res.stdout.strip()
+                        if merge_base and merge_base != spec.source.commit:
+                            return remote_repo, merge_base
+        except Exception:
+            pass
+        return None, None
+
+    def _create_bundle(
+        self, spec: RunSpec, destination: Path, *, base_commit: str | None = None
+    ) -> str:
         repo = Path(spec.source.repo_root)
         temporary_ref = f"refs/heads/rrctl-{sha256_json(spec.run_id)[:24]}"
+        bundle_args = [temporary_ref]
+        if base_commit:
+            bundle_args.append(f"^{base_commit}")
         try:
             subprocess.run(
                 ["git", "-C", str(repo), "update-ref", temporary_ref, spec.source.commit],
                 check=True,
                 stdout=subprocess.DEVNULL,
             )
-            subprocess.run(
-                [
-                    "git",
-                    "-c",
-                    "pack.threads=1",
-                    "-C",
-                    str(repo),
-                    "bundle",
-                    "create",
-                    str(destination),
-                    temporary_ref,
-                ],
-                check=True,
-                stdout=subprocess.DEVNULL,
-            )
+            created = False
+            if base_commit:
+                try:
+                    subprocess.run(
+                        [
+                            "git",
+                            "-c",
+                            "pack.threads=0",
+                            "-C",
+                            str(repo),
+                            "bundle",
+                            "create",
+                            str(destination),
+                            *bundle_args,
+                        ],
+                        check=True,
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.PIPE,
+                    )
+                    created = True
+                except subprocess.CalledProcessError:
+                    created = False
+            if not created:
+                subprocess.run(
+                    [
+                        "git",
+                        "-c",
+                        "pack.threads=0",
+                        "-C",
+                        str(repo),
+                        "bundle",
+                        "create",
+                        str(destination),
+                        temporary_ref,
+                    ],
+                    check=True,
+                    stdout=subprocess.DEVNULL,
+                )
             subprocess.run(
                 ["git", "bundle", "verify", str(destination)], check=True, capture_output=True
             )
@@ -530,13 +613,14 @@ class Controller:
         return actual_sha256
 
     def _stage(self, spec: RunSpec, readiness: ReadinessResult, transport: Transport) -> RunRef:
+        ref_repo, base_commit = self._probe_remote_reference(spec, transport)
         with tempfile.TemporaryDirectory(prefix="rrctl-stage-") as temporary_name:
             temporary = Path(temporary_name)
             bundle = temporary / "source.bundle"
             worker = temporary / "rrctl-worker.pyz"
             spec_path = temporary / "run_spec.json"
             manifest_path = temporary / "stage_manifest.json"
-            bundle_sha = self._create_bundle(spec, bundle)
+            bundle_sha = self._create_bundle(spec, bundle, base_commit=base_commit)
             source_sha = source_content_sha256(Path(spec.source.repo_root), spec.source)
             if readiness.source_content_sha256 != source_sha:
                 raise RRCError(
@@ -570,6 +654,8 @@ class Controller:
                 "worker_sha256": worker_sha,
                 "anchors": {item.name: item.sha256 for item in spec.anchors},
             }
+            if ref_repo:
+                manifest["reference_repo"] = ref_repo
             atomic_write_json(manifest_path, manifest)
             transport.mkdir_exclusive(spec.remote.stage_root)
             uploads = [

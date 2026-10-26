@@ -803,6 +803,10 @@ def execute(
                 run_id, REPO_ROOT, profiles, spec_path=spec_path, interval_seconds=heartbeat_seconds
             )
             heartbeat.start()
+        if stage == "ready":
+            emit_progress(run_id, "ready", f"🔍 正在进行启动前环境预检 [RunID: {run_id}]...")
+        if stage == "launch":
+            emit_progress(run_id, "launch", f"📦 正在打包与分发运行代码 [RunID: {run_id}]...")
         if stage == "wait":
             mins = int(heartbeat_seconds // 60) if heartbeat_seconds > 0 else 30
             emit_progress(run_id, "wait", f"🚀 远端计算任务已就绪运行 [RunID: {run_id}]，后台监控中 (周期心跳: {mins}m)...")

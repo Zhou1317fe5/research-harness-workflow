@@ -9,6 +9,7 @@ import selectors
 import shlex
 import shutil
 import subprocess
+import sys
 import time
 from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
@@ -389,6 +390,15 @@ class SSHTransport(Transport):
         *,
         timeout_seconds: float = 1800,
     ) -> None:
+        size_bytes = local_path.stat().st_size
+        size_str = (
+            f"{size_bytes / 1024 / 1024:.2f} MB"
+            if size_bytes >= 1024 * 1024
+            else f"{size_bytes / 1024:.1f} KB"
+        )
+        sys.stderr.write(f"[rrctl] uploading {local_path.name} ({size_str}) -> {remote_path}...\n")
+        sys.stderr.flush()
+        t0 = time.monotonic()
         temporary = f"{remote_path}.rrctl-upload"
         script = (
             "set -eu; umask 077; "
@@ -412,6 +422,11 @@ class SSHTransport(Transport):
                 f"upload failed for {remote_path}: {message.strip()}",
                 "transport",
             )
+        elapsed = time.monotonic() - t0
+        sys.stderr.write(
+            f"[rrctl] uploaded {local_path.name} ({size_str}) in {elapsed:.1f}s\n"
+        )
+        sys.stderr.flush()
 
     def download(self, remote_path: str) -> bytes:
         # 文件传输保留完整二进制 stdout；只有诊断 stderr 使用控制预算。
