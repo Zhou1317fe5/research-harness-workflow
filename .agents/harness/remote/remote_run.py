@@ -487,11 +487,13 @@ def rrctl_call(argv: list[str], repo_root: Path) -> subprocess.CompletedProcess:
     # entire transfer finishes. Other control calls retain captured diagnostics.
     stream_progress = "pull" in argv
     env_file = repo_root / ".agents/harness/config/.env"
+    call_env = {**os.environ, "RRCTL_PULL_AUTO_RECOVER": "1"}
     if env_file.is_file():
         # 只传文件路径和参数，凭据由 shell 在进程内读取。
         argv = ["bash", "-c", 'set -e; set -a; source "$1"; set +a; shift; exec "$@"', "harness", str(env_file), *argv]
     return subprocess.run(argv, stdout=subprocess.PIPE,
                           stderr=None if stream_progress else subprocess.PIPE,
+                          env=call_env,
                           text=True, check=False)
 
 

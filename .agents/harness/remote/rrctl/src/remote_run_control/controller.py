@@ -1407,14 +1407,30 @@ class Controller:
                             "download_timeout_seconds": progress.timeout,
                             "layout": "diagnostic_snapshot" if diagnostic else "artifacts",
                         }
-                raise RRCError(
-                    "pull_collision",
-                    f"local artifact destination already exists: {destination}; "
-                    f"if its contents are complete and verified, keep it (pull is idempotent only "
-                    f"for a manifest-identical destination); otherwise move it aside or remove it "
-                    f"before retrying: mv {destination} {destination}.conflict",
-                    "artifact",
-                )
+                if os.environ.get("RRCTL_PULL_AUTO_RECOVER") == "1":
+                    conflict_backup = destination.parent / f"{destination.name}.conflict.{int(time.time())}"
+                    try:
+                        destination.rename(conflict_backup)
+                        sys.stderr.write(
+                            f"[rrctl] notice: previous incomplete destination archived to {conflict_backup.name}\n"
+                        )
+                        sys.stderr.flush()
+                    except OSError as exc:
+                        raise RRCError(
+                            "pull_collision",
+                            f"local artifact destination already exists and could not be archived: {destination}; "
+                            f"manual intervention required: {exc}",
+                            "artifact",
+                        ) from exc
+                else:
+                    raise RRCError(
+                        "pull_collision",
+                        f"local artifact destination already exists: {destination}; "
+                        f"if its contents are complete and verified, keep it (pull is idempotent only "
+                        f"for a manifest-identical destination); otherwise move it aside or remove it "
+                        f"before retrying: mv {destination} {destination}.conflict",
+                        "artifact",
+                    )
         destination.parent.mkdir(parents=True, exist_ok=True)
         identity = sha256_json({"manifest": manifest, "run_spec_sha256": spec.digest,
                                 "source_root": source_root})
@@ -1431,6 +1447,16 @@ class Controller:
             atomic_write_json(staged_manifest, manifest)
         # Unknown/random staging belongs to prior attempts: never sweep siblings.
         try:
+            # 优先尝试单流批量拉取所有未就绪的条目，将 N 次 SSH 握手骤降为 1 次流式传输
+            missing_entries = [e for e in manifest["entries"] if not _verified_pull_file(temporary, e)]
+            if missing_entries and hasattr(transport, "download_tar_stream"):
+                paths = [e["path"] for e in missing_entries]
+                sys.stderr.write(f"[rrctl] pulling {len(paths)} artifacts via single tar stream...\n")
+                sys.stderr.flush()
+                if transport.download_tar_stream(source_root, paths, temporary, timeout_seconds=progress.timeout):
+                    sys.stderr.write("[rrctl] tar stream pull delivered, verifying integrity...\n")
+                    sys.stderr.flush()
+
             for entry in manifest["entries"]:
                 relative = Path(entry["path"])
                 local_path = _pull_path(temporary, entry["path"])

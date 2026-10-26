@@ -183,6 +183,11 @@ class Transport:
         destination.write_bytes(data)
         progress(destination.stat().st_size)
 
+    def download_tar_stream(
+        self, remote_root: str, relative_paths: list[str], destination_dir: Path, *, timeout_seconds: float = 1800
+    ) -> bool:
+        return False
+
     def preflight(
         self, *, python: str, environment: EnvironmentSpec, stage_root: str | None = None
     ) -> dict:
@@ -333,6 +338,19 @@ class SSHTransport(Transport):
                 extra.extend(["-o", "ServerAliveInterval=15"])
             if not any("ServerAliveCountMax" in opt for opt in existing_opts):
                 extra.extend(["-o", "ServerAliveCountMax=3"])
+            if not any("TCPKeepAlive" in opt for opt in existing_opts):
+                extra.extend(["-o", "TCPKeepAlive=yes"])
+            socket_dir = Path.home() / ".ssh" / "sockets"
+            try:
+                socket_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+                if not any("ControlMaster" in opt for opt in existing_opts):
+                    extra.extend([
+                        "-o", "ControlMaster=auto",
+                        "-o", f"ControlPath={socket_dir}/%r@%h:%p",
+                        "-o", "ControlPersist=10m",
+                    ])
+            except OSError:
+                pass
             if extra:
                 command = [command[0], *extra, *command[1:]]
         if self.profile.password_env:
@@ -400,33 +418,45 @@ class SSHTransport(Transport):
         sys.stderr.flush()
         t0 = time.monotonic()
         temporary = f"{remote_path}.rrctl-upload"
+        # 允许自动清理因网络异常残留的 temporary 碎片，但不覆盖已有的正式 remote_path
         script = (
             "set -eu; umask 077; "
-            f"test ! -e {shlex.quote(remote_path)}; test ! -e {shlex.quote(temporary)}; "
+            f"test ! -e {shlex.quote(remote_path)}; "
+            f"rm -f {shlex.quote(temporary)}; "
             f"cat > {shlex.quote(temporary)}; "
             f"test \"$(sha256sum {shlex.quote(temporary)} | awk '{{print $1}}')\" = "
             f"{shlex.quote(expected_sha256)}; "
             f"mv {shlex.quote(temporary)} {shlex.quote(remote_path)}"
         )
-        result = self.run(
-            ["bash", "-c", script],
-            input_data=local_path.read_bytes(),
-            timeout_seconds=timeout_seconds,
-        )
-        if result.returncode != 0:
-            message = redact(
+        max_attempts = 3
+        last_error = ""
+        payload = local_path.read_bytes()
+        for attempt in range(1, max_attempts + 1):
+            if attempt > 1:
+                sys.stderr.write(f"[rrctl] retrying upload for {local_path.name} (attempt {attempt}/{max_attempts})...\n")
+                sys.stderr.flush()
+                time.sleep(1.5)
+            result = self.run(
+                ["bash", "-c", script],
+                input_data=payload,
+                timeout_seconds=timeout_seconds,
+            )
+            if result.returncode == 0:
+                elapsed = time.monotonic() - t0
+                sys.stderr.write(
+                    f"[rrctl] uploaded {local_path.name} ({size_str}) in {elapsed:.1f}s\n"
+                )
+                sys.stderr.flush()
+                return
+            last_error = redact(
                 result.stderr.decode("utf-8", errors="replace"), self.profile.secret_values
-            )
-            raise RRCError(
-                "upload_failed",
-                f"upload failed for {remote_path}: {message.strip()}",
-                "transport",
-            )
-        elapsed = time.monotonic() - t0
-        sys.stderr.write(
-            f"[rrctl] uploaded {local_path.name} ({size_str}) in {elapsed:.1f}s\n"
+            ).strip()
+
+        raise RRCError(
+            "upload_failed",
+            f"upload failed for {remote_path} after {max_attempts} attempts: {last_error}",
+            "transport",
         )
-        sys.stderr.flush()
 
     def download(self, remote_path: str) -> bytes:
         # 文件传输保留完整二进制 stdout；只有诊断 stderr 使用控制预算。
@@ -514,6 +544,49 @@ class SSHTransport(Transport):
                     "transport", details={"control_output": result.diagnostics(self.secret_values)},
                     retryable=True,
                 )
+
+    def download_tar_stream(
+        self,
+        remote_root: str,
+        relative_paths: list[str],
+        destination_dir: Path,
+        *,
+        timeout_seconds: float = 1800,
+    ) -> bool:
+        """Download multiple files via a single remote tar gzip stream into destination_dir."""
+        if not relative_paths:
+            return True
+        import tarfile
+        base, environment = self._base_command()
+        quoted_paths = " ".join(shlex.quote(p) for p in relative_paths)
+        remote_cmd = f"tar -czf - -C {shlex.quote(remote_root)} -- {quoted_paths}"
+        cmd = [*base, remote_cmd]
+        deadline = time.monotonic() + timeout_seconds
+        try:
+            process = subprocess.Popen(
+                cmd,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                env=environment,
+            )
+        except OSError:
+            return False
+
+        try:
+            with tarfile.open(fileobj=process.stdout, mode="r|gz") as tar:
+                for member in tar.getmembers():
+                    target_path = (destination_dir / member.name).resolve()
+                    if not target_path.is_relative_to(destination_dir.resolve()):
+                        return False
+                tar.extractall(destination_dir)
+            stdout, stderr = process.communicate(timeout=max(5.0, deadline - time.monotonic()))
+            return process.returncode == 0
+        except Exception:
+            if process.poll() is None:
+                process.kill()
+            process.wait()
+            return False
 
 
 def transport_for(profile: Profile) -> Transport:
