@@ -152,13 +152,18 @@ _TERMINAL_STATES = {"completed", "workload_complete", "failed", "stopped", "canc
 
 def _evidence_json(path: Path, root: Path) -> dict:
     # Reject symlinks in every component, not only the final filename.
-    if not path.absolute().is_relative_to(root):
+    root = root.resolve()
+    abs_path = path.absolute()
+    if not abs_path.is_relative_to(root):
         raise ValueError("ingest_evidence_path_outside_workspace")
-    cursor = path
+    cursor = abs_path
     while cursor != root:
         if cursor.is_symlink():
             raise ValueError("ingest_evidence_symlink")
-        cursor = cursor.parent
+        parent = cursor.parent
+        if parent == cursor:
+            break
+        cursor = parent
     if not path.resolve().is_relative_to(root):
         raise ValueError("ingest_evidence_path_outside_workspace")
     value = json.loads(path.read_text(encoding="utf-8"))
@@ -189,6 +194,9 @@ def _explicit_failure(data: dict) -> bool:
 def _terminal_evidence(csv_path: Path, run_root: Path, spec: dict, root: Path,
                        extra_paths: tuple[Path, ...] = ()) -> dict:
     """Read retained rrctl observations; never infer a remote exit from CSV ingest state."""
+    root = root.resolve()
+    csv_path = csv_path.resolve()
+    run_root = run_root.resolve()
     run_id = spec["run_id"]
     # Only controller evidence belonging to this Run, never arbitrary workload or Mission JSON.
     paths = {run_root / ".rrctl/status.json", *extra_paths}
@@ -244,7 +252,7 @@ def _terminal_evidence(csv_path: Path, run_root: Path, spec: dict, root: Path,
         state = status.get("state")
         if state in _TERMINAL_STATES or exit_code is not None:
             observations.append({"state": state, "exit_code": exit_code,
-                                 "path": path.relative_to(root).as_posix()})
+                                 "path": path.resolve().relative_to(root).as_posix()})
     failed = [item for item in observations if _explicit_failure(item)]
     chosen = (failed or [item for item in observations if item["state"] == "completed"] or observations)
     return {"state": chosen[0]["state"] if chosen else None,
@@ -253,6 +261,8 @@ def _terminal_evidence(csv_path: Path, run_root: Path, spec: dict, root: Path,
 
 
 def _bound_evidence(entry: dict, base: Path, root: Path) -> tuple[Path, dict]:
+    root = root.resolve()
+    base = base.resolve()
     path = base / entry["path"]
     payload = _evidence_json(path, root)
     if hashlib.sha256(path.read_bytes()).hexdigest() != entry.get("sha256"):
@@ -264,6 +274,9 @@ def _recovery_projection(csv_path: Path, run_root: Path, spec: dict, loaded: dic
                          expected: dict, root: Path, terminal: dict, *,
                          proposed: tuple[dict, dict] | None = None) -> dict:
     """Normalize an original rrctl recovery snapshot in memory, never rewrite it."""
+    root = root.resolve()
+    csv_path = csv_path.resolve()
+    run_root = run_root.resolve()
     binding_path = csv_path.parent / "validation/recovery-binding.json"
     payload = proposed[0] if proposed else _evidence_json(binding_path, root)
     if payload.get("schema") != RECOVERY_BINDING_SCHEMA:
@@ -354,7 +367,8 @@ def load_run_provenance(
     project_root = repo_root.resolve()
     csv_path = csv_path.resolve()
     spec_path = csv_path.parent / "runs" / identifier(run_id) / "runspec.json"
-    run_root = (artifacts or project_root / "remote_artifacts") / identifier(exp_id) / run_id
+    artifacts_dir = artifacts.resolve() if artifacts else (project_root / "remote_artifacts")
+    run_root = artifacts_dir / identifier(exp_id) / run_id
     manifest_path = run_root / "artifact_manifest.json"
     if (not csv_path.is_relative_to(project_root) or not csv_path.is_file()
             or not spec_path.resolve().is_relative_to(csv_path.parent)
@@ -498,7 +512,8 @@ def _read_run_projection(
     该 Run 仍以 `metric=None` 入册，标量指标留在 _pending。
     """
     project_root = (repo_root or REPO_ROOT).resolve()
-    root = (artifacts or ARTIFACTS) / identifier(exp_id)
+    artifacts_dir = artifacts.resolve() if artifacts else ARTIFACTS.resolve()
+    root = artifacts_dir / identifier(exp_id)
     settings = settings or {}
     runs: list[dict] = []
     sources = {key: set() for key in ("spec_id", "branch", "commit", "mission_csv")}

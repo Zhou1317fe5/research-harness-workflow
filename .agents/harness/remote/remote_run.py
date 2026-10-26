@@ -625,12 +625,15 @@ def retain_observation(spec: dict, stage: str, response: dict) -> Path | None:
     csv_path = (root / csv_value).resolve()
     if not csv_path.is_relative_to(root):
         raise ValueError("observation mission CSV escapes source repository")
-    directory = csv_path.parent / "validation/rrctl-observations" / spec["run_id"]
+    directory = (csv_path.parent / "validation/rrctl-observations" / spec["run_id"]).resolve()
     cursor = directory
     while cursor != root:
         if cursor.is_symlink():
             raise ValueError("observation directory cannot contain symlinks")
-        cursor = cursor.parent
+        parent = cursor.parent
+        if parent == cursor:
+            break
+        cursor = parent
     encoded = json.dumps(response, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
     value = {"schema_version": "research.rrctl-observation.v1", "run_id": spec["run_id"],
              "run_spec_sha256": run_spec_digest(spec), "stage": stage, "response": response}

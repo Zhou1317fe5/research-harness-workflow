@@ -354,6 +354,8 @@ def evidence_completion_errors(
     ingest/claim/analysis always evaluate every row because they bind evidence
     produced by other rows; only terminal/Git state is scoped by ``skip_row_ids``.
     """
+    workdir = workdir.resolve()
+    csv_path = csv_path.resolve()
     scoped = [row for row in rows if row.get("id", "") not in skip_row_ids]
     errors: list[str] = []
     for row in scoped:
