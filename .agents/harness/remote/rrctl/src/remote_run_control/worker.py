@@ -175,27 +175,41 @@ def launch(stage_root: Path) -> dict[str, Any]:
         )
         clone_cmd = ["git", "clone"]
         ref_repo = manifest.get("reference_repo")
+        cloned = False
         if ref_repo and (Path(ref_repo) / ".git").is_dir():
-            clone_cmd.extend(["--reference", str(ref_repo)])
-        else:
+            # 若远端参考仓库自身已完整拥有目标 commit，直接本地瞬时克隆（0 网络传输与 0 对象缺口）
+            has_commit = subprocess.run(
+                ["git", "-C", str(ref_repo), "cat-file", "-e", f"{spec.source.commit}^{{commit}}"],
+                capture_output=True,
+            ).returncode == 0
+            if has_commit:
+                try:
+                    subprocess.run(["git", "clone", str(ref_repo), str(repo_root)], check=True, capture_output=True, text=True)
+                    cloned = True
+                except subprocess.CalledProcessError:
+                    cloned = False
+            if not cloned:
+                clone_cmd.extend(["--reference", str(ref_repo)])
+        if not cloned and not any("--reference" in arg for arg in clone_cmd):
             repo_parent = repo_root.parent
             if repo_parent.is_dir():
                 for sib in sorted(repo_parent.iterdir(), key=lambda p: p.stat().st_mtime if p.exists() else 0, reverse=True):
                     if sib.name != spec.run_id and (sib / "repo/.git").is_dir():
                         clone_cmd.extend(["--reference", str(sib / "repo")])
                         break
-        clone_cmd.extend([str(bundle_path), str(repo_root)])
-        try:
-            subprocess.run(clone_cmd, check=True, capture_output=True, text=True)
-        except subprocess.CalledProcessError as exc:
+        if not cloned:
+            clone_cmd.extend([str(bundle_path), str(repo_root)])
             try:
-                subprocess.run(["git", "clone", str(bundle_path), str(repo_root)], check=True, capture_output=True, text=True)
-            except subprocess.CalledProcessError as fallback_exc:
-                raise RRCError(
-                    "bundle_clone_failed",
-                    f"failed to clone staged repository from bundle: {fallback_exc.stderr.strip() or exc.stderr.strip()}",
-                    "worker",
-                ) from fallback_exc
+                subprocess.run(clone_cmd, check=True, capture_output=True, text=True)
+            except subprocess.CalledProcessError as exc:
+                try:
+                    subprocess.run(["git", "clone", str(bundle_path), str(repo_root)], check=True, capture_output=True, text=True)
+                except subprocess.CalledProcessError as fallback_exc:
+                    raise RRCError(
+                        "bundle_clone_failed",
+                        f"failed to clone staged repository from bundle: {fallback_exc.stderr.strip() or exc.stderr.strip()}",
+                        "worker",
+                    ) from fallback_exc
         subprocess.run(
             ["git", "-C", str(repo_root), "checkout", "-B", spec.source.branch, spec.source.commit],
             check=True,

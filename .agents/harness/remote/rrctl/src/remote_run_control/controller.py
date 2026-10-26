@@ -487,9 +487,9 @@ class Controller:
             f"clean_name = {clean_name!r}\n"
             "candidates = []\n"
             "home = Path.home()\n"
-            "for base_dir in (home, home / 'workspace', spec_repo.parent.parent.parent):\n"
+            "for base_dir in (spec_repo.parent.parent, home / 'cdfss-dinov3-workspace', home, home / 'workspace', spec_repo.parent.parent.parent):\n"
             "    if base_dir.is_dir():\n"
-            "        for n in (local_name, clean_name, 'cdfss-dinov3', 'fss-diff-calp'):\n"
+            "        for n in ('ref_repo', local_name, clean_name, 'cdfss-dinov3', 'fss-diff-calp'):\n"
             "            target = base_dir / n\n"
             "            if (target / '.git').is_dir() and str(target) not in candidates:\n"
             "                candidates.append(str(target))\n"
@@ -516,7 +516,7 @@ class Controller:
         try:
             result = transport.run(
                 [spec.remote.python, "-c", probe_code],
-                timeout_seconds=5,
+                timeout_seconds=15,
             )
             if result.returncode == 0 and result.stdout:
                 line = result.stdout.decode("utf-8", errors="replace").strip().splitlines()[-1]
@@ -531,7 +531,7 @@ class Controller:
                     )
                     if mb_res.returncode == 0:
                         merge_base = mb_res.stdout.strip()
-                        if merge_base and merge_base != spec.source.commit:
+                        if merge_base:
                             return remote_repo, merge_base
         except Exception:
             pass
@@ -545,46 +545,53 @@ class Controller:
         bundle_args = [temporary_ref]
         if base_commit:
             bundle_args.append(f"^{base_commit}")
+        created = False
         try:
             subprocess.run(
                 ["git", "-C", str(repo), "update-ref", temporary_ref, spec.source.commit],
                 check=True,
                 stdout=subprocess.DEVNULL,
             )
-            created = False
             if base_commit:
+                # 若远端基线与目标 commit 一致，增量只需打入包含 HEAD 的单提交即可（1.6 KB）
+                if base_commit == spec.source.commit:
+                    args = [temporary_ref, f"^{spec.source.commit}~1"]
+                else:
+                    args = [temporary_ref, f"^{base_commit}"]
                 try:
                     subprocess.run(
                         [
-                            "git",
-                            "-c",
-                            "pack.threads=0",
-                            "-C",
-                            str(repo),
-                            "bundle",
-                            "create",
-                            str(destination),
-                            *bundle_args,
+                            "git", "-c", "pack.threads=0", "-C", str(repo),
+                            "bundle", "create", str(destination), *args,
                         ],
                         check=True,
                         stdout=subprocess.DEVNULL,
-                        stderr=subprocess.PIPE,
+                        stderr=subprocess.DEVNULL,
                     )
                     created = True
                 except subprocess.CalledProcessError:
                     created = False
             if not created:
+                # 严禁直接打包整库历史（含 340MB 历史死重 npz）；退避采用深度为 1 的轻量浅层打包（~13MB）
+                try:
+                    with tempfile.TemporaryDirectory(prefix="rrctl-shallow-") as tmpdir:
+                        shallow_dir = Path(tmpdir) / "shallow"
+                        subprocess.run(
+                            ["git", "clone", "--depth", "1", f"file://{repo.resolve()}", str(shallow_dir)],
+                            check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                        )
+                        subprocess.run(
+                            ["git", "-C", str(shallow_dir), "bundle", "create", str(destination), "HEAD"],
+                            check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                        )
+                        created = True
+                except Exception:
+                    created = False
+            if not created:
                 subprocess.run(
                     [
-                        "git",
-                        "-c",
-                        "pack.threads=0",
-                        "-C",
-                        str(repo),
-                        "bundle",
-                        "create",
-                        str(destination),
-                        temporary_ref,
+                        "git", "-c", "pack.threads=0", "-C", str(repo),
+                        "bundle", "create", str(destination), temporary_ref,
                     ],
                     check=True,
                     stdout=subprocess.DEVNULL,
