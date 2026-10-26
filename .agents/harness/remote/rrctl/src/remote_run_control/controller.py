@@ -505,9 +505,17 @@ class Controller:
             "        break\n"
             "for c in candidates:\n"
             "    try:\n"
-            "        commit = subprocess.check_output(['git', '-C', c, 'rev-parse', 'HEAD'], text=True).strip()\n"
-            "        if commit:\n"
-            "            print(f'{commit}\\t{c}')\n"
+            "        out = subprocess.check_output([\n"
+            "            'git', '-C', c, 'for-each-ref',\n"
+            "            '--sort=-committerdate', '--format=%(objectname)',\n"
+            "            'refs/remotes/origin/', 'refs/heads/'\n"
+            "        ], text=True).strip()\n"
+            "        commits = [item.strip() for item in out.splitlines() if item.strip()][:30]\n"
+            "        head = subprocess.check_output(['git', '-C', c, 'rev-parse', 'HEAD'], text=True).strip()\n"
+            "        if head and head not in commits:\n"
+            "            commits.insert(0, head)\n"
+            "        if commits:\n"
+            "            print(f'{c}\\t{\" \".join(commits)}')\n"
             "            sys.exit(0)\n"
             "    except Exception:\n"
             "        pass\n"
@@ -522,17 +530,34 @@ class Controller:
                 line = result.stdout.decode("utf-8", errors="replace").strip().splitlines()[-1]
                 parts = line.split("\t", 1)
                 if len(parts) == 2:
-                    remote_commit, remote_repo = parts[0].strip(), parts[1].strip()
+                    remote_repo, commits_str = parts[0].strip(), parts[1].strip()
+                    remote_commits = commits_str.split()
                     repo = Path(spec.source.repo_root)
-                    mb_res = subprocess.run(
-                        ["git", "-C", str(repo), "merge-base", remote_commit, spec.source.commit],
-                        capture_output=True,
-                        text=True,
-                    )
-                    if mb_res.returncode == 0:
-                        merge_base = mb_res.stdout.strip()
-                        if merge_base:
-                            return remote_repo, merge_base
+                    best_base = None
+                    min_distance = 999999
+                    for c in remote_commits:
+                        try:
+                            mb_res = subprocess.run(
+                                ["git", "-C", str(repo), "merge-base", c, spec.source.commit],
+                                capture_output=True,
+                                text=True,
+                            )
+                            if mb_res.returncode == 0:
+                                mb = mb_res.stdout.strip()
+                                if mb:
+                                    dist_res = subprocess.run(
+                                        ["git", "-C", str(repo), "rev-list", "--count", f"{mb}..{spec.source.commit}"],
+                                        capture_output=True,
+                                        text=True,
+                                    )
+                                    dist = int(dist_res.stdout.strip()) if dist_res.returncode == 0 else 999999
+                                    if dist < min_distance:
+                                        min_distance = dist
+                                        best_base = mb
+                        except Exception:
+                            pass
+                    if best_base:
+                        return remote_repo, best_base
         except Exception:
             pass
         return None, None
