@@ -735,14 +735,27 @@ class Controller:
             )
         if (self.index.root / spec.run_id / "run_ref.json").exists():
             ref = self.index.load_ref(spec.run_id)
-            raise RRCError(
-                "run_already_indexed",
-                "RunID is already registered; inspect or resume it instead of launching again",
-                "recovery",
-                details={"run_id": spec.run_id},
-                retryable=False,
-                next_actions=self.recovery_actions(spec.run_id, ref),
-            )
+            # 若已有运行记录，检查是否为已终结（failed/aborted/completed）的残留；若是，自动归档以释放 RunID 允许重新 launch
+            archived = False
+            try:
+                ref_status_path = self.index.root / spec.run_id / "last_status.json"
+                if ref_status_path.is_file():
+                    status_val = load_json(ref_status_path)
+                    if isinstance(status_val, dict) and status_val.get("state") in {"failed", "aborted", "workload_complete", "completed"}:
+                        archive_dir = self.index.root / f"{spec.run_id}.relaunch-{int(time.time())}"
+                        shutil.move(str(self.index.root / spec.run_id), str(archive_dir))
+                        archived = True
+            except Exception:
+                pass
+            if not archived and (self.index.root / spec.run_id / "run_ref.json").exists():
+                raise RRCError(
+                    "run_already_indexed",
+                    "RunID is already registered; inspect or resume it instead of launching again",
+                    "recovery",
+                    details={"run_id": spec.run_id},
+                    retryable=False,
+                    next_actions=self.recovery_actions(spec.run_id, ref),
+                )
         try:
             readiness, transport = self._require_ready(spec)
         except RRCError as exc:

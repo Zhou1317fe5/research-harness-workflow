@@ -767,7 +767,7 @@ def execute(
         raise ValueError("expected a valid rrctl.run.v1 RunSpec")
     spec = canonical_run_spec(spec)
     validate_mission_launch(spec, resume=resume, spec_path=spec_path)
-    if not resume and not observe_only:
+    if not resume:
         # 非 resume 的全新 launch：若本地残留该 RunID 的旧状态索引（如之前被终止或强杀的任务），
         # 自动归档旧目录，防止底层 rrctl 报 run_already_indexed 阻断启动。
         state_dir = Path.home() / f".local/state/rrctl/runs/{run_id}"

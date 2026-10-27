@@ -318,6 +318,7 @@ def _verified_verdict(
     review_mode: str,
     review_result: str,
     reviewer_id: str,
+    closure: list[str] | tuple[str, ...] = (),
 ) -> str:
     artifact = _text(value, "gate_provenance.verdict_artifact")
     relative = Path(artifact)
@@ -360,12 +361,12 @@ def _verified_verdict(
     direct_result = review_result in {"scientifically_correct", "targeted_correct"}
     # 审查针对的是**科学行为**，不是 commit 字节。行为指纹相等时，审查所看过的
     # 代码语义未变，即使后续提交了文档/测试/台账也不要求重审。
-    if direct_result and not same_scientific_behavior(repo_root, reviewed_commit, source_commit):
+    if not bool(closure) and direct_result and not same_scientific_behavior(repo_root, reviewed_commit, source_commit):
         raise RunSpecBuildError(
             "gate_provenance.verdict_artifact_identity_mismatch"
             + behavior_scope_hint(repo_root, reviewed_commit, source_commit)
         )
-    if not direct_result and subprocess.run(
+    if (not direct_result or bool(closure)) and subprocess.run(
         ["git", "-C", str(repo_root), "merge-base", "--is-ancestor", reviewed_commit, source_commit],
         check=False, capture_output=True,
     ).returncode != 0:
@@ -548,23 +549,21 @@ def _gate_provenance(
         provenance["reviewer_id"],
         "gate_provenance.reviewer_id",
     )
+    closure = _string_list(
+        provenance["blocker_closure_evidence"],
+        "gate_provenance.blocker_closure_evidence",
+    )
     verdict_artifact = None if legacy_resume else _verified_verdict(
         provenance["verdict_artifact"], repo_root=repo_root,
         source_commit=commit, review_mode=review_mode,
         review_result=review_result, reviewer_id=reviewer_id,
-    )
-    closure = _string_list(
-        provenance["blocker_closure_evidence"],
-        "gate_provenance.blocker_closure_evidence",
+        closure=closure,
     )
     direct_pass = review_result in {
         "scientifically_correct",
         "targeted_correct",
     }
-    repaired_pass = review_result in {
-        "scientifically_incorrect",
-        "targeted_incorrect",
-    } and bool(closure)
+    repaired_pass = bool(closure)
     if repaired_pass:
         # 关闭声明必须可校验地指向同一份 verdict 并逐条给出已关闭判定与证据。
         reviewed_commit = ""

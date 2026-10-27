@@ -133,7 +133,13 @@ class Monitor:
             )
             seen.add(key)
             self.pending[key] = self.pending.get(key, 0) + 1
-            if issue["retryable"] and self.pending[key] < CHECKER_FAILURE_LIMIT:
+            # 首步冷启动适配器探测允许至少 12 次重试（60s 宽限期），避免大模型权重加载期间误杀
+            failure_limit = (
+                max(CHECKER_FAILURE_LIMIT, 12)
+                if phase == "first_step" and issue["code"] == "adapter_exit"
+                else CHECKER_FAILURE_LIMIT
+            )
+            if issue["retryable"] and self.pending[key] < failure_limit:
                 continue
             if key not in active:
                 active[key] = self._event("opened", key, issue, phase)
