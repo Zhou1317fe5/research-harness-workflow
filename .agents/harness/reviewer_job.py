@@ -775,7 +775,8 @@ def reviewer_prompt(task: str, review_kind: str, mode: str | None = None) -> str
             f"review_mode must be {mode}; result must be one of {allowed}. "
             "Use allow_run only for a correct result; every other result uses do_not_run.\n"
             "Efficiency rule: focus strictly on the provided code diff and core scientific invariants. "
-            "Do NOT read unchanged baseline files. Complete review within 10 tool calls and return the verdict.\n"
+            "Do NOT read unchanged baseline files. Do NOT demand negative fault injection, artificial bug introduction, or extensive TDD test suites — assess the code diff and invariants directly. "
+            "Complete review within 10 tool calls and return the verdict.\n"
         )
     if review_kind == "result-analysis":
         keys = ", ".join(sorted(RESULT_ANALYSIS_KEYS))
