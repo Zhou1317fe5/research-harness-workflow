@@ -780,7 +780,12 @@ def execute(
     prefix = [resolve_rrctl(), "--json"]
     if profiles:
         prefix += ["--profiles", str(profiles.resolve())]
-    stages = ([("inspect", [run_id])] if resume else [("ready", [str(spec_path)]), ("launch", [str(spec_path), "--max-wait-seconds", str(max_wait_seconds)])])
+    launch_args = [str(spec_path)]
+    if launch_only:
+        launch_args.append("--no-wait")
+    else:
+        launch_args.extend(["--max-wait-seconds", str(max_wait_seconds)])
+    stages = ([("inspect", [run_id])] if resume else [("ready", [str(spec_path)]), ("launch", launch_args)])
     if not launch_only:
         stages.append(("wait", [run_id, "--poll-seconds", str(poll_seconds), "--max-wait-seconds", str(max_wait_seconds)]))
         if not observe_only:

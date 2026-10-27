@@ -97,6 +97,11 @@ def build_parser(*, machine: bool = False) -> argparse.ArgumentParser:
         default=0,
         help="maximum first-step observation budget; 0 uses the RunSpec gate budget",
     )
+    launch.add_argument(
+        "--no-wait",
+        action="store_true",
+        help="return immediately after process launch without waiting for first-step observation",
+    )
 
     inspect = commands.add_parser("inspect", help="inspect authoritative remote state")
     inspect.add_argument("run_id")
@@ -272,7 +277,11 @@ def main(argv: list[str] | None = None) -> int:
                 if not value.get("ready"):
                     code, status, ok = 1, "failed", False
             else:
-                value = controller.launch(spec, max_wait_seconds=args.max_wait_seconds)
+                value = controller.launch(
+                    spec,
+                    max_wait_seconds=args.max_wait_seconds,
+                    no_wait=args.no_wait,
+                )
         elif operation == "inspect":
             value = controller.inspect(args.run_id)
             if value.get("observation") in {"attention", "unavailable"}:

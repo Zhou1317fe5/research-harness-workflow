@@ -728,7 +728,9 @@ class Controller:
             transport_bundle_sha256=bundle_sha,
         )
 
-    def launch(self, spec: RunSpec, *, max_wait_seconds: float = 0) -> dict[str, Any]:
+    def launch(
+        self, spec: RunSpec, *, max_wait_seconds: float = 0, no_wait: bool = False
+    ) -> dict[str, Any]:
         if not math.isfinite(max_wait_seconds) or max_wait_seconds < 0:
             raise RRCError(
                 "launch_budget", "max-wait must be nonnegative finite seconds", "observer"
@@ -809,6 +811,12 @@ class Controller:
             operation="launch",
         )
         self.index.save(ref, spec, launched)
+        if no_wait:
+            return {
+                "launch": launched,
+                "first_step": "pending",
+                "inspect": launched,
+            }
         try:
             if monitoring_protocol({"monitoring": launched.get("monitoring")}):
                 budget = (
