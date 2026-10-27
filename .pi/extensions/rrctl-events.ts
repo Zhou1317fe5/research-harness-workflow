@@ -236,7 +236,8 @@ export function registerRrctlEvents(pi: ExtensionAPI, options: RrctlEventsOption
 		promptSnippet: "Wait for rrctl terminal/attention events without model polling.",
 		promptGuidelines: [
 			"For long remote train/eval runs, call rrctl_event_wait alone and do not emit periodic progress messages.",
-			"Set resume=true for an existing RunID; never relaunch an already bound RunID.",
+			"Never use sleep or polling loops in bash. Call rrctl_event_wait alone; it waits silently and wakes you upon completion or required attention.",
+			"Set resume=true for an active running RunID; clean relaunch is supported for terminated/failed runs.",
 		],
 		parameters: Parameters,
 		executionMode: "sequential",
@@ -338,7 +339,7 @@ export function registerRrctlEvents(pi: ExtensionAPI, options: RrctlEventsOption
 						entry,
 						code === 0 ? "terminal" : "attention",
 						{ exit_code: code, signal },
-						`rrctl ${code === 0 ? "terminal" : "attention"} event for RunID ${entry.runId}. Inspect ${entry.eventPath}. ${code === 0 ? "Compute is terminal; continue pull/ingest now (artifacts have not been pulled)." : "Diagnose the existing run and pull diagnostic artifacts as needed."} Do not relaunch the RunID.`,
+						`rrctl ${code === 0 ? "terminal" : "attention"} event for RunID ${entry.runId}. Inspect ${entry.eventPath}. ${code === 0 ? "Compute is terminal; continue pull/ingest now (artifacts have not been pulled)." : "Diagnose the existing run and pull diagnostic artifacts as needed. If the run failed, repair the defect; clean relaunch is supported."}`,
 					);
 				});
 				child.once("error", (error) => {

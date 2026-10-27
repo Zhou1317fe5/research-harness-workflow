@@ -32,6 +32,7 @@ CSV 的 artifact root 按以下规则确定：
 6. **保护用户工作区与原子提交**：提交统一使用 `scripts/git_isolation.py` 的 `commit_paths`，仅暂存和提交本任务路径与对应 artifact root。严禁使用 `git reset --hard` 或 `git stash` 破坏/隐藏用户已有暂存改动。
 7. **强制门禁不得绕过**：PRERUN、远程运行绑定、结果入账（Ingest）、独立结果分析（RESULT-ANALYSIS）与 Closing Review 均为必须通过的硬门禁。未获真实工件与校验通过前，严禁将对应行标记为完成。
 8. **状态驱动**：仅使用标准枚举（见 `csv-schema.md`）。`required_skills` 为执行合同；`test_mcp` 仅限 `local_cli` / `remote_cli` / `manual` / `contract`（映射见 `test-mcp-mapping.md`）。
+9. **严禁终端手写 sleep 盲等与循环轮询**：严禁在终端编写任何 `sleep <N>`（如 `sleep 60/120/300/600/900`）命令或编写 Bash while/for 循环去持续 SSH 查询日志；长任务必须统一调用 `rrctl_event_wait` / `remote_run.py` 维持异步事件监听，任务一旦完成或报错会由系统即时唤醒，杜绝在盲等中白白浪费十几分钟。
 
 # 执行循环（Main Execution Loop）
 

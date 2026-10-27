@@ -32,7 +32,7 @@ def _check_download_size(count: int, expected_size: int | None) -> None:
 def download_timeout_seconds() -> float:
     """Each download gets this wall-clock budget, not a fresh budget per chunk."""
     try:
-        value = float(os.environ.get("RRCTL_DOWNLOAD_TIMEOUT_SECONDS", "1800"))
+        value = float(os.environ.get("RRCTL_DOWNLOAD_TIMEOUT_SECONDS", "300"))
     except ValueError as exc:
         raise RRCError("transport_budget", "invalid RRCTL_DOWNLOAD_TIMEOUT_SECONDS", "transport") from exc
     if not math.isfinite(value) or not 0 < value <= 86400:
@@ -166,7 +166,7 @@ class Transport:
         remote_path: str,
         expected_sha256: str,
         *,
-        timeout_seconds: float = 1800,
+        timeout_seconds: float = 300,
     ) -> None:
         raise NotImplementedError
 
@@ -184,7 +184,7 @@ class Transport:
         progress(destination.stat().st_size)
 
     def download_tar_stream(
-        self, remote_root: str, relative_paths: list[str], destination_dir: Path, *, timeout_seconds: float = 1800
+        self, remote_root: str, relative_paths: list[str], destination_dir: Path, *, timeout_seconds: float = 300
     ) -> bool:
         return False
 
@@ -269,7 +269,7 @@ class LocalTransport(Transport):
         remote_path: str,
         expected_sha256: str,
         *,
-        timeout_seconds: float = 1800,
+        timeout_seconds: float = 300,
     ) -> None:
         destination = Path(remote_path)
         destination.parent.mkdir(parents=True, exist_ok=True)
@@ -406,7 +406,7 @@ class SSHTransport(Transport):
         remote_path: str,
         expected_sha256: str,
         *,
-        timeout_seconds: float = 1800,
+        timeout_seconds: float = 300,
     ) -> None:
         size_bytes = local_path.stat().st_size
         size_str = (
@@ -551,7 +551,7 @@ class SSHTransport(Transport):
         relative_paths: list[str],
         destination_dir: Path,
         *,
-        timeout_seconds: float = 1800,
+        timeout_seconds: float = 300,
     ) -> bool:
         """Download multiple files via a single remote tar gzip stream into destination_dir."""
         if not relative_paths:
