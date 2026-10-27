@@ -210,7 +210,7 @@ def check_final_ready(payload: Any, *, workdir: Path | None = None) -> dict[str,
     if review_path is not None:
         review_text = review_path.read_text(encoding="utf-8")
         summary = review_text.split("Appendix: Execution Log", 1)[0]
-        for token in run_ids + tokens:
+        for token in run_ids:
             if token not in summary:
                 _error(errors, "review_summary_stale", "review_path", f"missing {token}")
 

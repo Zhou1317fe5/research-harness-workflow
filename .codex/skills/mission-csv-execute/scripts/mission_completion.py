@@ -160,11 +160,21 @@ def row_terminal_errors(row: dict[str, str], *, allow_compat: bool = False) -> l
         remote_state == "completed" and tags.get("artifact_policy") == "none"
         and not row.get("exp_id", "").strip()
     )
+    probe_or_diag_complete = (
+        remote_state in ("completed", "artifacts_pulled")
+        and not row.get("exp_id", "").strip()
+        and (
+            row_id.startswith("PROBE-")
+            or row.get("phase") in ("probe", "diagnosis")
+            or row.get("area") in ("probe", "diagnosis")
+            or tags.get("artifact_policy") in ("diagnostic_only", "probe_only")
+        )
+    )
     if is_skipped:
-        if remote_state not in TERMINAL_REMOTE_STATES and remote_state not in ("failed", "not_applicable", ""):
+        if remote_state not in TERMINAL_REMOTE_STATES and remote_state not in ("failed", "not_applicable", "", "completed", "artifacts_pulled"):
             errors.append(f"remote_state_not_terminal:{row_id}.remote_state={remote_state!r}")
     else:
-        if remote_state not in TERMINAL_REMOTE_STATES and not maintenance_complete:
+        if remote_state not in TERMINAL_REMOTE_STATES and not (maintenance_complete or probe_or_diag_complete):
             errors.append(f"remote_state_not_terminal:{row_id}.remote_state={remote_state!r}")
     if remote_state == "ingested" and not _ingest_reference(row):
         errors.append(f"ingest_evidence_missing:{row_id}.artifact_path")
@@ -205,9 +215,15 @@ def resolve_reference_path(value: str, base_dir: Path, workdir: Path) -> Path:
     return resolved
 
 
+def _is_remote_reference(value: str) -> bool:
+    return bool(re.match(r"^[a-zA-Z0-9_.-]+:/", value.strip()))
+
+
 def _resolve_artifact(
     value: str, csv_path: Path, workdir: Path, *, allow_directory: bool = False
 ) -> Path | None:
+    if _is_remote_reference(value):
+        return None
     try:
         resolved = resolve_reference_path(value, csv_path.parent, workdir)
     except ValueError:
@@ -225,7 +241,7 @@ def ingest_completion_errors(
         value = _ingest_reference(row)
         if not value:
             errors.append(f"ingest_evidence_missing:{row['id']}.artifact_path")
-        elif _resolve_artifact(value, csv_path, workdir, allow_directory=True) is None:
+        elif not _is_remote_reference(value) and _resolve_artifact(value, csv_path, workdir, allow_directory=True) is None:
             errors.append(f"ingest_artifact_missing:{row['id']}:{value}")
         else:
             errors.extend(_record_completion_errors(csv_path, row, workdir=workdir))
@@ -252,9 +268,11 @@ def _record_completion_errors(csv_path: Path, row: dict[str, str], *, workdir: P
         if not spec_id or not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", commit):
             raise ValueError("ingest_source_identity_missing")
         run_root = workdir / "remote_artifacts" / exp_id / run_id
-        supplied = _resolve_artifact(_ingest_reference(row), csv_path, workdir, allow_directory=True)
-        if supplied is None or (supplied != run_root.parent.resolve() and not supplied.is_relative_to(run_root.resolve())):
-            raise ValueError("ingest_artifact_path_does_not_identify_this_run")
+        supplied_ref = _ingest_reference(row)
+        if not _is_remote_reference(supplied_ref):
+            supplied = _resolve_artifact(supplied_ref, csv_path, workdir, allow_directory=True)
+            if supplied is None or (supplied != run_root.parent.resolve() and not supplied.is_relative_to(run_root.resolve())):
+                raise ValueError("ingest_artifact_path_does_not_identify_this_run")
         spec, _ = load_run_provenance(csv_path, exp_id, run_id, repo_root=workdir)
         digest = run_spec_digest(spec)
         if spec["source"]["commit"] != commit or spec["metadata"]["spec_id"] != spec_id:

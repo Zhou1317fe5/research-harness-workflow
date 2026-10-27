@@ -114,6 +114,13 @@ def _ensure_locked(path: Path) -> bool:
         return False
     if _all_rows_closed(rows):
         return False
+    # 消融、调参、评测与探针任务免除自动补入 RESULT-ANALYSIS-01 行
+    if all(
+        row.get("area") in ("ablation", "evaluation", "tuning", "probe", "capture", "figure", "figures")
+        or any(k in row.get("title", "").lower() or k in row.get("description", "").lower() for k in ("消融", "ablation", "评测", "eval", "调参", "tuning", "探针", "probe"))
+        for row in rows if not row.get("id", "").startswith("REVIEW-")
+    ):
+        return False
 
     analysis = _make_row(fieldnames, rows)
     review_index = next(

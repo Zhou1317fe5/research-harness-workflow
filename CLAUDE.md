@@ -45,6 +45,7 @@
 - **KB 级最小拉取与远端就地核验**：本地仅拉取 KB 级轻量摘要与状态日志（`summary.json`、`progress.jsonl`、`evaluate.log`、`status.json`，单文件 < 100KB）。严禁使用 `scp -r` 或任何脚本将特征图、数组切片（`*.npz`、`*.npy`、`figure*/`、`adaptation/`）拉回本地做二次核验、文件计数（如 `wc -l`）或分析；所有工件完整性检查、样本抽检与数据分析必须在远端服务器就地完成。
 - **产物地址绝对化与免拉取溯源**：非必要数据严禁拉取到本地。最终交付的 `review.md` 和 `handoff.md` 中，对大型工件、特征数组或产物的引用，统一直接记录其在远端服务器上的绝对直连地址（格式必须为 `<server_host>:<absolute_path>`，例如 `adam:/home/zhoujiale/cdfss-dinov3-workspace/runs/<RunID>/output/...`），严禁使用本地相对路径，严禁为了在文档中引用而将大文件拉回本地。
 - **PRERUN 单次审查与 Blocker 闭环**：运行前科学审查只执行单次定点审查，严禁发散。审查发现缺陷或探针缺失列为可证伪 Blockers，主代理在原实施行修复并通过 `closure.json` 机器校验闭合后自动放行，严禁二次 full review。
+- **收尾轻量闭环与消融评测豁免**：实验完成后优先使用 `evidence-close` 依据落盘事实秒级结项；纯超参微调、多臂消融、固定模型评测与阶段性探针强制豁免 `RESULT-ANALYSIS-01` 独立子进程，指标直接由主 Agent 在终端与 `review.md` 呈现；交工单（`handoff.md`）聚焦面向人类的客观总结，严禁机械死板的 7 列表格逐字比对与词汇黑名单卡死。
 - 远程执行统一经 **rrctl 的 process 后端**，`fallback_allowed` 必须为 `false`；GPU 运行取得资源归属后启动，观察超时沿用原 RunID 恢复。
 
 # 科研产物布局

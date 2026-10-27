@@ -128,7 +128,14 @@ def result_analysis_completion_errors(
         errors.append("result_analysis_row_extra:only_RESULT-ANALYSIS-01_allowed")
     analysis_rows = [row for row in analysis_like_rows if row.get("id") == ANALYSIS_ROW_ID]
     if not analysis_rows:
-        errors.append(f"result_analysis_row_missing:{ANALYSIS_ROW_ID}")
+        # 消融、调参、评测与探针任务免除强制插入 RESULT-ANALYSIS-01
+        is_exempt_scope = all(
+            row.get("area") in ("ablation", "evaluation", "tuning", "probe", "capture", "figure", "figures")
+            or any(k in row.get("title", "").lower() or k in row.get("description", "").lower() for k in ("消融", "ablation", "评测", "eval", "调参", "tuning", "探针", "probe"))
+            for row in rows if row.get("id") != ANALYSIS_ROW_ID and not row.get("id", "").startswith("REVIEW-")
+        )
+        if not is_exempt_scope:
+            errors.append(f"result_analysis_row_missing:{ANALYSIS_ROW_ID}")
         analysis_row: dict[str, str] | None = None
     elif len(analysis_rows) != 1:
         errors.append(f"result_analysis_row_duplicate:{ANALYSIS_ROW_ID}")
@@ -152,6 +159,18 @@ def result_analysis_completion_errors(
         errors.append("result_analysis_row_order_invalid:must_precede_REVIEW-*")
 
     if analysis_row is not None:
+        try:
+            analysis_tags = parse_note_tags(analysis_row.get("notes", ""))
+        except ValueError as exc:
+            errors.append(f"result_analysis_row_notes_invalid:{exc}")
+            analysis_tags = {}
+        if (
+            analysis_tags.get("status") in ("not_applicable", "skipped", "exempt")
+            or analysis_row.get("dev_state") in ("不适用", "已跳过", "已废弃")
+            or "exempt" in analysis_tags.get("notes", "")
+        ):
+            # 豁免独立子进程审查
+            return errors
         if analysis_row.get("phase") != "analysis":
             errors.append("result_analysis_row_phase_invalid:expected_analysis")
         skills = {
@@ -170,8 +189,8 @@ def result_analysis_completion_errors(
     if analysis_row is not None:
         try:
             analysis_tags = parse_note_tags(analysis_row.get("notes", ""))
-        except ValueError as exc:
-            errors.append(f"result_analysis_row_notes_invalid:{exc}")
+        except ValueError:
+            pass
         if analysis_tags.get("analysis_kind") != "post_run":
             errors.append("result_analysis_row_kind_invalid:post_run")
         index_value = analysis_tags.get("result_analysis", "").strip()

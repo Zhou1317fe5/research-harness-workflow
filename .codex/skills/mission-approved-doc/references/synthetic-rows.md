@@ -4,7 +4,7 @@
 
 ## 1. RESULT-ANALYSIS-01 行规则
 
-当任务包含正式远程实验结果（或产生科研 ExpID）时，在普通 issue 之后、`REVIEW-01` 之前必须插入唯一的 `RESULT-ANALYSIS-01` 行：
+当任务包含正式探索性远程实验结果（产生重大核心假说验证或新 ExpID）时，在普通 issue 之后、`REVIEW-01` 之前插入唯一的 `RESULT-ANALYSIS-01` 行：
 - `id`: `RESULT-ANALYSIS-01`
 - `phase`: `analysis`
 - `area`: `analysis`
@@ -12,6 +12,8 @@
 - `required_skills`: `post-run-result-analysis`
 - `remote_state`: `not_applicable`
 - `notes`: 引用 `result_analysis:reviews/result-analysis.json`，并配置 analysis 初始状态（具体执行由 `post-run-result-analysis` 自身负责）。
+
+**调参、消融与评测豁免铁律**：纯超参调优、多臂消融、固定模型评测与阶段性探针任务，**强制豁免 `RESULT-ANALYSIS-01` 独立子进程**；CSV 中不生成该行（若历史遗留可直接标记 `status: not_applicable`），实验指标与结论统一由主 Agent 直接在终端汇报并在 `review.md` 客观记录，彻底消除独立审查模型 20~30 分钟的发呆等待。
 
 若 CSV 缺少该行，可通过脚本自动补齐：
 ```bash

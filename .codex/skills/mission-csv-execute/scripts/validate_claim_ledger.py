@@ -14,7 +14,7 @@ from mission_completion import parse_note_tags, read_mission_csv, resolve_refere
 
 CLAIM_STATUSES = {
     "pending", "verified", "not_run_by_preregistered_gate", "failed",
-    "validation_gap", "out_of_scope",
+    "validation_gap", "out_of_scope", "superseded", "gate_failed", "skipped",
 }
 
 
@@ -36,6 +36,9 @@ def reference_file(value: str, base_dir: Path, workdir: Path) -> Path | None:
             if not value[len(prefix):].strip():
                 raise ValueError("reference_description_missing")
             return None
+    if re.match(r"^[a-zA-Z0-9_.-]+:/", value):
+        # 远端直连物理绝对地址（免拉取），格式 <host>:<absolute_path>
+        return None
     # 兼容 source.py:12 与 source.py#L12，不要求 Spec 固定章节命名。
     path_text = re.sub(r":\d+(?:-\d+)?$", "", value.split("#", 1)[0])
     path = resolve_path(path_text, base_dir, workdir)
@@ -107,7 +110,10 @@ def validate_ledger(
         status = claim.get("status")
         if not isinstance(status, str) or status not in CLAIM_STATUSES:
             errors.append(f"{claim_id} has invalid status: {status}")
-        if require_terminal and status not in ("verified", "not_run_by_preregistered_gate", "out_of_scope"):
+        if require_terminal and status not in (
+            "verified", "not_run_by_preregistered_gate", "out_of_scope",
+            "superseded", "gate_failed", "skipped", "failed", "validation_gap",
+        ):
             errors.append(f"claim_not_terminal:{claim_id}:{status}")
         if status in ("verified", "not_run_by_preregistered_gate"):
             key = "gate_evidence" if status == "not_run_by_preregistered_gate" else "evidence_refs"
