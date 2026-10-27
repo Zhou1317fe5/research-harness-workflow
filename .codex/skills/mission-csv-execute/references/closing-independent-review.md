@@ -60,6 +60,8 @@ python .codex/skills/mission-csv-execute/scripts/run_vision_review.py \
 
 ## 4. Review Log 格式 (`<stem>.review.md`)
 
+- **远端工件绝对地址铁律**：非必要数据严禁拉取到本地。日志中对大型工件、特征切片或原始证据的引用，统一直接记录其在远端服务器上的绝对直连物理地址（格式：`<server_host>:<absolute_path>`，如 `adam:/home/zhoujiale/cdfss-dinov3-workspace/runs/<RunID>/output/...`），严禁使用本地相对路径，严禁为了在文档中引用而将大文件拉到本地。
+
 ```markdown
 ## REVIEW-N
 - Source doc: <path>
