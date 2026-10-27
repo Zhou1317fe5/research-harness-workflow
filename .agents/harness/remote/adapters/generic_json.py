@@ -109,6 +109,7 @@ def evaluate(context: dict[str, Any]) -> dict[str, Any]:
         output_root,
         contract["progress_path"],
         "adapter_contract.progress_path",
+        must_exist=(phase != "first_step"),
     )
     if phase == "first_step" and (not progress_path.is_file() or progress_path.stat().st_size == 0):
         return {

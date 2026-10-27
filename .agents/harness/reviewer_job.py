@@ -923,7 +923,11 @@ def execute(args: argparse.Namespace) -> int:
         schema_path = job_dir / "response-schema.json"
         atomic_json(schema_path, output_schema(review_kind, mode))
         diff_text = ""
-        diff_base = packet.get("diff_base")
+        diff_base = (
+            packet.get("diff_base")
+            or packet.get("review_diff_base_commit")
+            or packet.get("diff_base_commit")
+        )
         reviewed_commit = packet.get("pre_run_code_commit") or packet.get("candidate_commit")
         if diff_base and reviewed_commit:
             try:
