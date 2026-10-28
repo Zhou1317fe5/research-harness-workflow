@@ -4,11 +4,14 @@ For `full_review`, the candidate commit must pass an isolated production-reachin
 
 ## Smoke Execution Invariants
 
-1. **Step / Episode Budget**:
+1. **Step / Episode Budget & Dual Assertions**:
    - 1 to 10 production steps for step-driven training or inference;
-   - Strictly at most 1 minimal single-shot episode for episode-driven workflows. Multi-shot or multi-episode loops are strictly forbidden during smoke.
-   - Expected runtime is strictly bounded (typically <5 minutes). Smoke is a dynamic connectivity probe, not an evaluation.
-   - **严禁全量数据集遍历与全量哈希**：Smoke 阶段严格禁止遍历全量数据集、生成全量数据哈希或提取全量特征缓存。必须使用极小切片（<=20 样本）或快速 dummy 数据，坚决消灭 Smoke 前长达数十分钟的 CPU/磁盘空转。
+   - Strictly at most 1 minimal single-shot episode for episode-driven workflows (typically <30 seconds runtime). Multi-shot or multi-episode loops are strictly forbidden during smoke.
+   - **双核心断言闭环（真数据 1-Episode）**：Smoke 优先使用 1 个真实生产 Episode（1~2 张真实样本）并在其执行期直接完成两项硬核检验：
+     (1) **工件落盘断言（Artifact Collection Assertion）**：核验目标工件（特征图、数组、中间参数、sidecar）真实写盘，字段非空、非零、无 NaN，产物清单与契约一致；
+     (2) **假设参数位移断言（Hypothesis Parameter Delta Assertion）**：本轮待验证假设的核心模块参数在适应后存在非零位移（$\Delta > 0$）且梯度有效，杜绝参数冻结、未加入优化器或反传脱落的假跑。
+   - **严禁二级探针（No Pilot Spiral）**：只要 1-Episode 双断言通过，控制面判定连通性与收集完备性 100% 成立，直接放行正式全量运行；**严禁模型自行派发 pilot10、pilot30 等规模验证套娃**。
+   - **严禁全量数据集遍历与全量哈希**：Smoke 阶段严格禁止遍历全量数据集、生成全量数据哈希或提取全量特征缓存。必须使用极小切片（<=20 样本）或快速样本，坚决消灭 Smoke 前长达数十分钟的 CPU/磁盘空转。
 2. **Shift-Left Local Contract Validation (Pre-Smoke Gate)**:
    - Before launching remote GPU smoke, execute a fast local CPU dummy-tensor probe.
    - Construct micro dummy tensors (e.g. 32x32 or 64x64 random values).
