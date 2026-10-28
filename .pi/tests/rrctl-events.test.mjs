@@ -548,3 +548,36 @@ if '--observe-only' not in sys.argv:
 	assert.match(pi.messages[0].text, /continue pull\/ingest now/);
 	assert.match(readFileSync(result.details.log_path, "utf8"), /stdout evidence/);
 });
+
+test("Pi rrctl wait supports multiple runspecs concurrently and streams heartbeats from all", async (t) => {
+	resetRrctlEventsBroker();
+	const root = await fixture(t);
+	await writeFile(join(root, "runspec-b.json"), JSON.stringify({ schema_version: "rrctl.run.v1", run_id: "RUN-B" }));
+	const spawns = [];
+	const pi = await boot(root, "session-multi", spawns);
+
+	const result = await waitOn(pi, root, { runspecs: ["runspec.json", "runspec-b.json"], resume: true });
+	assert.equal(result.terminate, true);
+	assert.match(result.content[0].text, /Waiting concurrently for 2 RunIDs/);
+	assert.deepEqual(result.details.run_ids, ["RUN-A", "RUN-B"]);
+	assert.equal(spawns.length, 2);
+
+	// Stream progress from both observers
+	spawns[0].child.stderr.write(
+		"[rrctl-progress] " + JSON.stringify({ schema_version: "rrctl.progress.v1", run_id: "RUN-A", stage: "wait", message: "RUN-A 进度 10/100" }) + "\n",
+	);
+	spawns[1].child.stderr.write(
+		"[rrctl-progress] " + JSON.stringify({ schema_version: "rrctl.progress.v1", run_id: "RUN-B", stage: "wait", message: "RUN-B 进度 20/200" }) + "\n",
+	);
+
+	assert.equal(pi.progress.length, 2);
+	assert.equal(pi.progress[0].message.content, "RUN-A 进度 10/100");
+	assert.equal(pi.progress[1].message.content, "RUN-B 进度 20/200");
+	assert.equal(pi.messages.length, 0);
+
+	// Finish one child -> wakes Pi
+	spawns[0].child.finish(0);
+	assert.equal(pi.messages.length, 1);
+	assert.match(pi.messages[0].text, /RunID RUN-A/);
+	assert.match(pi.messages[0].text, /Compute is terminal/);
+});

@@ -187,6 +187,38 @@ def _refresh_cached_eta(cached: dict[str, Any]) -> None:
         cached["eta_datetime"] = (now + datetime.timedelta(seconds=rem_sec)).isoformat()
 
 
+def _resolve_device_info(runspec_data: dict[str, Any], profiles_path: Path | None) -> str | None:
+    """从 RunSpec 中解析物理设备拓扑 (涵盖单任务单卡、多任务多卡及单任务多卡分布式)。"""
+    if not runspec_data:
+        return None
+    profile = runspec_data.get("remote", {}).get("profile", "")
+    resources = runspec_data.get("resources", {})
+    gpu_ids = resources.get("gpu_ids", [])
+    device = resources.get("device", "gpu")
+
+    host = profile
+    if profiles_path and profiles_path.is_file():
+        try:
+            pdata = json.loads(profiles_path.read_text(encoding="utf-8"))
+            ssh_argv = pdata.get("profiles", {}).get(profile, {}).get("ssh_argv", [])
+            if ssh_argv:
+                target = ssh_argv[-1]
+                host = target.split("@")[-1]
+        except Exception:
+            pass
+    if not host:
+        host = "local" if device == "cpu" else "gpu"
+
+    if isinstance(gpu_ids, list) and gpu_ids:
+        short_gpus = [g[:12] if isinstance(g, str) and g.startswith("GPU-") else str(g) for g in gpu_ids]
+        if len(short_gpus) > 1:
+            return f"{host} ({len(short_gpus)}xGPU: {', '.join(short_gpus)})"
+        return f"{host} ({short_gpus[0]})"
+    elif device:
+        return f"{host} ({device})"
+    return host or None
+
+
 def get_progress(
     run_id: str,
     repo_root: Path,
@@ -204,6 +236,33 @@ def get_progress(
     cache_path = local_state_dir / "latest_progress.json"
     status_path = local_state_dir / "last_status.json"
 
+    # 尝试加载 RunSpec 数据以解析设备拓扑与总步数
+    runspec_data: dict[str, Any] = {}
+    if spec_path and spec_path.is_file():
+        try:
+            runspec_data = json.loads(spec_path.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+    if not runspec_data:
+        lookups = [
+            repo_root / f"issues/**/runs/{run_id}/runspec.json",
+            local_state_dir / "run_spec.json",
+        ]
+        for pat in lookups:
+            paths = [pat] if pat.is_file() else list(repo_root.glob(str(pat.relative_to(repo_root)))) if pat.is_relative_to(repo_root) else []
+            for p in paths:
+                if p.is_file():
+                    try:
+                        runspec_data = json.loads(p.read_text(encoding="utf-8"))
+                        if runspec_data:
+                            break
+                    except Exception:
+                        pass
+            if runspec_data:
+                break
+
+    device_info = _resolve_device_info(runspec_data, profiles)
+
     # 1. 尝试从本地高速快照直读
     if not force_remote and cache_path.is_file():
         try:
@@ -220,6 +279,8 @@ def get_progress(
                         is_fresh = True
                 if is_fresh:
                     _refresh_cached_eta(cached)
+                    if device_info and not cached.get("device_info"):
+                        cached["device_info"] = device_info
                     return cached
         except Exception:
             pass
@@ -231,12 +292,7 @@ def get_progress(
             st_state = st.get("state")
             if st_state in {"completed", "failed", "aborted"}:
                 exit_code = st.get("detail", {}).get("exit_code")
-                tot = None
-                if spec_path and spec_path.is_file():
-                    try:
-                        tot = _extract_total_from_meta(json.loads(spec_path.read_text(encoding="utf-8")).get("metadata", {}))
-                    except Exception:
-                        pass
+                tot = _extract_total_from_meta(runspec_data.get("metadata", {})) if runspec_data else None
                 return {
                     "run_id": run_id,
                     "state": st_state,
@@ -252,6 +308,7 @@ def get_progress(
                     "remaining_seconds": 0.0 if st_state == "completed" else None,
                     "eta_datetime": None,
                     "metrics": {},
+                    "device_info": device_info,
                     "estimate_source": "local_status",
                     "eta_scope": "compute_only",
                 }
@@ -368,6 +425,7 @@ def get_progress(
         "remaining_seconds": remaining_seconds,
         "eta_datetime": eta_datetime.isoformat() if eta_datetime else None,
         "metrics": metrics,
+        "device_info": device_info,
         "estimate_source": "observed_mean_including_initialization" if speed_seconds_per_step is not None else "unknown",
         "eta_scope": "compute_only",
     }
@@ -505,8 +563,12 @@ def format_progress(info: dict[str, Any], mode: str = "detailed") -> str:
         f"{k}={v:.4f}" if isinstance(v, float) else f"{k}={v}" for k, v in metrics.items()
     )
 
+    dev_str = info.get("device_info")
+
     if mode == "heartbeat":
         parts = [f"[GPU 进度心跳] RunID: {run_id}"]
+        if dev_str:
+            parts.append(f"设备: {dev_str}")
         if step is not None:
             if total and pct is not None:
                 parts.append(f"进度: {step}/{total} ({pct:.1f}%)")
@@ -524,6 +586,8 @@ def format_progress(info: dict[str, Any], mode: str = "detailed") -> str:
 
     # detailed 模式
     lines = [f"[GPU 任务进度] RunID: {run_id}"]
+    if dev_str:
+        lines.append(f"- 计算设备: {dev_str}")
     if state in {"running", "launched", "workload_started"}:
         lines.append(f"- 运行状态: 运行中 ({state})")
         if step is not None:
@@ -558,11 +622,80 @@ def format_progress(info: dict[str, Any], mode: str = "detailed") -> str:
     return "\n".join(lines)
 
 
+def get_all_active_progress(
+    repo_root: Path,
+    profiles: Path | None = None,
+    force_remote: bool = False,
+    max_age_hours: float = 72.0,
+) -> list[dict[str, Any]]:
+    """扫描并聚合并行运行中的所有活跃 GPU 任务。"""
+    user_state_runs = Path.home() / ".local/state/rrctl/runs"
+    active_targets: list[tuple[float, str, Path | None]] = []
+    seen_ids: set[str] = set()
+    now_ts = datetime.datetime.now().timestamp()
+    cutoff_ts = now_ts - max_age_hours * 3600
+
+    # 1. 从当前仓库的 issues 目录扫描 runspec
+    for p in repo_root.glob("issues/**/runs/*/runspec.json"):
+        try:
+            mtime = p.stat().st_mtime
+            if mtime < cutoff_ts:
+                continue
+            data = json.loads(p.read_text(encoding="utf-8"))
+            rid = data.get("run_id")
+            if rid and rid not in seen_ids:
+                st_p = user_state_runs / rid / "last_status.json"
+                if st_p.is_file():
+                    st = json.loads(st_p.read_text(encoding="utf-8"))
+                    if st.get("state") in {"running", "launched", "workload_started"}:
+                        active_targets.append((st_p.stat().st_mtime, rid, p))
+                        seen_ids.add(rid)
+        except Exception:
+            pass
+
+    # 2. 从本地 rrctl 状态目录中补充全局活跃运行
+    if user_state_runs.is_dir():
+        for rdir in user_state_runs.iterdir():
+            if rdir.name in seen_ids:
+                continue
+            status_file = rdir / "last_status.json"
+            if status_file.is_file():
+                try:
+                    mtime = status_file.stat().st_mtime
+                    if mtime < cutoff_ts:
+                        continue
+                    st = json.loads(status_file.read_text(encoding="utf-8"))
+                    state = st.get("state")
+                    if state in {"running", "launched", "workload_started"}:
+                        spec_file = rdir / "run_spec.json"
+                        sp = spec_file if spec_file.is_file() else None
+                        active_targets.append((mtime, rdir.name, sp))
+                        seen_ids.add(rdir.name)
+                except Exception:
+                    pass
+
+    active_targets.sort(key=lambda x: x[0], reverse=True)
+
+    results: list[dict[str, Any]] = []
+    for _, rid, sp in active_targets:
+        try:
+            info = get_progress(
+                rid, repo_root, profiles=profiles, spec_path=sp,
+                force_remote=force_remote,
+            )
+            if info.get("state") in {"running", "launched", "workload_started"}:
+                results.append(info)
+        except Exception:
+            pass
+    return results
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("target", nargs="?", help="RunID, runspec.json 路径或 issue 目录；省略则自动探测最新运行")
     parser.add_argument("--repo-root", type=Path, default=REPO_ROOT, help="项目根目录")
     parser.add_argument("--profiles", type=Path, help="凭据 profile 文件路径")
+    parser.add_argument("--all", action="store_true", help="聚合显示当前所有并发运行中的 GPU 任务")
     parser.add_argument("--remote", action="store_true", help="强制穿透查询远端（绕过本地快照缓存）")
     parser.add_argument("--json", action="store_true", help="以结构化 JSON 输出")
     parser.add_argument("--mode", choices=["detailed", "heartbeat"], default="detailed", help="显示模式")
@@ -601,6 +734,19 @@ def main() -> int:
         default_profiles = args.repo_root / ".agents/harness/config/profiles.json"
         if default_profiles.is_file():
             profiles = default_profiles
+
+    if args.all:
+        active_list = get_all_active_progress(args.repo_root, profiles=profiles, force_remote=args.remote)
+        if args.json:
+            print(json.dumps({"ok": True, "active_count": len(active_list), "runs": active_list}, ensure_ascii=False, indent=2))
+            return 0
+        if not active_list:
+            print("当前没有正在运行的 GPU 任务。")
+            return 0
+        print(f"=== 活跃 GPU 任务监控 (共 {len(active_list)} 个任务运行中) ===")
+        for idx, item in enumerate(active_list, 1):
+            print(f"[{idx}] {format_progress(item, mode='heartbeat')}")
+        return 0
 
     try:
         run_id, spec_path = resolve_run_target(args.target, args.repo_root)

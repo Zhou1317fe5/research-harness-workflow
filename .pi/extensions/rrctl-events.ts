@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import process from "node:process";
 import { mkdirSync, readFileSync, renameSync, writeFileSync, appendFileSync } from "node:fs";
 import { StringDecoder } from "node:string_decoder";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
@@ -8,16 +9,16 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 const Parameters = {
 	type: "object",
 	additionalProperties: false,
-	required: ["runspec"],
 	properties: {
 		runspec: { type: "string", minLength: 1, description: "Path to the existing rrctl RunSpec." },
+		runspecs: { type: "array", items: { type: "string" }, description: "List of rrctl RunSpec paths for concurrent multi-GPU monitoring." },
 		profiles: { type: "string", minLength: 1, description: "Optional rrctl profiles path." },
 		resume: { type: "boolean", description: "Observe an already launched RunID without relaunching it." },
 		poll_seconds: { type: "number", exclusiveMinimum: 0, description: "Remote observation interval; defaults to 600." },
 	},
 } as any;
 
-type Params = { runspec: string; profiles?: string; resume?: boolean; poll_seconds?: number };
+type Params = { runspec?: string; runspecs?: string[]; profiles?: string; resume?: boolean; poll_seconds?: number };
 
 type Waiter = {
 	child: ChildProcess;
@@ -100,6 +101,7 @@ function atomicJson(path: string, value: unknown): void {
 }
 
 export function buildWaitCommand(root: string, params: Params): { argv: string[]; runId: string; runspec: string } {
+	if (!params.runspec) throw new Error("runspec is required");
 	const runspec = resolve(root, params.runspec);
 	if (!inside(root, runspec)) throw new Error("runspec must stay inside the project root");
 	const spec = JSON.parse(readFileSync(runspec, "utf8"));
@@ -117,6 +119,74 @@ export function buildWaitCommand(root: string, params: Params): { argv: string[]
 		argv.push("--profiles", profiles);
 	}
 	return { argv, runId: spec.run_id, runspec };
+}
+
+function attachObserver(
+	child: ChildProcess,
+	entry: Waiter,
+	logPath: string,
+	root: string,
+	key: string,
+	deliver: (notification: Notification) => void,
+	settle: (entry: Waiter, kind: "terminal" | "attention", detail: Record<string, unknown>, message: string) => void,
+): void {
+	let lastProgress: string | undefined;
+	let lastProgressAt = 0;
+	for (const stream of [child.stdout, child.stderr]) {
+		if (!stream) continue;
+		const decoder = new StringDecoder("utf8");
+		let line = "";
+		let dropping = false;
+		const parseLine = (value: string) => {
+			if (entry.settled || !value.startsWith("[rrctl-progress] ")) return;
+			try {
+				const event = JSON.parse(value.slice("[rrctl-progress] ".length));
+				const allowedStages = new Set(["wait", "estimate", "metrics", "completed"]);
+				if (event.schema_version !== "rrctl.progress.v1" || event.run_id !== entry.runId || !allowedStages.has(event.stage) || typeof event.message !== "string" || !event.message.trim()) return;
+				if (value === lastProgress && Date.now() - lastProgressAt < 1000) return;
+				lastProgress = value;
+				lastProgressAt = Date.now();
+				deliver({ root, message: event.message, logPath, progressKey: key });
+			} catch {}
+		};
+		stream.on("data", (chunk: any) => {
+			try {
+				appendFileSync(logPath, chunk, { mode: 0o600 });
+			} catch (error) {
+				settle(entry, "attention", { error: String(error) }, `rrctl attention event for RunID ${entry.runId}: observer log write failed. Do not relaunch the RunID.`);
+			}
+			const parts = decoder.write(chunk).split("\n");
+			for (let index = 0; index < parts.length; index++) {
+				if (!dropping) {
+					if (line.length + parts[index].length > 65536) { line = ""; dropping = true; }
+					else line += parts[index];
+				}
+				if (index < parts.length - 1) {
+					if (!dropping) parseLine(line);
+					line = "";
+					dropping = false;
+				}
+			}
+		});
+		stream.once("end", () => { if (!dropping) parseLine(line + decoder.end()); });
+		stream.once("error", (error: any) => settle(entry, "attention", { error: String(error) }, `rrctl attention event for RunID ${entry.runId}: observer stream failed. Do not relaunch the RunID.`));
+	}
+	child.once("exit", (code: any, signal: any) => {
+		settle(
+			entry,
+			code === 0 ? "terminal" : "attention",
+			{ exit_code: code, signal },
+			`rrctl ${code === 0 ? "terminal" : "attention"} event for RunID ${entry.runId}. Inspect ${entry.eventPath}. ${code === 0 ? "Compute is terminal; continue pull/ingest now (artifacts have not been pulled)." : "Diagnose the existing run and pull diagnostic artifacts as needed. If the run failed, repair the defect; clean relaunch is supported."}`,
+		);
+	});
+	child.once("error", (error: any) => {
+		settle(
+			entry,
+			"attention",
+			{ error: String(error) },
+			`rrctl attention event for RunID ${entry.runId}. Inspect ${entry.eventPath}.`,
+		);
+	});
 }
 
 export type RrctlEventsOptions = { spawnChild?: typeof spawn };
@@ -248,111 +318,128 @@ export function registerRrctlEvents(pi: ExtensionAPI, options: RrctlEventsOption
 			// 工具只可能在当前活跃实例里执行；确保 settlement 的唤醒能回到当前 session。
 			bind(ctx, false);
 			try {
-				const command = buildWaitCommand(root, params);
-				const key = `${root}\u0000${command.runspec}`;
-				const existing = broker.waits.get(key);
-				if (existing) {
-					if (existing.settled) {
+				const runspecList: string[] = [];
+				if (typeof params.runspec === "string" && params.runspec.trim()) {
+					runspecList.push(params.runspec.trim());
+				}
+				if (Array.isArray(params.runspecs)) {
+					for (const r of params.runspecs) {
+						if (typeof r === "string" && r.trim() && !runspecList.includes(r.trim())) {
+							runspecList.push(r.trim());
+						}
+					}
+				}
+				if (runspecList.length === 0) {
+					return { content: [{ type: "text" as const, text: "rrctl_event_wait rejected: expected runspec or runspecs." }], isError: true };
+				}
+
+				const commandList = runspecList.map((rs) => buildWaitCommand(root, { ...params, runspec: rs }));
+
+				if (commandList.length === 1) {
+					const command = commandList[0];
+					const key = `${root}\0${command.runspec}`;
+					const existing = broker.waits.get(key);
+					if (existing) {
+						if (existing.settled) {
+							const age = Date.now() - (existing.settledAt ?? 0);
+							if (existing.exitCode === 0 && age < RRCTL_SETTLED_TOMBSTONE_MS) {
+								return {
+									content: [{ type: "text" as const, text: `Event for RunID ${existing.runId} already delivered; no new observer is spawned.` }],
+									details: { run_id: existing.runId, event_path: existing.eventPath, reused: true },
+									terminate: true as const,
+								};
+							}
+							broker.waits.delete(key);
+						} else if (existing.child.exitCode === null) {
+							return {
+								content: [{ type: "text" as const, text: `Already waiting for RunID ${existing.runId}; no model polling is required.` }],
+								details: { run_id: existing.runId, event_path: existing.eventPath, reused: true },
+								terminate: true as const,
+							};
+						} else {
+							broker.waits.delete(key);
+						}
+					}
+					const sessionId = ctx.sessionManager.getSessionId();
+					const digest = createHash("sha256").update(`${sessionId}\0${command.runspec}`).digest("hex").slice(0, 20);
+					const directory = join(root, ".pi/rrctl-events");
+					mkdirSync(directory, { recursive: true, mode: 0o700 });
+					const logPath = join(directory, `${digest}.log`);
+					const eventPath = join(directory, `${digest}.event.json`);
+					appendFileSync(logPath, "", { mode: 0o600 });
+					const child = spawnChild("python3", command.argv, {
+						cwd: root,
+						stdio: ["ignore", "pipe", "pipe"],
+						env: process.env,
+					});
+					const entry: Waiter = { child, eventPath, logPath, runId: command.runId, root, key, settled: false };
+					broker.waits.set(key, entry);
+					attachObserver(child, entry, logPath, root, key, deliver, settle);
+					return {
+						content: [{ type: "text" as const, text: `Waiting for RunID ${command.runId}; Pi will wake only for terminal state or required attention.` }],
+						details: { run_id: command.runId, event_path: eventPath, log_path: logPath, reused: false },
+						terminate: true as const,
+					};
+				}
+
+				// 多任务并发监听 (multi-runspec concurrent monitoring)
+				for (const command of commandList) {
+					const key = `${root}\0${command.runspec}`;
+					const existing = broker.waits.get(key);
+					if (existing && existing.settled) {
 						const age = Date.now() - (existing.settledAt ?? 0);
-						// attention(exit!=0)表示「需要介入」而非终态：控制面可能仍在推进终态收口，
-						// 允许重 spawn 一个新 observer 继续等；仅 terminal 在 tombstone 窗口内去重，
-						// 避免同一完成事件被重复推送给用户。
 						if (existing.exitCode === 0 && age < RRCTL_SETTLED_TOMBSTONE_MS) {
-							// 同一 RunID + 同一 session + 同一 runspec 的 terminal event 已在最近 settle 过，
-							// 重复 execute 只是同一事件的回看（不会重 spawn、不会重复推送）。
 							return {
 								content: [{ type: "text" as const, text: `Event for RunID ${existing.runId} already delivered; no new observer is spawned.` }],
 								details: { run_id: existing.runId, event_path: existing.eventPath, reused: true },
 								terminate: true as const,
 							};
 						}
-						broker.waits.delete(key);
-					} else if (existing.child.exitCode === null) {
-						return {
-							content: [{ type: "text" as const, text: `Already waiting for RunID ${existing.runId}; no model polling is required.` }],
-							details: { run_id: existing.runId, event_path: existing.eventPath, reused: true },
-							terminate: true as const,
-						};
-					} else {
-						broker.waits.delete(key);
 					}
 				}
+
+				const spawnedRunIds: string[] = [];
+				const reusedRunIds: string[] = [];
+				const eventPaths: string[] = [];
+				const logPaths: string[] = [];
 				const sessionId = ctx.sessionManager.getSessionId();
-				const digest = createHash("sha256").update(`${sessionId}\0${command.runspec}`).digest("hex").slice(0, 20);
 				const directory = join(root, ".pi/rrctl-events");
 				mkdirSync(directory, { recursive: true, mode: 0o700 });
-				const logPath = join(directory, `${digest}.log`);
-				const eventPath = join(directory, `${digest}.event.json`);
-				appendFileSync(logPath, "", { mode: 0o600 });
-				const child = spawnChild("python3", command.argv, {
-					cwd: root,
-					stdio: ["ignore", "pipe", "pipe"],
-					env: process.env,
-				});
-				const entry: Waiter = { child, eventPath, logPath, runId: command.runId, root, key, settled: false };
-				broker.waits.set(key, entry);
-				let lastProgress: string | undefined;
-				let lastProgressAt = 0;
-				for (const stream of [child.stdout, child.stderr]) {
-					if (!stream) continue;
-					const decoder = new StringDecoder("utf8");
-					let line = "";
-					let dropping = false;
-					const parseLine = (value: string) => {
-						if (entry.settled || !value.startsWith("[rrctl-progress] ")) return;
-						try {
-							const event = JSON.parse(value.slice("[rrctl-progress] ".length));
-							const allowedStages = new Set(["wait", "estimate", "metrics", "completed"]);
-							if (event.schema_version !== "rrctl.progress.v1" || event.run_id !== entry.runId || !allowedStages.has(event.stage) || typeof event.message !== "string" || !event.message.trim()) return;
-							// Deduplicate immediate duplicate frames, not the next scheduled (30m)
-							// heartbeat when a query is unavailable or progress hasn't changed.
-							if (value === lastProgress && Date.now() - lastProgressAt < 1000) return;
-							lastProgress = value;
-							lastProgressAt = Date.now();
-							deliver({ root, message: event.message, logPath, progressKey: key });
-						} catch {} // Non-protocol logs and malformed/oversized frames stay in the log only.
-					};
-					stream.on("data", (chunk: Buffer) => {
-						try {
-							appendFileSync(logPath, chunk, { mode: 0o600 });
-						} catch (error) {
-							settle(entry, "attention", { error: String(error) }, `rrctl attention event for RunID ${entry.runId}: observer log write failed. Do not relaunch the RunID.`);
+
+				for (const command of commandList) {
+					const key = `${root}\0${command.runspec}`;
+					const existing = broker.waits.get(key);
+					if (existing) {
+						if (!existing.settled && existing.child.exitCode === null) {
+							reusedRunIds.push(command.runId);
+							eventPaths.push(existing.eventPath);
+							logPaths.push(existing.logPath);
+							continue;
 						}
-						const parts = decoder.write(chunk).split("\n");
-						for (let index = 0; index < parts.length; index++) {
-							if (!dropping) {
-								if (line.length + parts[index].length > 65536) { line = ""; dropping = true; }
-								else line += parts[index];
-							}
-							if (index < parts.length - 1) {
-								if (!dropping) parseLine(line);
-								line = "";
-								dropping = false;
-							}
-						}
+						broker.waits.delete(key);
+					}
+
+					const digest = createHash("sha256").update(`${sessionId}\0${command.runspec}`).digest("hex").slice(0, 20);
+					const logPath = join(directory, `${digest}.log`);
+					const eventPath = join(directory, `${digest}.event.json`);
+					appendFileSync(logPath, "", { mode: 0o600 });
+					const child = spawnChild("python3", command.argv, {
+						cwd: root,
+						stdio: ["ignore", "pipe", "pipe"],
+						env: process.env,
 					});
-					stream.once("end", () => { if (!dropping) parseLine(line + decoder.end()); });
-					stream.once("error", (error) => settle(entry, "attention", { error: String(error) }, `rrctl attention event for RunID ${entry.runId}: observer stream failed. Do not relaunch the RunID.`));
+					const entry: Waiter = { child, eventPath, logPath, runId: command.runId, root, key, settled: false };
+					broker.waits.set(key, entry);
+					spawnedRunIds.push(command.runId);
+					eventPaths.push(eventPath);
+					logPaths.push(logPath);
+					attachObserver(child, entry, logPath, root, key, deliver, settle);
 				}
-				child.once("exit", (code, signal) => {
-					settle(
-						entry,
-						code === 0 ? "terminal" : "attention",
-						{ exit_code: code, signal },
-						`rrctl ${code === 0 ? "terminal" : "attention"} event for RunID ${entry.runId}. Inspect ${entry.eventPath}. ${code === 0 ? "Compute is terminal; continue pull/ingest now (artifacts have not been pulled)." : "Diagnose the existing run and pull diagnostic artifacts as needed. If the run failed, repair the defect; clean relaunch is supported."}`,
-					);
-				});
-				child.once("error", (error) => {
-					settle(
-						entry,
-						"attention",
-						{ error: String(error) },
-						`rrctl attention event for RunID ${entry.runId}. Inspect ${entry.eventPath}.`,
-					);
-				});
+
+				const allRunIds = commandList.map((c) => c.runId);
 				return {
-					content: [{ type: "text" as const, text: `Waiting for RunID ${command.runId}; Pi will wake only for terminal state or required attention.` }],
-					details: { run_id: command.runId, event_path: eventPath, log_path: logPath, reused: false },
+					content: [{ type: "text" as const, text: `Waiting concurrently for ${allRunIds.length} RunIDs: [${allRunIds.join(", ")}]; Pi will wake on terminal state or required attention from any task.` }],
+					details: { run_ids: allRunIds, event_paths: eventPaths, log_paths: logPaths, spawned: spawnedRunIds, reused: reusedRunIds },
 					terminate: true as const,
 				};
 			} catch (error) {
