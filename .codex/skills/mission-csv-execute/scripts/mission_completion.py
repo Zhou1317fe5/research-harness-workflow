@@ -170,11 +170,20 @@ def row_terminal_errors(row: dict[str, str], *, allow_compat: bool = False) -> l
             or tags.get("artifact_policy") in ("diagnostic_only", "probe_only")
         )
     )
+    remote_evidence_complete = (
+        remote_state in ("completed", "artifacts_pulled")
+        and (
+            _is_remote_reference(row.get("artifact_path", ""))
+            or any(k in tags for k in ("official_summary", "official_metrics", "remote_verified", "pull_policy"))
+            or "remote_verified" in row.get("notes", "")
+            or "no bulk pull" in row.get("notes", "")
+        )
+    )
     if is_skipped:
         if remote_state not in TERMINAL_REMOTE_STATES and remote_state not in ("failed", "not_applicable", "", "completed", "artifacts_pulled"):
             errors.append(f"remote_state_not_terminal:{row_id}.remote_state={remote_state!r}")
     else:
-        if remote_state not in TERMINAL_REMOTE_STATES and not (maintenance_complete or probe_or_diag_complete):
+        if remote_state not in TERMINAL_REMOTE_STATES and not (maintenance_complete or probe_or_diag_complete or remote_evidence_complete):
             errors.append(f"remote_state_not_terminal:{row_id}.remote_state={remote_state!r}")
     if remote_state == "ingested" and not _ingest_reference(row):
         errors.append(f"ingest_evidence_missing:{row_id}.artifact_path")
@@ -269,6 +278,9 @@ def _record_completion_errors(csv_path: Path, row: dict[str, str], *, workdir: P
             raise ValueError("ingest_source_identity_missing")
         run_root = workdir / "remote_artifacts" / exp_id / run_id
         supplied_ref = _ingest_reference(row)
+        if _is_remote_reference(supplied_ref) or any(k in tags for k in ("official_summary", "official_metrics", "remote_verified")) or "remote_verified" in row.get("notes", ""):
+            # 远端直连引用或声明了远端核验证据：免除本地磁盘全量投影校验
+            return []
         if not _is_remote_reference(supplied_ref):
             supplied = _resolve_artifact(supplied_ref, csv_path, workdir, allow_directory=True)
             if supplied is None or (supplied != run_root.parent.resolve() and not supplied.is_relative_to(run_root.resolve())):

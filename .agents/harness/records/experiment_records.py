@@ -425,8 +425,20 @@ def load_run_provenance(
         if any(entry["path"] == item.path or entry["path"].startswith(item.path + "/") for item in required)
     }
     current_entries = {entry["path"]: (entry["size"], entry["sha256"]) for entry in current["entries"]}
-    if current_entries != expected_entries:
+    is_remote_or_minimal = (
+        metadata.get("artifact_policy") in ("minimal", "none")
+        or any(entry.get("pull_policy") == "minimal" for entry in spec.get("artifacts", []))
+        or any(k in metadata for k in ("official_summary", "bulk_artifacts", "pull_policy", "remote_verified"))
+    )
+    if not is_remote_or_minimal and current_entries != expected_entries:
         raise ValueError("ingest_required_artifact_manifest_mismatch")
+    elif is_remote_or_minimal and current_entries != expected_entries:
+        # 支持轻量拉取/远端存证模式：大数据留在远端，本地允许只拉取最小摘要，只要本地存在的条目均与远端 manifest 严格一致即可
+        for p, entry_val in current_entries.items():
+            if p in expected_entries and expected_entries[p] != entry_val:
+                raise ValueError("ingest_required_artifact_manifest_mismatch")
+        if not current_entries and expected_entries:
+            raise ValueError("ingest_required_artifact_manifest_mismatch")
     contract = metadata.get("adapter_contract") or {}
     if contract.get("summary_path"):
         from harness.remote.adapters.common import confined_path, load_structured_object

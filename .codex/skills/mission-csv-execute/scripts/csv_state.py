@@ -259,8 +259,8 @@ _REMOTE_FORWARD = {
     "not_applicable": {"not_applicable", "ingested"},
     "running_remote": {"running_remote", "completed", "failed"},
     "completed": {"completed", "artifacts_pulled", "ingested"},
-    "artifacts_pulled": {"artifacts_pulled", "ingested"},
-    "ingested": {"ingested"},
+    "artifacts_pulled": {"artifacts_pulled", "completed", "ingested"},
+    "ingested": {"ingested", "artifacts_pulled", "completed"},
     "failed": {"failed", "artifacts_pulled", "ingested"},
 }
 
