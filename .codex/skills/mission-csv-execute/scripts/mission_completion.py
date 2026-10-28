@@ -4,9 +4,11 @@
 from __future__ import annotations
 
 import csv
+import fnmatch
 import io
 import json
 import re
+import subprocess
 import sys
 from pathlib import Path
 
@@ -368,6 +370,43 @@ def review_rows(rows: list[dict[str, str]]) -> list[dict[str, str]]:
     return [row for row in rows if row.get("id", "").startswith("REVIEW-")]
 
 
+def protected_manuscript_errors(workdir: Path) -> list[str]:
+    """检查工作区是否存在被修改/暂存的受保护论文手稿文件。"""
+    try:
+        sys.path.insert(0, str(Path(__file__).resolve().parents[4] / ".agents"))
+        from harness.common.project_config import get_protected_manuscript_paths  # pyright: ignore[reportMissingImports]
+    except Exception:
+        return []
+    patterns = get_protected_manuscript_paths(workdir)
+    if not patterns:
+        return []
+    proc = subprocess.run(
+        ["git", "status", "--porcelain", "-z"],
+        cwd=workdir,
+        capture_output=True,
+        check=False,
+    )
+    if proc.returncode != 0:
+        return []
+    errors: list[str] = []
+    entries = [e.decode(errors="replace") for e in proc.stdout.split(b"\0") if e]
+    for entry in entries:
+        if len(entry) < 4:
+            continue
+        path_str = entry[3:].strip()
+        for pattern in patterns:
+            norm = pattern.rstrip("/")
+            if fnmatch.fnmatch(path_str, pattern) or (
+                norm.endswith("/**")
+                and (path_str.startswith(norm[:-3] + "/") or path_str == norm[:-3])
+            ):
+                errors.append(
+                    f"protected_manuscript_polluted:{path_str} (执行会话严禁修改论文手稿，请恢复原状后结项)"
+                )
+                break
+    return errors
+
+
 def evidence_completion_errors(
     csv_path: Path,
     rows: list[dict[str, str]],
@@ -395,6 +434,7 @@ def evidence_completion_errors(
     errors.extend(claim_completion_errors(csv_path, rows, workdir=workdir))
     from result_analysis import result_analysis_completion_errors
     errors.extend(result_analysis_completion_errors(csv_path, rows, workdir=workdir))
+    errors.extend(protected_manuscript_errors(workdir))
     return errors
 
 

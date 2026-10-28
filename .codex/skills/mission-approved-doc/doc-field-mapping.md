@@ -51,6 +51,13 @@ claim_ledger:<stem>.claims.json; claims:CLAIM-001,CLAIM-004; evidence_level:inte
 在科研算法实现中，模块内部数学与入口接线应**优先合并为单一 Implementation Issue（如 IMPL-01）**，严禁机械拆解为独立的 PREP、CORE、WIRING、ASSET、RESOURCE 多个碎片 issue 增加状态机流转内耗。
 对于纯超参数微调、全量评估重跑或基线复现（Tier 1 任务），**强制生成 1~2 行极简 CSV（RUN-01 + REVIEW-01）**，严禁生成任何前置接线行与微观 Claim。
 
+### 去审美化与论文资产隔离铁律（严禁生成 PLOT 行）
+
+1. **严禁生成 PLOT/FIGURE/PAPER 任务行**：
+   科研执行会话（低级模型）职责边界严格收敛于“真实数据完整采集、无损落盘与官方指标入账”；**严禁在 CSV 中生成 `PLOT-*`、`FIGURE-*`、`PAPER-*` 等制图或论文撰写 Issue 行**。
+2. **职责与审美彻底解耦**：
+   优质案例筛选、对比分析图绘制、配色排版与论文手稿修改，属于高度依赖学术审美与宏观立意的工作，严格收口在方案/讨论会话由高级模型完成。执行会话不得尝试修改任何论文正文，交付终点止于“全量工件就绪与指标入账”。
+
 规则：
 - 实现 issue 的 `acceptance_criteria` 必须包含端到端执行验证，而不是拆分出多个微观打卡行。
 - 对于纯调参/评测任务，直接通过 `command_argv` 传递运行参数，免除前置实现与接线步骤。

@@ -20,6 +20,45 @@ from harness.common.paths import CONFIG_DIR, REPO_ROOT as REPO_ROOT
 DEFAULT_CONFIG = CONFIG_DIR / "project.toml"
 
 
+DEFAULT_PROTECTED_PATTERNS = [
+    "docs/paper-draft/**",
+    "paper/**",
+    "latex/**",
+    "manuscript/**",
+    "tex/**",
+    "*.tex",
+]
+
+
+def get_protected_manuscript_paths(repo_root: Path, path: Path = DEFAULT_CONFIG) -> list[str]:
+    """获取受保护的论文与手稿路径列表。
+
+    优先从 project.toml 的 [workflow.protection].protected_paths 读取；
+    若未显式配置，自动执行启发式回退检测。
+    """
+    repo_root = repo_root.resolve()
+    target_config = path if path.is_absolute() else repo_root / path
+    if target_config.is_file():
+        try:
+            with target_config.open("rb") as stream:
+                config = tomllib.load(stream)
+            protection = config.get("workflow", {}).get("protection", {})
+            if isinstance(protection, dict) and "protected_paths" in protection:
+                declared = protection["protected_paths"]
+                if isinstance(declared, list):
+                    return [str(p) for p in declared if isinstance(p, str)]
+        except Exception:
+            pass
+
+    # 启发式检测：检查仓库中是否存在常见论文目录
+    candidates = ["docs/paper-draft", "paper", "latex", "manuscript", "tex"]
+    found = []
+    for cand in candidates:
+        if (repo_root / cand).is_dir():
+            found.append(f"{cand}/**")
+    return found if found else list(DEFAULT_PROTECTED_PATTERNS)
+
+
 def relative_path(value: str, label: str, *, allow_dot: bool = False) -> str:
     if not isinstance(value, str) or not value or "\\" in value:
         raise ValueError(f"{label}: expected a relative POSIX path")
