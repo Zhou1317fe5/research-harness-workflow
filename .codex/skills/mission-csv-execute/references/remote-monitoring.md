@@ -24,7 +24,8 @@
 ## 2. 等待期唤醒纪律（禁止轮询模型与自编汇报表格）
 
 - **禁止短周期轮询与自写 sleep 循环**：严禁在终端编写 `sleep 1200`、`nohup` 脚本或通过循环 SSH 抓取进度；严禁按固定时间向模型唤醒输出“仍在运行”废话；必须统一由 `remote_run.py`、`rrctl_event_wait` 或 `agent_event_wait.py` 维持事件监听。
-- **严禁设置过短外层超时（防弱网上传掐断）**：严禁对 `remote_run.py` 运行设置诸如 `timeout 400` / `timeout 600` 等过短的 bash 命令外层超时。弱网/中继网络下打包传输耗时易受波动，过短超时会导致 `source.bundle` 传输被腰斩，产生半成品残留并触发“误报损坏 -> 清理 -> 重新上传”死循环。外层命令超时若需设置不得低于 1800 秒（30分钟），优先信任 `remote_run.py` 内部的状态机超时控制。
+- **严禁设置过短外层超时（防弱网上传掐断）**：严禁对 `remote_run.py` 运行设置诸如 `timeout 400` / `timeout 600` 等过短的 bash 命令外层超时。弱网/中继网络下打包传输耗时易受波动，过短超时会导致 `source.bundle` 传输被腰斩，产生半成品残留并触发“误报损坏 -> 清理 -> 重新上传”死循环。外层命令超时若需设置不得低于 1800 秒（30分钟），优先信任 `remote_run.py` 内部的状态机超时控制。**该 1800 秒下限仅针对 `--launch-only` 上传/启动那一条命令，绝不套用到 wait/轮询上**（见下条）。
+- **严禁前台阻塞 wait（No Foreground Long-Block）**：严禁在终端以前台阻塞方式运行 `remote_run_control.cli wait` 或 `remote_run.py --execute` 去“等”一个长跑任务，尤其严禁套 `timeout 600` / `timeout 1800` 让单条工具调用独占数百至数千秒。正确姿势：长跑一律 `--launch-only` 起（秒级返回），随后用 `agent_event_wait.py` / `rrctl_event_wait`（单次事件 ≤ 60 秒）异步唤醒；看进度用 `python3 .agents/harness/remote/remote_progress.py <RunID>`（秒级快照，走 inspect/health 不阻塞）。确需一次有界等待，必须显式 `--max-wait-seconds ≤ 60`，超时（exit 124）只代表“仍在跑”，继续靠事件唤醒而非原地再阻塞。
 - **进度样式规范**：向用户汇报任务进度时，**必须统一调用并输出 `python3 .agents/harness/remote/remote_progress.py <RunID>` 生成的标准卡片（`[GPU 任务进度]`）**，心跳中已自动携带执行设备与卡号拓扑（单任务多卡显示 `2xGPU: ...`，多任务单卡显示 `adam (GPU-109b)` 等），严禁模型自行捏造 Unicode/ASCII 边框大表格（`┌───┬───┐`）或长篇格式化公文。
 - **严禁过程动态均值冒充结论**：评测运行中途的累加指标（如 step 41/600）仅为未收敛的瞬时中间态，**严禁在运行中途将动态均值当作正式结果与基线对比并输出“超基线/低于基线”误导判断**；只有跑满完整集数落盘的官方 `summary.json` 才是唯一权威结论。
 - **Pi 宿主**：`rrctl_event_wait` 运行 `--observe-only`；已启动 Run 必须 `resume:true`。支持传入 `runspecs: [...]` 数组并发监听多卡任务。心跳显示为用户可见的非唤醒消息，各卡心跳独立标注设备宿主（如 `adam (GPU-109b)`）与进度；任意单卡完成即唤醒，执行器立即继续该 Run 的 pull/诊断/ingest，而后继续监听其余进行中任务。
