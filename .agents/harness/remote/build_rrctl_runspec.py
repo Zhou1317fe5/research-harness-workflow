@@ -661,7 +661,12 @@ def _anchors(
         expected = _text(item.get("sha256"), f"anchors[{index}].sha256")
         if not SHA256_RE.fullmatch(expected):
             raise RunSpecBuildError(f"anchors[{index}].sha256_invalid")
-        actual = hashlib.sha256(local_path.read_bytes()).hexdigest()
+        # 流式分块计算，避免把 GB 级 anchor 整包 read_bytes() 进内存（结果与原全量哈希一致）。
+        digest = hashlib.sha256()
+        with open(local_path, "rb") as _stream:
+            for _chunk in iter(lambda: _stream.read(1024 * 1024), b""):
+                digest.update(_chunk)
+        actual = digest.hexdigest()
         if actual != expected:
             raise RunSpecBuildError(
                 f"anchors[{index}].sha256_mismatch: expected={expected} actual={actual}"
