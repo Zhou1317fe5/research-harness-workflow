@@ -39,15 +39,15 @@
 # 实施与验证纪律
 
 - 改动紧贴批准范围和现有代码模式，不混入无关重构、格式化或调试痕迹。**不为“结构上不可能出错”增加防御代码**。
-- **门槛匹配声称，严禁 TDD 狂欢与负向故障注入**：已知小偏差、近似与工程债允许保留，写清不影响结论即可；真正必须处理的只有可能翻转结论的未解决疑点。论文代码不做 TDD / test-first；**严禁自导自演“负向反证 / 故障注入对照”**（严禁通过临时改坏生产源码、故意漏写字段、注入旧 Bug 来证明断言能抓错，这种行为纯属浪费时间的伪可证伪性）；逻辑正确性与字段对齐只做正向静态核验与针对性最小正向验证。
-- **正向最小针对性验证，严禁全套测试循环回归**：修复或实现代码后，本地或远程验证**只允许针对本次改动的文件或用例执行单次针对性最小测试**（如 `pytest tests/test_xxx.py -k xxx` 或单一最小脚本），**严禁反复全量运行整套测试套件（如 `pytest tests/` 跑几十轮几百个断言）**，严禁在未改动核心架构时进行多轮自动化套件狂欢。
+- **门槛匹配声称，严禁 TDD 狂欢与负向故障注入**：已知小偏差、近似与工程债允许保留，写清不影响结论即可；真正必须处理的只有可能翻转结论的未解决疑点。论文代码不做 TDD / test-first；**严禁自导自演“负向反证 / 故障注入对照”**（如临时改坏源码、漏写字段、注入旧 Bug 来证明断言能抓错）；逻辑正确性只做正向静态核验与针对性最小正向验证。
+- **正向最小针对性验证，严禁全套测试循环回归**：修复或实现代码后，只允许对本次改动的文件或用例执行单次针对性最小测试（如 `pytest tests/test_xxx.py -k xxx`），**严禁反复全量运行整套测试套件**或多轮套件狂欢。
 - **执行栈分工**：代码正确性、单元测试、编译与参数链路可在本地或远程 CPU 完成；真实训练、step 级验证、显存与 loss 必须在远程 GPU 验证。
 - **加速计算与本地轻量边界**：声明使用 GPU 等加速设备时，核心数学算子与模型前向必须显式绑定目标设备，严禁在关键路径上将张量无意识脱落至主机 CPU 串行执行；纯 CPU 离线指标聚合直接在本地轻量执行，严禁传回远端 CPU 额外启动运行。
-- **KB 级最小拉取与远端就地核验**：本地仅拉取 KB 级轻量摘要与状态日志（`summary.json`、`progress.jsonl`、`evaluate.log`、`status.json`，单文件 < 100KB）。严禁使用 `scp -r` 或任何脚本将特征图、数组切片（`*.npz`、`*.npy`、`figure*/`、`adaptation/`）拉回本地做二次核验、文件计数（如 `wc -l`）或分析；所有工件完整性检查、样本抽检与数据分析必须在远端服务器就地完成。远端就地核验必须 O(1) 或抽样：只读 manifest 的 `sha256`+`size` 与 `.npy`/`.npz` 成员头部（shape、dtype），禁止对被核验的数据载荷做全量解码或全量 `isfinite`；核验在每个 Run 完工时做一次并缓存，收尾复用、只补缺失或失效的 Run，严禁对全部 Run 批量重跑。
-- **产物地址绝对化与免拉取溯源**：非必要数据严禁拉取到本地。最终交付的 `review.md` 和 `handoff.md` 中，对大型工件、特征数组或产物的引用，统一直接记录其在远端服务器上的绝对直连地址（格式必须为 `<server_host>:<absolute_path>`，例如 `adam:/home/zhoujiale/cdfss-dinov3-workspace/runs/<RunID>/output/...`），严禁使用本地相对路径，严禁为了在文档中引用而将大文件拉回本地。
-- **前台禁止长阻塞等待（No Foreground Long-Block）**：严禁在终端以前台阻塞方式运行 `remote_run_control.cli wait` 或 `remote_run.py --execute` 去“等”长跑任务，严禁套 `timeout 600`/`timeout 1800` 让单条工具调用独占数百至数千秒。长跑必须 `--launch-only` 秒级启动，再靠 `agent_event_wait.py`/`rrctl_event_wait`（单次事件 ≤60 秒）异步唤醒推进；查进度统一用 `remote_progress.py <RunID>`（秒级快照）。确需一次有界等待须显式 `--max-wait-seconds ≤60`，exit 124 仅表示仍在运行，继续靠事件唤醒而非原地再阻塞。
-- **PRERUN 单次审查与 Blocker 闭环**：运行前科学审查只执行单次定点审查，严禁发散。审查发现缺陷或探针缺失列为可证伪 Blockers，主代理在原实施行修复并通过 `closure.json` 机器校验闭合后自动放行，严禁二次 full review。
-- **收尾轻量闭环与消融评测豁免**：实验完成后优先使用 `evidence-close` 依据落盘事实秒级结项；纯超参微调、多臂消融、固定模型评测与阶段性探针强制豁免 `RESULT-ANALYSIS-01` 独立子进程，指标直接由主 Agent 在终端与 `review.md` 呈现；交工单（`handoff.md`）聚焦面向人类的客观总结，严禁机械死板的 7 列表格逐字比对与词汇黑名单卡死。
+- **KB 级最小拉取，大数据只留远端**：本地只拉 <100KB 的摘要/状态/日志；严禁把 `*.npz`/`*.npy`、`figure*/`、`adaptation/` 等大数据拉回本地做核验或计数；核验在远端 O(1) 或抽样完成（详见 `mission-csv-execute/references/remote-monitoring.md` §4 与 `remote-run.md` Step 4.1）。
+- **产物引用用远端绝对直连地址**：`review.md`/`handoff.md` 对大工件只写 `<host>:<absolute_path>`，严禁为引用而拉回本地（详见 `references/remote-monitoring.md` §4）。
+- **禁止前台长阻塞等待**：长跑用 `--launch-only` 秒级启动 + `agent_event_wait`/`rrctl_event_wait`（≤60s 事件）异步推进；查进度用 `remote_progress.py`；确需有界等待 `--max-wait-seconds ≤60`（详见 `references/remote-monitoring.md` §2）。
+- **PRERUN 单次审查 + Blocker 闭环**：运行前审查只做单次定点，Blocker 就地修复并出 `closure.json` 机器放行，严禁二次 full review（详见 `pre-run-implementation-review` skill）。
+- **收尾秒级闭环**：优先 `evidence-close`；纯调参/消融/评测/探针豁免 `RESULT-ANALYSIS-01`；交工单回归人类可读，不做逐列表格比对（详见 `references/closing-review.md`）。
 - 远程执行统一经 **rrctl 的 process 后端**，`fallback_allowed` 必须为 `false`；GPU 运行取得资源归属后启动，观察超时沿用原 RunID 恢复。
 
 # 科研产物布局
