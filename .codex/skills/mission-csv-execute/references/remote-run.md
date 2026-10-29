@@ -52,6 +52,17 @@
 2. 校验 pull manifest 与文件存在性后，通过 `csv_state.py` 记录 `remote_state=artifacts_pulled`；
 3. pre-review smoke 必须完成终端 checkpoint 清理，保留 `console.log/status.json/smoke_summary.json`，验证 `checkpoint_cleanup_completed:true` 后方可作为 PRERUN 证据。
 
+### Step 4.1 采集/工件核验：分层廉价 + 一次缓存
+
+当任务需要"独立回读采集契约/工件完整性"证据时（如补丁式完整采集任务），严格按本规约，杜绝全量重读拖死收尾：
+
+1. **一次核验、收尾复用**：每个 Run 在它自己完工（terminal completed）时就完成工件核验并落盘 `capture-contract-verification.json`（或等价报告）；收尾聚合只**引用**该报告，禁止对全部 Run 批量重跑核验；仅对缺失/失效的 Run 补验。
+2. **分层走便宜路径**（严禁对数据载荷全量解码）：
+   - 结构 / dtype / 逐类覆盖：只读 `.npy` / `.npz` 成员头部（shape、dtype），不解压数组；
+   - 完整性 / 身份：核 `control/artifact_manifest.json` 里已有的每文件 `sha256` + `size` + `manifest_sha256`，不重读字节；
+   - 有限值：用 `summary.json` 的官方指标 + 抽样 K 集（如 K=32）代替全量 `np.isfinite`。
+3. **不制造无人消费的存证**：核验报告与远端引用唯一的必需消费者是 CSV 的 `artifact_path`（形如 `<server_host>:<absolute_path>`）与轻量摘要；`mission_completion.py` 只认该字符串，**不读 `remote-reference.json`**。除非确有无下游读者的用途，否则禁止为收尾额外生成 `remote-reference.json` 之类的仪式文件。
+
 ### Step 5: 结果入账 (Ingest) 与生命周期流转
 1. 执行台账刷新命令：
    ```bash
