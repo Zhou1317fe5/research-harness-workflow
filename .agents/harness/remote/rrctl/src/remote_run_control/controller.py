@@ -79,6 +79,71 @@ def _verified_pull_file(root: Path, entry: dict[str, Any]) -> bool:
             and sha256_file(path) == entry["sha256"])
 
 
+# KB 级最小拉取的轻/重分层：只有轻量摘要与文本日志进入本地，重负载（数组/目录型
+# 证据）留在远端就地核验。此分层同时被 pull 与 ingest 复用，避免两处口径漂移。
+PULL_LIGHT_SUFFIXES = frozenset({".json", ".jsonl", ".log", ".txt", ".yaml", ".yml",
+                                 ".csv", ".tsv", ".md"})
+PULL_HEAVY_DIRS = frozenset({"evidence", "figure1", "figure2", "figure3", "figure4",
+                             "figure5", "adaptation", "logs", "checkpoints", "masks",
+                             "predictions", "artifacts", "raw"})
+PULL_LIGHT_MAX_BYTES = 5 * 1024 * 1024
+
+
+def is_heavy_pull_path(path: str, size: int | None = None) -> bool:
+    parts = Path(path).parts
+    if any(part in PULL_HEAVY_DIRS for part in parts):
+        return True
+    if Path(path).suffix.lower() not in PULL_LIGHT_SUFFIXES:
+        return True
+    if isinstance(size, int) and not isinstance(size, bool) and size > PULL_LIGHT_MAX_BYTES:
+        return True
+    return False
+
+
+def select_pull_entries(spec: Any, manifest: dict[str, Any], *, force_all: bool = False
+                        ) -> tuple[list[dict[str, Any]], str]:
+    """按 ``artifact_pull_policy.mode`` 选出本次 pull 的条目集合。
+
+    - 显式 ``force_all`` 或无 policy（历史/测试 spec）→ 全量（"all"，向后兼容）；
+    - ``mode == "minimal"`` → 只拉轻量摘要/文本，重负载留远端（"summary"）；
+    - 其余（含 ``diagnostic``）→ 全量。
+    """
+    entries = list(manifest["entries"])
+    if force_all:
+        return entries, "all"
+    meta = getattr(spec, "metadata", None)
+    if not isinstance(meta, dict):
+        return entries, "all"
+    policy = meta.get("artifact_pull_policy")
+    if not isinstance(policy, dict):
+        return entries, "all"
+    if policy.get("mode") != "minimal":
+        return entries, "all"
+    on_demand = policy.get("on_demand") or []
+    extra = set(on_demand) if isinstance(on_demand, list) else set()
+    # 合同 required 工件永远保留在本地拉取集内（否则 ingest 会因缺必需文件失败）；
+    # minimal 只裁掉"重负载且非合同必需"的条目（如未声明为 required 的 evidence/*.npz）。
+    required_roots: list[str] = []
+    for item in (getattr(spec, "artifacts", None) or []):
+        if isinstance(item, dict) and item.get("required"):
+            required_roots.append(str(item.get("path") or ""))
+        elif getattr(item, "required", False):
+            required_roots.append(str(getattr(item, "path", "")))
+    required_roots = [r for r in required_roots if r]
+
+    def _under_required(path: str) -> bool:
+        return any(path == root or path.startswith(root.rstrip("/") + "/") for root in required_roots)
+
+    selected = [
+        e for e in entries
+        if (not is_heavy_pull_path(e.get("path", ""), e.get("size")))
+        or _under_required(e.get("path", ""))
+        or e.get("path") in extra
+    ]
+    return selected, "summary"
+
+
+
 class _PullProgress:
     def __init__(self, run_id: str, manifest: dict[str, Any], timeout: float):
         self.run_id = run_id
@@ -1378,7 +1443,8 @@ class Controller:
             "original_completion_manifest_unchanged": True,
         }
 
-    def pull(self, run_id: str, *, diagnostic: bool = False) -> dict[str, Any]:
+    def pull(self, run_id: str, *, diagnostic: bool = False,
+             force_all: bool = False) -> dict[str, Any]:
         ref, spec, transport = self._runtime(run_id)
         binding_bytes = transport.download(f"{ref.control_root}/binding.json")
         binding = json.loads(binding_bytes)
@@ -1396,11 +1462,13 @@ class Controller:
             )
         destination = Path(spec.local_pull_root).expanduser() / run_id
         with _pull_lock(destination):
-            return self._pull_artifacts(run_id, ref, spec, transport, destination, diagnostic, binding_bytes)
+            return self._pull_artifacts(run_id, ref, spec, transport, destination, diagnostic,
+                                        binding_bytes, force_all=force_all)
 
     def _pull_artifacts(
         self, run_id: str, ref: RunRef, spec: RunSpec, transport: Transport,
         destination: Path, diagnostic: bool, binding_bytes: bytes,
+        force_all: bool = False,
     ) -> dict[str, Any]:
         source_root = spec.remote.output_root
         manifest_root = ref.control_root
@@ -1425,7 +1493,11 @@ class Controller:
             not diagnostic and Path(entry["path"]).parts[0] == ".rrctl"
         ) for entry in manifest["entries"]):
             raise RRCError("pull_manifest_path", "artifact_manifest.json and .rrctl are reserved metadata paths", "artifact")
-        progress = _PullProgress(run_id, manifest, download_timeout_seconds())
+        if diagnostic:
+            pull_scope, selected_entries = "all", list(manifest["entries"])
+        else:
+            selected_entries, pull_scope = select_pull_entries(spec, manifest, force_all=force_all)
+        progress = _PullProgress(run_id, {"entries": selected_entries}, download_timeout_seconds())
         progress.emit("start")
         diagnostic_only = (
             not diagnostic
@@ -1449,7 +1521,7 @@ class Controller:
                     existing = load_artifact_manifest(existing_manifest, expected_run_id=run_id)
                     if sha256_json(existing) == sha256_json(manifest) and all(
                         _verified_pull_file(destination, item)
-                        for item in manifest["entries"]
+                        for item in selected_entries
                     ):
                         if not diagnostic:
                             self._pull_completion(spec, ref, transport, destination, manifest, binding_bytes)
@@ -1459,7 +1531,9 @@ class Controller:
                         return {
                             "run_id": run_id,
                             "destination": str(destination),
-                            "entries": len(manifest["entries"]),
+                            "entries": len(selected_entries),
+                            "total_entries": len(manifest["entries"]),
+                            "pull_scope": pull_scope,
                             "diagnostic": diagnostic,
                             "reused": True,
                             "resumed_files": progress.resumed_files,
@@ -1505,10 +1579,24 @@ class Controller:
         else:
             temporary.mkdir(mode=0o700)
             atomic_write_json(staged_manifest, manifest)
+        if not diagnostic:
+            skipped = sorted(entry["path"] for entry in manifest["entries"]
+                             if entry["path"] not in {e["path"] for e in selected_entries})
+            atomic_write_json(
+                _pull_path(temporary, "pull_scope.json"),
+                {
+                    "schema_version": "rrctl.pull-scope.v1",
+                    "run_id": run_id,
+                    "scope": pull_scope,
+                    "pulled_entries": len(selected_entries),
+                    "total_entries": len(manifest["entries"]),
+                    "retained_remotely": skipped,
+                },
+            )
         # Unknown/random staging belongs to prior attempts: never sweep siblings.
         try:
             # 优先尝试单流批量拉取所有未就绪的条目，将 N 次 SSH 握手骤降为 1 次流式传输
-            missing_entries = [e for e in manifest["entries"] if not _verified_pull_file(temporary, e)]
+            missing_entries = [e for e in selected_entries if not _verified_pull_file(temporary, e)]
             if missing_entries and hasattr(transport, "download_tar_stream"):
                 paths = [e["path"] for e in missing_entries]
                 sys.stderr.write(f"[rrctl] pulling {len(paths)} artifacts via single tar stream...\n")
@@ -1517,7 +1605,7 @@ class Controller:
                     sys.stderr.write("[rrctl] tar stream pull delivered, verifying integrity...\n")
                     sys.stderr.flush()
 
-            for entry in manifest["entries"]:
+            for entry in selected_entries:
                 relative = Path(entry["path"])
                 local_path = _pull_path(temporary, entry["path"])
                 if _verified_pull_file(temporary, entry):
@@ -1553,7 +1641,7 @@ class Controller:
                 progress.bytes += entry["size"]
                 progress.emit()
             # Recheck every file, including cached files, immediately before publication.
-            if not all(_verified_pull_file(temporary, item) for item in manifest["entries"]):
+            if not all(_verified_pull_file(temporary, item) for item in selected_entries):
                 raise RRCError("pull_integrity", "staged artifacts changed before publication", "artifact")
             if not diagnostic:
                 self._pull_completion(spec, ref, transport, temporary, manifest, binding_bytes)
@@ -1579,7 +1667,9 @@ class Controller:
         return {
             "run_id": run_id,
             "destination": str(destination),
-            "entries": len(manifest["entries"]),
+            "entries": len(selected_entries),
+            "total_entries": len(manifest["entries"]),
+            "pull_scope": pull_scope,
             "diagnostic": diagnostic,
             "reused": False,
             "resumed_files": progress.resumed_files,

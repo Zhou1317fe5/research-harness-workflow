@@ -142,6 +142,11 @@ def build_parser(*, machine: bool = False) -> argparse.ArgumentParser:
         action="store_true",
         help="snapshot bounded logs and state, including failed or running workloads",
     )
+    pull.add_argument(
+        "--all",
+        action="store_true",
+        help="ignore artifact_pull_policy.minimal and pull every manifest entry (heavy artifacts included)",
+    )
 
     recover = commands.add_parser(
         "recover-evidence", help="recover explicitly declared outputs from a finished workload"
@@ -314,7 +319,8 @@ def main(argv: list[str] | None = None) -> int:
             if not args.full_output:
                 value = _compact_wait(value, controller)
         elif operation == "pull":
-            value = controller.pull(args.run_id, diagnostic=args.diagnostic)
+            value = controller.pull(args.run_id, diagnostic=args.diagnostic,
+                                    force_all=getattr(args, "all", False))
         elif operation == "recover-evidence":
             value = controller.recover_evidence(
                 args.run_id, paths=args.path, destination=args.destination,

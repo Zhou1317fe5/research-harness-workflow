@@ -90,6 +90,39 @@ class PullTests(unittest.TestCase):
         self.assertEqual((self.staging() / "a.txt").read_bytes(), self.data["a.txt"])
         self.assertFalse((self.staging() / "sub/b.bin").exists())
 
+    def test_minimal_policy_pulls_only_light_entries(self):
+        self.spec.metadata = {"artifact_pull_policy": {"mode": "minimal", "on_demand": []}}
+        with contextlib.redirect_stderr(io.StringIO()), contextlib.redirect_stdout(io.StringIO()):
+            result = self.control.pull("run-1")
+        self.assertEqual(result["pull_scope"], "summary")
+        self.assertEqual(result["entries"], 2)          # a.txt + c.json (sub/b.bin 是重负载)
+        self.assertEqual(result["total_entries"], 3)
+        self.assertTrue((self.destination / "a.txt").is_file())
+        self.assertTrue((self.destination / "c.json").is_file())
+        self.assertFalse((self.destination / "sub" / "b.bin").exists())
+        scope = json.loads((self.destination / "pull_scope.json").read_text())
+        self.assertEqual(scope["retained_remotely"], ["sub/b.bin"])
+        # 本地仍保留完整 manifest 供 provenance，仅下载集是轻量子集
+        self.assertTrue((self.destination / "artifact_manifest.json").is_file())
+
+    def test_force_all_overrides_minimal_policy(self):
+        self.spec.metadata = {"artifact_pull_policy": {"mode": "minimal", "on_demand": []}}
+        with contextlib.redirect_stderr(io.StringIO()), contextlib.redirect_stdout(io.StringIO()):
+            result = self.control.pull("run-1", force_all=True)
+        self.assertEqual(result["pull_scope"], "all")
+        self.assertEqual(result["entries"], 3)
+        self.assertTrue((self.destination / "sub" / "b.bin").is_file())
+
+    def test_minimal_policy_keeps_required_heavy_entries(self):
+        self.spec.metadata = {"artifact_pull_policy": {"mode": "minimal", "on_demand": []}}
+        self.spec.artifacts = (SimpleNamespace(path="sub", required=True),)
+        with contextlib.redirect_stderr(io.StringIO()), contextlib.redirect_stdout(io.StringIO()):
+            result = self.control.pull("run-1")
+        # 合同 required 的重负载子树必须留在本地拉取集，否则 ingest 会缺必需文件
+        self.assertEqual(result["pull_scope"], "summary")
+        self.assertEqual(result["entries"], 3)
+        self.assertTrue((self.destination / "sub" / "b.bin").is_file())
+
     def test_interruption_keeps_verified_files_and_retry_downloads_only_missing(self):
         stderr, stdout = io.StringIO(), io.StringIO()
         with contextlib.redirect_stderr(stderr), contextlib.redirect_stdout(stdout):
@@ -111,7 +144,7 @@ class PullTests(unittest.TestCase):
         self.assertEqual(end["stage"], "pull")
         self.assertEqual(end["files"], end["total_files"])
         self.assertEqual(end["bytes"], end["total_bytes"])
-        self.assertEqual(end["download_timeout_seconds"], 1800)
+        self.assertEqual(end["download_timeout_seconds"], 300)
         self.assertEqual(end["budget_scope"], "per_file")
         self.assertFalse((self.destination / ".rrctl").exists())
         self.assertTrue(self.control.pull("run-1")["reused"])
@@ -394,7 +427,7 @@ class DownloadTests(unittest.TestCase):
 
     def test_download_budget_default_override_and_invalid_values(self):
         with patch.dict(os.environ, {}, clear=True):
-            self.assertEqual(download_timeout_seconds(), 1800)
+            self.assertEqual(download_timeout_seconds(), 300)
         with patch.dict(os.environ, {"RRCTL_DOWNLOAD_TIMEOUT_SECONDS": "7200"}):
             self.assertEqual(download_timeout_seconds(), 7200)
         for value in ("nan", "inf", "-1", "0", "86401", "bad"):
