@@ -660,7 +660,7 @@ def emit_progress(run_id: str, stage: str, message: str, **detail) -> None:
 
 
 class ProgressHeartbeat:
-    """在长时间等待 (wait) 期间，每隔固定周期（默认 30 分钟）打印一次进度心跳与 ETA。"""
+    """在长时间等待 (wait) 期间打印进度心跳：首次在启动后约 2 分钟即汇报，随后每隔固定周期（默认 30 分钟）再报一次，让操作者在模型加载后不久就拿到进度与预计完成时刻。"""
 
     def __init__(
         self,
@@ -669,12 +669,24 @@ class ProgressHeartbeat:
         profiles: Path | None,
         spec_path: Path | None = None,
         interval_seconds: float = 1800,
+        first_delay_seconds: float | None = None,
     ):
         self.run_id = run_id
         self.repo_root = repo_root
         self.profiles = profiles
         self.spec_path = spec_path
         self.interval_seconds = interval_seconds
+        # 首跳延迟：默认取 min(120s, interval)，既保证正式运行 2 分钟内先汇报一次，
+        # 又让测试用极小 interval 时首跳不被拖到 120 秒之后。
+        if interval_seconds <= 0:
+            self.first_delay_seconds = 0.0
+        elif first_delay_seconds is None:
+            self.first_delay_seconds = min(120.0, interval_seconds)
+        elif first_delay_seconds <= 0:
+            # 显式禁用提前首跳：等满一个完整周期后再首报。
+            self.first_delay_seconds = interval_seconds
+        else:
+            self.first_delay_seconds = min(first_delay_seconds, interval_seconds)
         self._stop_event = threading.Event()
         self._thread = threading.Thread(target=self._run, daemon=True)
 
@@ -691,7 +703,9 @@ class ProgressHeartbeat:
         from harness.remote.remote_progress import format_progress, get_progress
 
         previous = None
-        while not self._stop_event.wait(timeout=self.interval_seconds):
+        delay = self.first_delay_seconds
+        while not self._stop_event.wait(timeout=delay):
+            delay = self.interval_seconds
             try:
                 info = get_progress(
                     self.run_id,
@@ -754,6 +768,7 @@ def _extract_metrics_from_destination(dest: Path, run_id: str) -> str | None:
 def execute(
     spec_path: Path, *, profiles: Path | None, poll_seconds: float,
     max_wait_seconds: float = 0, heartbeat_seconds: float = 1800,
+    heartbeat_first_seconds: float | None = None,
     resume: bool = False, full_output: bool = False,
     launch_only: bool = False, observe_only: bool = False,
 ) -> int:
@@ -807,7 +822,8 @@ def execute(
             arguments = [*arguments, "--after-event", latest_cursor]
         if stage == "wait" and heartbeat_seconds > 0:
             heartbeat = ProgressHeartbeat(
-                run_id, REPO_ROOT, profiles, spec_path=spec_path, interval_seconds=heartbeat_seconds
+                run_id, REPO_ROOT, profiles, spec_path=spec_path, interval_seconds=heartbeat_seconds,
+                first_delay_seconds=heartbeat_first_seconds,
             )
             heartbeat.start()
         if stage == "ready":
@@ -816,7 +832,9 @@ def execute(
             emit_progress(run_id, "launch", f"📦 正在打包与分发运行代码 [RunID: {run_id}]...")
         if stage == "wait":
             mins = int(heartbeat_seconds // 60) if heartbeat_seconds > 0 else 30
-            emit_progress(run_id, "wait", f"🚀 远端计算任务已就绪运行 [RunID: {run_id}]，后台监控中 (周期心跳: {mins}m)...")
+            first_mins = int((heartbeat.first_delay_seconds if heartbeat else 0) // 60) or (1 if heartbeat and heartbeat.first_delay_seconds > 0 else 0)
+            first_hint = f"首次约 {first_mins} 分钟汇报，此后每 {mins}m 心跳" if heartbeat_seconds > 0 else "进度心跳已禁用"
+            emit_progress(run_id, "wait", f"🚀 远端计算任务已就绪运行 [RunID: {run_id}]，后台监控中 ({first_hint})...")
         try:
             result = rrctl_call([*prefix, stage, *arguments], REPO_ROOT)
         finally:
@@ -894,6 +912,10 @@ def main() -> int:
         "--heartbeat-seconds", type=float, default=1800,
         help="周期性进度心跳秒数，默认 1800（30 分钟）；0 表示禁用",
     )
+    parser.add_argument(
+        "--heartbeat-first-seconds", type=float, default=120,
+        help="首跳进度心跳延迟秒数，默认 120（启动约 2 分钟后先汇报一次）；0 表示不提前首跳（满一个周期后才首报）",
+    )
     parser.add_argument("--resume", action="store_true", help="inspect the bound run and continue wait/pull without launching again")
     parser.add_argument("--launch-only", action="store_true", help="run ready and launch, then return without wait/pull")
     parser.add_argument("--observe-only", action="store_true", help="return at remote terminal/attention without waiting for pull; the host continues recovery/ingest")
@@ -904,8 +926,8 @@ def main() -> int:
     parser.add_argument("--execute", action="store_true", help="execute the generated rrctl sequence")
     args = parser.parse_args()
     try:
-        if not math.isfinite(args.poll_seconds) or args.poll_seconds <= 0 or not math.isfinite(args.max_wait_seconds) or args.max_wait_seconds < 0 or not math.isfinite(args.heartbeat_seconds) or args.heartbeat_seconds < 0:
-            raise ValueError("poll must be positive and wait/heartbeat nonnegative finite seconds")
+        if not math.isfinite(args.poll_seconds) or args.poll_seconds <= 0 or not math.isfinite(args.max_wait_seconds) or args.max_wait_seconds < 0 or not math.isfinite(args.heartbeat_seconds) or args.heartbeat_seconds < 0 or not math.isfinite(args.heartbeat_first_seconds) or args.heartbeat_first_seconds < 0:
+            raise ValueError("poll must be positive and wait/heartbeat/first-heartbeat nonnegative finite seconds")
         spec = args.runspec.resolve()
         if args.request:
             if args.resume:
@@ -935,7 +957,8 @@ def main() -> int:
             if args.launch_only and args.resume:
                 raise ValueError("--launch-only cannot be combined with --resume")
             return execute(spec, profiles=profiles, poll_seconds=args.poll_seconds, max_wait_seconds=args.max_wait_seconds,
-                           heartbeat_seconds=args.heartbeat_seconds, resume=args.resume, full_output=args.full_output,
+                           heartbeat_seconds=args.heartbeat_seconds, heartbeat_first_seconds=args.heartbeat_first_seconds,
+                           resume=args.resume, full_output=args.full_output,
                            launch_only=args.launch_only, observe_only=args.observe_only)
         command = [sys.executable, ".agents/harness/remote/remote_run.py", str(spec), "--execute", "--poll-seconds", str(args.poll_seconds),
                    "--max-wait-seconds", str(args.max_wait_seconds)]
