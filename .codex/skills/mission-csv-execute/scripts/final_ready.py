@@ -27,6 +27,9 @@ CLOSING_CONTEXT_FIELDS = {
     "evidence_conflict",
     "current_scope_gap_suspected",
 }
+# 可选字段：独立审查后端不可用（capability_gap / 供应商 4xx / 429）时置真，
+# 允许降级为本会话 self-review 的有界终态，避免“永远 independent_review_required”死循环。
+OPTIONAL_CLOSING_CONTEXT_FIELDS = {"reviewer_unavailable"}
 
 
 def _load_handoff_lint():
@@ -105,7 +108,7 @@ def _closing_route(value: Any, errors: list[str]) -> tuple[str | None, list[str]
     if not isinstance(value, dict):
         _error(errors, "closing_context_invalid", "closing_context", "expected object")
         return None, reasons
-    for field in sorted(set(value) - CLOSING_CONTEXT_FIELDS):
+    for field in sorted(set(value) - CLOSING_CONTEXT_FIELDS - OPTIONAL_CLOSING_CONTEXT_FIELDS):
         _error(errors, "unknown_field", f"closing_context.{field}", "not allowed")
     for field in sorted(CLOSING_CONTEXT_FIELDS - set(value)):
         _error(errors, "missing_field", f"closing_context.{field}", "required")
@@ -115,8 +118,19 @@ def _closing_route(value: Any, errors: list[str]) -> tuple[str | None, list[str]
     for field in sorted(CLOSING_CONTEXT_FIELDS - {"risk_level"}):
         if not isinstance(value.get(field), bool):
             _error(errors, "type_invalid", f"closing_context.{field}", "expected boolean")
+    if "reviewer_unavailable" in value and not isinstance(value.get("reviewer_unavailable"), bool):
+        _error(errors, "type_invalid", "closing_context.reviewer_unavailable", "expected boolean")
     if errors:
         return None, reasons
+    if value.get("reviewer_unavailable"):
+        # 独立审查后端物理不可用：按 closing-review 规范降级为本会话 self-review 的有界终态；
+        # 真实 gaps/conflict 照实记录为 deferred，不再卡在 independent_review_required。
+        if value["evidence_conflict"]:
+            reasons.append("evidence_conflict")
+        if value["current_scope_gap_suspected"]:
+            reasons.append("current_scope_gap_suspected")
+        reasons.append("reviewer_unavailable_self_review")
+        return "evidence_close", reasons
     if value["evidence_conflict"]:
         reasons.append("evidence_conflict")
     if value["current_scope_gap_suspected"]:

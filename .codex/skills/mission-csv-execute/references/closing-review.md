@@ -39,6 +39,17 @@
 2. **`decision:independent_review_required`（独立审查阶梯）**：
    - 适用场景：L3/L4 交付无等价独立审查、机械证据冲突、claim/evidence 疑似高估或发现 current-scope gap。
    - 执行方式：**读取并严格遵循 [references/closing-independent-review.md](closing-independent-review.md)**（执行审查模型铁律：必须使用当前会话执行模型，严禁私自越级借用高级审查模型；优先 `closing-reviewer-job`，失败降级 `self-review`）。
+   - **reviewer 不可用 -> 有界降级终态**：若 `closing-reviewer-job` 的 `job.json` 为 `capability_gap`，或 stderr 明确为供应商 4xx/429（如 `unknown field "role"`、额度耗尽），在 `closing_context` 置 `reviewer_unavailable: true`。此时 `final_ready.py` 直接返回 `evidence_close`（reason 含 `reviewer_unavailable_self_review`），由主会话按 self-review 完成一次收尾，**不得重复拉起 reviewer，也不得因 gaps 未当场闭合而反复重跑 final_ready**。gaps 一律如实登记为 deferred follow-up。
+
+## 3.1 收尾执行护栏（Closing Loop Guard，强制）
+
+收尾阶段严禁陷入“核验 -> 再核验 -> 请求完成裁决”的空转循环：
+
+- **每类机械检查最多执行一次**：`final_ready.py`、`check_handoff_contract.py`、`validate_claim_ledger.py`、`csv_completion_errors()`、`preflight.py` 在收尾期内各自只跑一次；只有在**修改了对应输入文件之后**才允许重跑该检查，禁止无改动重跑。
+- **reviewer 只尝试一次**：`closing-reviewer-job` 失败后不得重试第二次；按上条降级 self-review。
+- **advisor 不用于重复确认**：advisor 不得用于“再问一次是否已可收尾”；同一收尾议题至多调用一次。
+- **合法终态包含“有 deferred 缺口”**：实验与入账完成、收尾证据存在 deferred follow-up 时，按实记录并结束，**严禁**为凑“全部闭环”伪造 claim/gap 或新增补救实验。
+- 判断完成标准：收尾期内每个检查脚本的调用次数不超过“改动次数 + 1”，且最终只输出一次收尾汇报。
 
 ## 4. Human Handoff 施工交工单与机械验收
 

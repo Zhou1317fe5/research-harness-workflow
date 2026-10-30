@@ -23,7 +23,7 @@ from mission_completion import (EXPECTED_FIELDS, parse_note_tags, read_mission_c
                                 row_terminal_errors, git_completion_errors, csv_completion_errors,
                                 resolve_reference_path)
 from git_isolation import commit_paths, verify_commit
-from final_ready import _read_csv as read_closing_csv, check_final_ready, SCHEMA_VERSION as CLOSING_SCHEMA
+from final_ready import _read_csv as read_closing_csv, check_final_ready, _closing_route as closing_route, SCHEMA_VERSION as CLOSING_SCHEMA
 from run_vision_review import discover_claim_ledger, resolve_existing_file, artifact_output_path
 from check_handoff_contract import (load_review_notes, load_review_json, note_value_matches_handoff,
                                     check_contract, load_outcome_contract)
@@ -1150,6 +1150,36 @@ class MissionContractTests(unittest.TestCase):
         self.assertTrue(self.validate_claim([{**claim, "evidence_refs": ["command:pytest -q"]}], rows))
         rows[0]["notes"] = rows[0]["notes"].replace("evidence_level:real_e2e", "evidence_level:static")
         self.assertTrue(any("real_e2e" in x for x in self.validate_claim([claim], rows)))
+
+    def test_reviewer_unavailable_degrades_to_bounded_evidence_close(self):
+        # 独立审查后端物理不可用（capability_gap / 供应商 4xx/429）时，
+        # 即使存在 current-scope gap，也必须降级为有界 evidence_close，而非永远卡在
+        # independent_review_required 造成收尾死循环。
+        route, reasons = closing_route({
+            "risk_level": "L3",
+            "independent_prerun_covered": False,
+            "scientific_contract_changed_since_prerun": False,
+            "evidence_conflict": False,
+            "current_scope_gap_suspected": True,
+            "reviewer_unavailable": True,
+        }, [])
+        self.assertEqual(route, "evidence_close")
+        self.assertIn("reviewer_unavailable_self_review", reasons)
+        self.assertIn("current_scope_gap_suspected", reasons)
+
+    def test_reviewer_unavailable_optional_and_type_checked(self):
+        base = {
+            "risk_level": "L1",
+            "independent_prerun_covered": False,
+            "scientific_contract_changed_since_prerun": False,
+            "evidence_conflict": False,
+            "current_scope_gap_suspected": False,
+        }
+        route, _ = closing_route(dict(base), [])
+        self.assertEqual(route, "evidence_close")  # 缺省不开降级仍走原逻辑（L1 无冲突）
+        errors = []
+        closing_route({**base, "reviewer_unavailable": "yes"}, errors)
+        self.assertTrue(any("reviewer_unavailable" in e for e in errors))
 
 
 class CsvStateTransitionMatrixTests(unittest.TestCase):
