@@ -42,6 +42,21 @@
    ```
    公共入口使用仓库内 `.agents/harness/remote/rrctl/rrctl`，不依赖 PATH 指向另一个项目的可编辑安装。普通执行依次 ready、launch、wait、pull；宿主事件等待使用 `--observe-only`，计算终态即交回执行器继续 pull/ingest。二者不改变最终验收要求。
 
+### Step 2.1: 正式 run 启动前清理同名 smoke 的可重建大件
+
+正式（official）run 启动前，清理同实验先前 smoke 的 `repo/` 与 `stage/`（二者可重建/为中间态，
+`output/` 与 `control/` 永远保留，是 summary/progress/log/manifest 的取证来源）：
+
+```bash
+python3 .agents/harness/remote/prune_runs.py --host <server_host> \
+  --root <runs_root> --stem <run_stem> --apply
+```
+
+- 默认 dry-run，加 `--apply` 才真正删除；`--keep N` / `--older-than-days D` 可按保留策略清理历史 run。
+- 目的：单次 smoke 由 ~90MB 降至 ~100KB，避免远端 runs 目录无限膨胀；对历史全量 run 亦可用
+  `--older-than-days 7 --apply` 做定期保留清理。
+- smoke 证据已固化在 `output/summary.json` 与 CSV 的 run_id/exit 码，删除 `repo/`、`stage/` 不影响追溯。
+
 ### Step 3: 长运行监控与透明度
 - **时间沙盘 / 心跳 / 等待纪律**：统一遵循 [references/remote-monitoring.md](remote-monitoring.md)（启动前沙盘估算、累计 ≥10 步首个 ETA 与 30 分钟心跳、秒级 `remote_progress.py` 探针、禁止轮询与盲等）。
 
