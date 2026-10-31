@@ -37,15 +37,25 @@ def validate_targets(raw: str) -> list[str]:
 
 
 def build_list_script(root: str, targets: list[str]) -> str:
-    """远端列出 RUN 目录、mtime 与各 target 体积（KB）。"""
+    """远端列出 RUN 目录、mtime、终态与各 target 体积（KB）。
+
+    state 用 grep/sed 从 control/status.json 提取——内嵌 python3 -c 的引号转义经两层 shell
+    必碎（实测全部 unknown），单引号包 grep/sed 模式最稳。
+    """
     lines = ["set -u", f"ROOT={shlex.quote(root)}", 'for d in "$ROOT"/RUN-*; do',
              '  [ -d "$d" ] || continue', '  id=$(basename "$d")',
              '  mtime=$(stat -c %Y "$d" 2>/dev/null || echo 0)',
+             # grep -o '"state" : "..."'
+             "  state=$(grep -o '\"state\"[[:space:]]*:[[:space:]]*\"[^\"]*\"' \"$d/control/status.json\" 2>/dev/null | head -1 | sed 's/.*:[[:space:]]*\"//;s/\"$//')",
+             '  state=${state:-unknown}',
              '  sizes=""']
     for target in targets:
         lines.append(f'  kb=$(du -sk "$d"/{shlex.quote(target)} 2>/dev/null | cut -f1); sizes="$sizes ${{kb:-0}}"')
-    lines += ['  echo "RUNINFO $id $mtime$sizes"', "done"]
+    lines += ['  echo "RUNINFO $id $mtime $state$sizes"', "done"]
     return "\n".join(lines) + "\n"
+
+
+FAILED_STATES = frozenset({"failed", "aborted", "cancelled", "stopped"})
 
 
 def build_delete_script(root: str, targets: list[str], run_ids: list[str]) -> str:
@@ -58,18 +68,27 @@ def build_delete_script(root: str, targets: list[str], run_ids: list[str]) -> st
     return "\n".join(lines) + "\n"
 
 
+def build_remove_script(root: str, run_ids: list[str]) -> str:
+    """失败 run 整目录删除（--failed 模式；output 无证据价值）。"""
+    lines = ["set -u", f"ROOT={shlex.quote(root)}"]
+    for run_id in run_ids:
+        lines.append(f'rm -rf "$ROOT"/{shlex.quote(run_id)}')
+        lines.append(f'echo "PRUNED {shlex.quote(run_id)}"')
+    return "\n".join(lines) + "\n"
+
+
 def parse_list_output(stdout: str, target_count: int) -> list[dict[str, Any]]:
     entries: list[dict[str, Any]] = []
     for line in stdout.splitlines():
         parts = line.split()
-        if not parts or parts[0] != "RUNINFO" or len(parts) != 3 + target_count:
+        if not parts or parts[0] != "RUNINFO" or len(parts) != 4 + target_count:
             continue
         try:
             mtime = int(parts[2])
-            sizes = [int(value) for value in parts[3:]]
+            sizes = [int(value) for value in parts[4:]]
         except ValueError:
             continue
-        entries.append({"run_id": parts[1], "mtime": mtime, "sizes_kb": sizes})
+        entries.append({"run_id": parts[1], "mtime": mtime, "state": parts[3], "sizes_kb": sizes})
     return entries
 
 
@@ -103,6 +122,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--keep", type=int, default=None, help="按 mtime 保留最新 N 个，其余纳入清理")
     parser.add_argument("--older-than-days", type=float, default=None, help="只清理早于 N 天的 run")
     parser.add_argument("--targets", default=",".join(DEFAULT_TARGETS), help="要删除的顶层子目录，默认 repo,stage")
+    parser.add_argument("--failed", action="store_true",
+                        help="失败/中止的 run 整目录删除（含 output/，因其无证据价值）；成功 run 仍只清 targets")
     parser.add_argument("--apply", action="store_true", help="真正删除；缺省仅列出计划")
     parser.add_argument("--timeout", type=float, default=120.0)
     parser.add_argument("--json", action="store_true", help="输出 JSON 摘要")
@@ -122,17 +143,30 @@ def main(argv: list[str] | None = None) -> int:
         run_remote(args.host, build_list_script(args.root, targets), timeout=args.timeout),
         len(targets),
     )
-    selected = select(listing, stem=args.stem, keep=args.keep,
-                      older_than_days=args.older_than_days, now=_time.time())
+    if args.failed:
+        # 失败/中止 run：整目录删除（含 output/，无证据价值）；未到终态的 run 不动。
+        selected = [e for e in select(listing, stem=args.stem, keep=args.keep,
+                                      older_than_days=args.older_than_days, now=_time.time())
+                    if e["state"] in FAILED_STATES]
+    else:
+        selected = select(listing, stem=args.stem, keep=args.keep,
+                          older_than_days=args.older_than_days, now=_time.time())
     freed_kb = sum(sum(entry["sizes_kb"]) for entry in selected)
     plan = [{"run_id": e["run_id"], "freed_kb": sum(e["sizes_kb"])} for e in selected]
 
     if args.apply and selected:
-        run_remote(
-            args.host,
-            build_delete_script(args.root, targets, [e["run_id"] for e in selected]),
-            timeout=args.timeout,
-        )
+        if args.failed:
+            run_remote(
+                args.host,
+                build_remove_script(args.root, [e["run_id"] for e in selected]),
+                timeout=args.timeout,
+            )
+        else:
+            run_remote(
+                args.host,
+                build_delete_script(args.root, targets, [e["run_id"] for e in selected]),
+                timeout=args.timeout,
+            )
 
     if args.json:
         print(json.dumps({

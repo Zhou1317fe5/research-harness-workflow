@@ -52,14 +52,15 @@ class ScriptTests(unittest.TestCase):
 class ParseTests(unittest.TestCase):
     def test_parse_skips_malformed_lines(self):
         stdout = "\n".join([
-            "RUNINFO RUN-A 1700000000 71680 15360",
+            "RUNINFO RUN-A 1700000000 completed 71680 15360",
             "garbage line",
-            "RUNINFO RUN-B 1700000100 100",
-            "RUNINFO RUN-C 1700000200 1024 2048",
+            "RUNINFO RUN-B 1700000100 completed 100",
+            "RUNINFO RUN-C 1700000200 failed 1024 2048",
         ]) + "\n"
         entries = prune_runs.parse_list_output(stdout, 2)
         self.assertEqual([e["run_id"] for e in entries], ["RUN-A", "RUN-C"])
         self.assertEqual(entries[1]["sizes_kb"], [1024, 2048])
+        self.assertEqual(entries[1]["state"], "failed")
 
 
 class SelectionTests(unittest.TestCase):

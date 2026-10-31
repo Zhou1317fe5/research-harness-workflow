@@ -52,7 +52,9 @@ python3 .agents/harness/remote/prune_runs.py --host <server_host> \
   --root <runs_root> --stem <run_stem> --apply
 ```
 
-- 默认 dry-run，加 `--apply` 才真正删除；`--keep N` / `--older-than-days D` 可按保留策略清理历史 run。
+- 默认 dry-run，加 `--apply` 才真正删除；`--keep N` / `--older-than-days D` 可按保留策略清理历史 run；
+  `--failed` 把失败/中止的 run **整目录删除**（含 `output/`——失败 run 的产物无证据价值，且其残留
+  `smoke_summary.json`/`control/` 残留会让重跑撞 collision）。成功 run 仍只清 `repo/`、`stage/`。
 - 目的：单次 smoke 由 ~90MB 降至 ~100KB，避免远端 runs 目录无限膨胀；对历史全量 run 亦可用
   `--older-than-days 7 --apply` 做定期保留清理。
 - smoke 证据已固化在 `output/summary.json` 与 CSV 的 run_id/exit 码，删除 `repo/`、`stage/` 不影响追溯。
