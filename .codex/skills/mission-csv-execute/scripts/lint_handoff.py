@@ -17,10 +17,6 @@ import re
 import sys
 
 
-# 审计黑话黑名单：放宽以避免误杀合规文档
-AUDIT_JARGON: list[str] = []
-
-
 def lint(
     text: str,
     reader_questions: list[dict[str, str]] | None = None,
@@ -96,12 +92,6 @@ def lint(
     # 4. 第二层对账：有表格（| ... |）即可，不查表内容
     if "|" not in text or text.count("|") < 4:
         missing.append("缺对账表（第二层 spec 目标逐条对账的 | 表格）")
-
-    # 5. 审计黑话黑名单
-    lower = text.lower()
-    hit_jargon = [w for w in AUDIT_JARGON if w in lower]
-    if hit_jargon:
-        missing.append(f"出现 review 审计黑话（应在 review.md 不在 handoff）：{hit_jargon}")
 
     return missing
 

@@ -125,7 +125,7 @@ Keep commonly used `notes` tags stable:
 | `review_requested_model:<model>` | Review model actually requested: the current session (executor) model. Recorded and runtime-attested rather than pinned to a contract value; `evidence-close` uses `not_applicable`. |
 | `review_observed_model:<model>` | Model observed from session metadata/event stream; `evidence-close` uses `not_applicable`. |
 | `review_model_evidence:<session-metadata\|event-stream\|parent-runtime\|unknown\|not_applicable\|pending>` | Source supporting the observed model value; `pending` is generation-only. |
-| `review_result:<vision_met\|gaps_found\|limited_review>` | Closing review outcome. |
+| `review_result:<value>` | Outcome by row type. REVIEW rows use `vision_met`/`gaps_found`/`limited_review` (closing review outcome). Gated RUN rows use `scientifically_correct`/`scientifically_incorrect`/`not_evaluable`/`targeted_correct`/`targeted_incorrect` (result returned by the one independent pre-run reviewer). |
 | `scientific_outcome:<hypothesis_supported\|hypothesis_not_supported\|gate_failed\|inconclusive\|not_applicable>` | Scientific result, separate from Mission execution success. |
 | `result_analysis:<path>` | Canonical `reviews/result-analysis.json` consumed by `RESULT-ANALYSIS-01` and the final `REVIEW-*`; both rows must reference the same index. |
 | `analysis_agent_mode:<result-analysis-reviewer-job>` | Formal post-run analysis comes from reviewer_job (`analyze_result`), a fresh read-only reviewer session invoked by `run_result_analysis.py`. |
@@ -141,7 +141,6 @@ Keep commonly used `notes` tags stable:
 | `source_doc:<path>` | Approved canonical source document. |
 | `gated_run:<id>` | Run row gated by a pre-run review. |
 | `review_mode:<scientific_review\|targeted_review>` | Single pre-run reviewer scope for the gated run. |
-| `review_result:<scientifically_correct\|scientifically_incorrect\|not_evaluable\|targeted_correct\|targeted_incorrect>` | Result returned by the one independent pre-run reviewer. |
 | `user_authorized_pre_run_exception:<true>` | User explicitly authorized an official launch without a scientific verdict; requires `review_result:not_evaluable`, `review_requirement_unfulfilled:service_failure_two_attempts`, and a matching RunSpec `metadata.pre_run_exception`. |
 | `review_requirement_unfulfilled:<service_failure_two_attempts>` | Two bounded review attempts returned no verdict; must match `metadata.pre_run_exception.reason_code`. |
 | `verdict_artifact:<path>` | Repository-relative `prerun.scientific-verdict.v1` artifact produced by the persistent reviewer job. |

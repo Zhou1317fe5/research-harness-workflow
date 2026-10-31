@@ -93,13 +93,10 @@ claim_ledger:<stem>.claims.json; claims:CLAIM-001,CLAIM-004; evidence_level:inte
 `REVIEW-N` 行用于审计交付结果是否达成批准文档愿景。
 
 - `area` 固定为 `review`
-- `area` 固定为 `review`
 - `priority` 固定为 `P0`
 - `test_mcp` 固定为 `manual`
 - `refs` 至少包含批准文档路径
 - `notes` 必须包含 `review_kind:vision`
-- `REVIEW-01` 由 CSV 生成阶段创建
-- `REVIEW-02` 及之后由执行阶段在发现缺口时追加
 - `REVIEW-01` 由 CSV 生成阶段创建
 - `REVIEW-02` 及之后由执行阶段在发现缺口时追加
 

@@ -15,9 +15,18 @@
 在执行 REVIEW 行之前，必须通过以下前置检查：
 
 1. **机械就绪核验（HARD GATE）**：
-   运行 `final_ready.py` v2 对 28 列状态、remote terminal state、实验身份、metrics token、provenance、claim 终态、post-run result-analysis 和 scoped git status 做机械检查：
+   运行 `final_ready.py` v2 对 28 列状态、remote terminal state、实验身份、metrics token、provenance、claim 终态、post-run result-analysis 和 scoped git status 做机械检查。它读取一个 `mission.final-ready.v2` 的 JSON request（字段：`csv_path`、`review_row_id`、`review_path`、`handoff_path`、`claims_path`、`expected_run_ids`、`required_review_tokens`、`provenance_paths`、`protected_paths_clean`、`closing_context`），经文件或 `-` 传入：
    ```bash
-   python .codex/skills/mission-csv-execute/scripts/final_ready.py issues/<stem>/<stem>.csv
+   python .codex/skills/mission-csv-execute/scripts/final_ready.py - <<'JSON'
+   {"schema_version": "mission.final-ready.v2",
+    "csv_path": "issues/<stem>/<stem>.csv", "review_row_id": "REVIEW-01",
+    "review_path": "issues/<stem>/reviews/review.json",
+    "handoff_path": "issues/<stem>/reviews/handoff.md",
+    "claims_path": "issues/<stem>/claims.json",
+    "expected_run_ids": ["<RUN-ID>"], "required_review_tokens": ["<token>"],
+    "provenance_paths": ["issues/<stem>/runs/<RUN-ID>/run_spec.json"],
+    "protected_paths_clean": true, "closing_context": {}}
+   JSON
    ```
    失败时修当前 REVIEW 行，不创建等待型 REVIEW。
 2. **所有前置非 review 行必须闭环**：

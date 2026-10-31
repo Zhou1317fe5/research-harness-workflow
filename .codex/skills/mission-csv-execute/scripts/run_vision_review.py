@@ -70,19 +70,6 @@ OUTCOME_VERDICTS = {"pass", "fail", "partial", "unknown", "not_run"}
 OUTCOME_CONFIDENCE = {"high", "moderate", "low", "unknown"}
 
 
-def normalize_review_mode(mode: str) -> tuple[str, bool | str, bool]:
-    """Return the canonical mode, independence, and supplemental flag."""
-    mapping: dict[str, tuple[str, bool | str, bool]] = {
-        "closing-reviewer-job": ("closing-reviewer-job", True, False),
-        "self-review": ("self-review", False, False),
-        "evidence-close": ("evidence-close", False, False),
-        "pending": ("pending", "pending", False),
-    }
-    if mode not in mapping:
-        raise ValueError(f"unknown review mode: {mode}")
-    return mapping[mode]
-
-
 def existing_file(value: str, workdir: Path) -> str:
     return resolve_existing_file(value, workdir)
 

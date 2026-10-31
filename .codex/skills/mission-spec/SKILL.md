@@ -55,7 +55,7 @@ Required sections:
 
 Add `Non-goals`, `Alternatives`, `Compatibility`, `Security`, `Rollout`, or `Rollback` only when they carry real information.
 
-The validator accepts unique scalar fields `mission`, `status`, `created`, `approved_at`, plus optional `approval_mode` and `approval_source`. Existing four-field specs remain valid. `approval_mode` is `explicit` (default) or `delegated`; delegated approval requires a nonempty source reference and a description of its scope in the body. Nested values, arrays, aliases, tags, duplicate keys, invalid dates and extra frontmatter blocks remain invalid.
+The validator accepts exactly these scalar frontmatter fields: `mission`, `status`, `created`, `approved_at`, `approval_mode`, `approval_source`, `experiment_type`. `experiment_type` is optional. `approval_mode` is `explicit` (default) or `delegated`; delegated approval requires a nonempty source reference and a description of its scope in the body. The validator rejects nested values, arrays, aliases, tags, duplicate keys, invalid dates, and extra frontmatter blocks.
 
 ## Approval integrity
 

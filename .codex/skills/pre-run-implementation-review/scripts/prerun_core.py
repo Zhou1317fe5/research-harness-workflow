@@ -329,13 +329,6 @@ def _review_scope_payloads(plan: dict[str, Any]) -> tuple[dict[str, Any], dict[s
     return scientific, execution, bookkeeping
 
 
-def _semantic_payload(plan: dict[str, Any]) -> dict[str, Any]:
-    """Return the scientific snapshot payload."""
-
-    scientific, _, _ = _review_scope_payloads(plan)
-    return scientific
-
-
 def _changed_paths(previous: Any, candidate: Any, prefix: str = "") -> list[str]:
     if isinstance(previous, dict) and isinstance(candidate, dict):
         paths: list[str] = []

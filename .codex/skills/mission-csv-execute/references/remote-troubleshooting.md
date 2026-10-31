@@ -26,7 +26,7 @@
 
 若任务存在正式多阶段 ExecutionPlan，使用无状态建议器：
 ```bash
-printf '%s' '<request JSON>' | python .agents/harness/workflow/stage_flow.py -
+printf '%s' '<request JSON>' | python .codex/skills/mission-csv-execute/scripts/stage_flow.py -
 ```
 - 纯效果预测（`kind=effect_prediction`）未达标只记 advisory，不阻断推进；
 - 预注册停止门（`preregistered_stop`）、正确性（`correctness`）或安全门（`safety`）未达标则严格阻断。
