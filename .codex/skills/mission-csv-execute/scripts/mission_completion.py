@@ -136,6 +136,25 @@ def upsert_note_tags(notes: str, updates: dict[str, str]) -> str:
     return result
 
 
+def _is_prereview_smoke(row: dict[str, str]) -> bool:
+    """PRERUN 门禁用的 smoke/probe 行：真实数据真跑，但不是科学结果行。"""
+    notes = row.get("notes", "") or ""
+    try:
+        tags = parse_note_tags(notes)
+    except ValueError:
+        tags = {}
+    if tags.get("execution_purpose") in ("pre_review_smoke", "preregistered_read_only_probe"):
+        return True
+    row_id = (row.get("id", "") or "").upper()
+    run_id = (row.get("run_id", "") or "").lower()
+    return (
+        row_id.startswith("SMOKE-")
+        or row_id.startswith("PROBE-")
+        or run_id.endswith("-smoke1")
+        or "-smoke" in run_id
+    )
+
+
 def row_terminal_errors(row: dict[str, str], *, allow_compat: bool = False) -> list[str]:
     row_id = row.get("id", "") or "<missing-id>"
     errors: list[str] = []
@@ -183,6 +202,11 @@ def row_terminal_errors(row: dict[str, str], *, allow_compat: bool = False) -> l
     )
     if is_skipped:
         if remote_state not in TERMINAL_REMOTE_STATES and remote_state not in ("failed", "not_applicable", "", "completed", "artifacts_pulled"):
+            errors.append(f"remote_state_not_terminal:{row_id}.remote_state={remote_state!r}")
+    elif _is_prereview_smoke(row):
+        # smoke/probe 是 PRERUN 门禁证据，不是交付 Run：completed/artifacts_pulled 即为终态，
+        # 不要求 ingested，也不进入 record/claims 交付闭包。
+        if remote_state not in ("completed", "artifacts_pulled", "not_applicable", ""):
             errors.append(f"remote_state_not_terminal:{row_id}.remote_state={remote_state!r}")
     else:
         if remote_state not in TERMINAL_REMOTE_STATES and not (maintenance_complete or probe_or_diag_complete or remote_evidence_complete):
@@ -247,6 +271,9 @@ def ingest_completion_errors(
 ) -> list[str]:
     errors: list[str] = []
     for row in rows:
+        if _is_prereview_smoke(row):
+            # smoke/probe 永不进入实验记录闭包：即使被误标 ingested 也不要求 record/证据。
+            continue
         if row.get("remote_state") != "ingested":
             continue
         value = _ingest_reference(row)

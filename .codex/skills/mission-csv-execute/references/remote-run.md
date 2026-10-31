@@ -65,6 +65,8 @@ python3 .agents/harness/remote/prune_runs.py --host <server_host> \
 2. **轻量拉取与禁止二次重算**：公共入口在 official run 返回 terminal completed 后自动 pull 最小结果集（仅 summary.json、progress.jsonl、evaluate.log 等轻量文件，单文件 ≤10MB，秒级完成）；**直接采信评测落盘指标，严禁在本地进行二次计算（如逐像素 recount、重算混淆矩阵）**；核验需求一律置于远端就地完成；严禁拉取海量 .npz 或原始预测掩码，严禁编写 scp 循环将远端工件目录拉回本地做行数统计或排查；非必要数据严禁拉取到本地；`review.md` 与 `handoff.md` 对大工件一律直接记录 `<server_host>:<absolute_path>` 远端绝对物理直连地址；杜绝弱网连接卡死；
 2. 校验 pull manifest 与文件存在性后，通过 `csv_state.py` 记录 `remote_state=artifacts_pulled`；
 3. pre-review smoke 必须完成终端 checkpoint 清理，保留 `console.log/status.json/smoke_summary.json`，验证 `checkpoint_cleanup_completed:true` 后方可作为 PRERUN 证据。
+4. **单次拉取总量预算 100MB**：逐文件 ≤10MB 之上还有累计上限（`PULL_TOTAL_BUDGET_BYTES`），超额时按体积从大到小淘汰并优先保住 `summary.json`/manifest；若仍需被裁掉的必需大件，改用远端绝对地址引用而非拉取。
+5. **SMOKE/PROBE 行的生命周期到此为止**：smoke 用真实数据真跑，但它是 PRERUN 门禁证据而非科学结果行——`remote_state=completed`（或 `artifacts_pulled`）即为终态，**不要求 `ingested`**，且永不进入 `ingest_completion_errors` 的实验记录闭包；收尾只需确认其 `output/summary.json` 与 exit 码，严禁为它另建 record 或反复调和状态。
 
 ### Step 4.1 采集/工件核验：分层廉价 + 一次缓存
 
