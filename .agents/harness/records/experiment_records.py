@@ -711,7 +711,7 @@ def build_record(
     return record
 
 
-def _valid_outcome_metadata(previous: dict, current: dict, *, repo_root: Path | None = None) -> bool:
+def _valid_outcome_metadata(previous: dict, current: dict, *, repo_root: Path | None = None, projection: dict | None = None) -> bool:
     outcome = previous.get("outcome")
     meta = previous.get("outcome_meta")
     if outcome not in RESULT_ANALYSIS_OUTCOMES or not isinstance(meta, dict):
@@ -766,7 +766,8 @@ def _valid_outcome_metadata(previous: dict, current: dict, *, repo_root: Path | 
             or sorted(relevant_run_ids) != current_run_ids
             or len(relevant_run_ids) != len(set(relevant_run_ids))):
         return False
-    formal_run_ids = set(csv_projection(root).get(current.get("exp_id"), {}).get("run_id", set()))
+    projection_map = projection if projection is not None else csv_projection(root)
+    formal_run_ids = set(projection_map.get(str(current.get("exp_id") or ""), {}).get("run_id", set()))
     pending = current.get("_pending")
     if formal_run_ids and set(current_run_ids) != formal_run_ids:
         return False
@@ -853,7 +854,7 @@ def cmd_build(args, *, repo_root: Path | None = None) -> int:
                         or not isinstance(run.get("dimensions", {}), dict)
                         or set(run.get("dimensions", {})) - dimensions):
                     raise ValueError(f"record contains unknown run fields; preserve before migration: {out}")
-            if _valid_outcome_metadata(previous, record, repo_root=project_root):
+            if _valid_outcome_metadata(previous, record, repo_root=project_root, projection=proj):
                 record["outcome"] = previous["outcome"]
                 record["outcome_meta"] = previous["outcome_meta"]
                 record["_pending"] = [field for field in record["_pending"] if field != "outcome"]
@@ -955,6 +956,7 @@ def apply_result_analysis_outcomes(
         grouped.setdefault(exp_id, []).append(entry)
 
     experiments_root = root / "research_workspace" / "experiments"
+    projection = csv_projection(root)
     patched = skipped = 0
     for exp_id, exp_entries in sorted(grouped.items()):
         run_ids = [entry.get("run_id") for entry in exp_entries]
@@ -993,7 +995,7 @@ def apply_result_analysis_outcomes(
             print(f"result_analysis_sync: skip ({exp_id} record identity mismatch)", file=stream)
             skipped += 1
             continue
-        formal_run_ids = set(csv_projection(root).get(exp_id, {}).get("run_id", set()))
+        formal_run_ids = set(projection.get(exp_id, {}).get("run_id", set()))
         pending = record.get("_pending")
         if isinstance(pending, list) and any(
                 isinstance(item, str) and item.startswith("runs.") for item in pending):
