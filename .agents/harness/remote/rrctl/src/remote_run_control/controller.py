@@ -87,6 +87,9 @@ PULL_HEAVY_DIRS = frozenset({"evidence", "figure1", "figure2", "figure3", "figur
                              "figure5", "adaptation", "logs", "checkpoints", "masks",
                              "predictions", "artifacts", "raw"})
 PULL_LIGHT_MAX_BYTES = 10 * 1024 * 1024
+# 单次 pull 的累计预算：逐文件合规（≤10MB）仍可能合计几十 GB，因此再设总量上限。
+# 必需工件（[[artifacts]] required=true）超额时按体积从大到小淘汰，优先保住 summary/manifest。
+PULL_TOTAL_BUDGET_BYTES = 100 * 1024 * 1024
 
 
 def is_heavy_pull_path(path: str, size: int | None = None) -> bool:
@@ -140,7 +143,30 @@ def select_pull_entries(spec: Any, manifest: dict[str, Any], *, force_all: bool 
         or _under_required(e.get("path", ""))
         or e.get("path") in extra
     ]
-    return selected, "summary"
+    return _apply_total_budget(selected), "summary"
+
+
+def _entry_size(entry: dict[str, Any]) -> int:
+    size = entry.get("size")
+    return size if isinstance(size, int) and not isinstance(size, bool) and size > 0 else 0
+
+
+def _apply_total_budget(
+    selected: list[dict[str, Any]], budget: int | None = None
+) -> list[dict[str, Any]]:
+    """把单次拉取总量压到预算内：超预算时按体积从大到小淘汰（保轻量摘要）。"""
+    limit = PULL_TOTAL_BUDGET_BYTES if budget is None else budget
+    total = sum(_entry_size(entry) for entry in selected)
+    if limit <= 0 or total <= limit:
+        return selected
+    keep = list(selected)
+    # 从最大的开始丢，直到落回预算；同体积按路径排序保证确定性。
+    for entry in sorted(keep, key=lambda e: (-_entry_size(e), str(e.get("path", "")))):
+        if total <= limit:
+            break
+        total -= _entry_size(entry)
+        keep.remove(entry)
+    return keep
 
 
 
