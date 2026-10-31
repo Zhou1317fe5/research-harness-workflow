@@ -176,62 +176,76 @@ python3 -m pip install -q -e .agents/harness/remote/rrctl
 
 基于 Phase 0 提取的信息，Agent 自动生成目标项目的运行包装与配置。
 
-### 2.1 生成标准化脚本 `scripts/train.sh` 与 `scripts/eval.sh`（胶水垫片机制）
+### 2.1 生成标准化启动脚本 `scripts/train.sh` 与 `scripts/eval.sh`（参数集中写在脚本里）
 
-**核心原则：绝不侵入修改开源项目的 Python 源码，所有路径与格式差异均通过外层 Shell 胶水垫片（Shim Wrapper）无侵入抹平。**
+**核心原则**
+- **参数统一写进 bash 脚本**：学习率、步数/epoch、数据集、shot/fold、seed、卡数等作为脚本顶部的变量集中赋值，再由脚本以命令行 flag / 环境变量传给 Python。**脚本 = 实验参数的唯一真相来源**。
+- **`project.toml` 的 `pipeline.stages[].argv` 只写脚本路径，不内联参数**（如 `["bash","scripts/train.sh"]`）。启动链路全程是 argv 数组 + `shell=False`，本就没有反斜杠/引号转义问题；但参数也不该塞在 argv 里，统一放脚本更清楚、可复现。
+- **绝不侵入修改开源项目的 Python 源码**：路径/格式差异用外层 Shell 垫片抹平。
+- **若 Phase 0 发现项目把参数写死在 Python 源码里**（如 `lr=1e-4`、`batch_size=8`、数据路径字面量），**Agent 负责"提参数"，把它改造成脚本化传参**：优先用环境变量/配置覆盖（不改源码）；无覆盖途径时做最小源码改动（加 argparse 或读 `os.environ`），让脚本集中赋值传下去。原则：**只挪参数位置、不改科学逻辑与取值**，并在交付报告说明改了哪几处。
 
-脚本必须支持 `RRCTL_OUTPUT_ROOT`（由 rrctl 运行时自动注入），保证产物隔离：
-
-* `scripts/train.sh`（训练包装与权重搬运垫片）：
+* `scripts/train.sh`（训练垫片，参数写在脚本顶部）：
 ```bash
 #!/usr/bin/env bash
 set -euo pipefail
 
+# ============ 参数区（改这里就是改实验配置）============
+DATASET="<数据集名/根路径>"
+CONFIG="configs/<base>.yaml"
+LR="1e-4"
+BATCH_SIZE="8"
+EPOCHS="100"
+SHOT="1"
+FOLD="0"
+SEED="42"
 OUTPUT_DIR="${RRCTL_OUTPUT_ROOT:-$HOME/research-runs/$(basename "$(pwd)")/manual}"
+# ================================================================
+
 mkdir -p "$OUTPUT_DIR/checkpoints"
+echo "==> Train: DATASET=$DATASET LR=$LR EPOCHS=$EPOCHS SHOT=$SHOT FOLD=$FOLD OUT=$OUTPUT_DIR"
 
-echo "==> Starting Training, output dir: $OUTPUT_DIR"
+python tools/train.py \
+  --config "$CONFIG" --data-root "$DATASET" \
+  --lr "$LR" --batch-size "$BATCH_SIZE" --epochs "$EPOCHS" \
+  --shot "$SHOT" --fold "$FOLD" --seed "$SEED" \
+  --output-dir "$OUTPUT_DIR" --device "${CUDA_VISIBLE_DEVICES:-0}"
 
-# 1. 运行开源代码原生启动命令
-# 若开源库支持 --output-dir / --work-dir，直接传入：
-# python tools/train.py --output_dir "$OUTPUT_DIR" "$@"
-# 若开源代码原生命令采用配置文件或无输出参数：
-python tools/train.py --config configs/base.yaml "$@"
-
-# 2. 权重自动搬运垫片（处理开源库硬编码保存路径的情况）
-# 若 Phase 0 探测到开源库硬编码保存在 work_dirs/latest.pth：
-if [ -f "work_dirs/latest.pth" ]; then
-  cp work_dirs/latest.pth "$OUTPUT_DIR/checkpoints/best.pt"
-fi
+# 权重搬运垫片（若开源库硬编码保存路径）
+if [ -f "work_dirs/latest.pth" ]; then cp work_dirs/latest.pth "$OUTPUT_DIR/checkpoints/best.pt"; fi
 ```
 
-* `scripts/eval.sh`（评估包装与指标自动脱水垫片）：
+* `scripts/eval.sh`（评估垫片，参数同理写在脚本里）：
 ```bash
 #!/usr/bin/env bash
 set -euo pipefail
 
+# ============ 参数区 ============
+DATASET="<数据集名/根路径>"
+CONFIG="configs/<base>.yaml"
+SHOT="1"; FOLD="0"; SEED="42"
 OUTPUT_DIR="${RRCTL_OUTPUT_ROOT:-$HOME/research-runs/$(basename "$(pwd)")/manual}"
 CHECKPOINT_PATH="${CHECKPOINT:-$OUTPUT_DIR/checkpoints/best.pt}"
+# ================================
 
-echo "==> Starting Evaluation on: $CHECKPOINT_PATH"
+echo "==> Eval on $CHECKPOINT_PATH"
+python tools/eval.py --config "$CONFIG" --data-root "$DATASET" \
+  --weights "$CHECKPOINT_PATH" --shot "$SHOT" --fold "$FOLD" --seed "$SEED" \
+  --device "${CUDA_VISIBLE_DEVICES:-0}" | tee "$OUTPUT_DIR/evaluate.log"
 
-# 1. 运行开源代码原生评估命令（并将权重传入或软链接至期望位置）
-python tools/eval.py --weights "$CHECKPOINT_PATH" "$@" | tee "$OUTPUT_DIR/evaluate.log"
-
-# 2. 指标自动脱水垫片（若开源库仅在终端打印指标，自动提取并写入 summary.json）
+# 指标脱水 → summary.json（字段名按 Phase 0 探测填）
 python3 -c "
-import re, json, sys, os
+import re, json, os
 log_path = '$OUTPUT_DIR/evaluate.log'
 if os.path.exists(log_path):
     log = open(log_path, encoding='utf-8', errors='ignore').read()
-    # 根据 Phase 0 探测到的指标名提取数值
     m = re.search(r'(mIoU|Accuracy|val_loss|metric)[\s:=]+([0-9.]+)', log, re.IGNORECASE)
     metric = float(m.group(2)) if m else 0.0
-    with open('$OUTPUT_DIR/summary.json', 'w') as f:
-        json.dump({'metric': metric}, f, indent=2)
+    json.dump({'metric': metric}, open('$OUTPUT_DIR/summary.json','w'), indent=2)
 "
 ```
 执行赋权：`chmod +x scripts/train.sh scripts/eval.sh`
+
+> **参数只放脚本、不进 argv**：超参扫描可克隆多份脚本（或在脚本里用环境变量分支），不要在 `project.toml` 的 argv 里拼一长串参数。这样每次实验参数一目了然、可秒级复现，也彻底避开终端 CLI 的引号/反斜杠问题。上面 `tools/train.py …` / `tools/eval.py …` 只是通用占位示例，实际按项目真实入口与参数名替换即可（关键是所有参数都从脚本顶部的变量传入）。
 
 ### 2.1.1 进度垫片：生成 `progress.jsonl`（供进度/ETA 心跳消费）
 
@@ -290,6 +304,7 @@ if os.path.exists(log_path):
 ```toml
 version = 1
 
+# 参数一律写在 scripts/*.sh 里；argv 只放脚本路径，不内联参数
 [[pipeline.stages]]
 name = "train"
 argv = ["bash", "scripts/train.sh"]
@@ -447,13 +462,13 @@ chmod 600 .agents/harness/config/profiles.json .agents/harness/config/.env
 | 前台常驻进程语义 | 训练/评估必须**前台阻塞到结束**（`run_pipeline` 以子进程 wait 判定）；不得自我 daemon/后台化后立即返回 | 提前判完成、输出缺失（`required output missing`）或假成功 | train.sh/eval.sh 前台跑，不 `nohup … &` |
 | 输出实时刷写 | 子进程 stdout 需行缓冲/实时刷（如 `python -u`、`flush=True`）；避免 tqdm 仅 `\r` 不换行 | 进度垫片 tail 不到行、console 被判 stale | 用 `-u`/`flush`，tqdm 加 `newline` 或改按 `\r` 解析 |
 | 退出码语义 | 成功跑完 `exit 0`，异常非零退出 | 误判失败 / 吞异常导致假成功 | 修 shim 正确传播退出码，不掩盖异常 |
-| 超参透传 | 学习率/步数等超参走命令行参数，不硬编码默认值 | RunSpec 参数不生效 / 形成"假变更" | 一律用 CLI 传参，不改源码默认值 |
+| 超参 script 化（参数写在脚本里） | 参数集中写在 `scripts/train.sh`/`eval.sh`（脚本=唯一真相），`project.toml` argv 只放脚本路径；**源码不得写死参数** | 源码写死则无法按脚本调参、易形成"假变更"、复现困难 | 参数写进脚本；项目源码写死的参数由 Agent 提取为读 CLI/env（只挪位置不改取值）；纯超参扫描克隆多份脚本 |
 | 代码提交 / Git 溯源 | 项目须是 git 仓库，参与运行的代码已 **commit**（`base`/`candidate` commit 存在）；未提交改动不进 bundle | 无 commit 无法构建/launch；远端会跑旧代码；PRERUN 变更指纹漏检未提交改动 | 运行前 `git commit`；改动用 commit 固定，再用该 commit 触发 |
 
 > **按改动量分三档（避免误读为"全都要改代码"）**：
 > - **A. 配置 / 环境层，通常不改代码**：进度与摘要的路径/字段名/阈值、identity 留空、`anchors` 输入资产分发、`environment.variables`、`required_modules`、GPU 分配（rrctl 自动注入 `CUDA_VISIBLE_DEVICES`）、`[[artifacts]]`/`pipeline.stages` 声明、health stale/policy、git 提交。
-> - **B. 需项目行为配合，可用外层垫片（不必改核心源码）**：生成 `progress.jsonl`、生成 `summary.json`、前台常驻、输出实时刷写、退出码正确、超参走 CLI、产物写到 `RRCTL_OUTPUT_ROOT`。
-> - **C. 极少数才需改源码**：硬编码物理卡号、硬编码超参默认值、进度字段名不可配置。
+> - **B. 需项目行为配合，可用外层垫片（不必改核心源码）**：生成 `progress.jsonl`、生成 `summary.json`、前台常驻、输出实时刷写、退出码正确、把超参集中提到 bash 脚本、产物写到 `RRCTL_OUTPUT_ROOT`。
+> - **C. 极少数才需改源码**：硬编码物理卡号、源码里写死且无 env/config 覆盖途径的超参（只能改源码提参数）、进度字段名不可配置。
 
 > **强制 vs 可选（默认 generic adapter 时，重要）**：真正**永远必须**的只有——`progress_path` 与 `summary_path` 两个文件在 completion 时必须存在且可解析（`confined_path` 的 `must_exist`；纯训练也要写出一份对象 summary），外加"退出码 0 / 前台常驻 / 产物落在 `RRCTL_OUTPUT_ROOT`"这几条运行语义。其余（completion 精确计数、first_step 阈值、`summary_required_fields`/`summary_finite_fields`、多维度、secondary、identity 回显、GPU 利用率门禁、stale、fatal_patterns、额外 artifacts、`environment.variables`、`required_modules`）**都只在 Agent 显式声明/启用时才成为约束**，默认不设/关闭（completion 计数默认无门槛、`gpu_utilization_policy` 默认 `advisory`、stale 默认 `null`、`fatal_patterns` 默认空、`required_modules` 默认空、`dimensions` 默认空、`identity` 默认空）。**不要把可选约束硬加给用户当"必须适配"。**
 
