@@ -740,7 +740,8 @@ class ResearchBindingTests(unittest.TestCase):
                 "eta_datetime": "2026-10-08T12:00:00+00:00",
                 "metrics": {},
             }
-            hb = ProgressHeartbeat("RUN-HEARTBEAT-TEST", self.root, None, interval_seconds=0.02)
+            hb = ProgressHeartbeat("RUN-HEARTBEAT-TEST", self.root, None, interval_seconds=0.02,
+                                   first_min_steps=10, first_poll_seconds=0.01)
             hb.start()
             import time
             time.sleep(0.06)
@@ -748,33 +749,46 @@ class ResearchBindingTests(unittest.TestCase):
             self.assertTrue(mock_get.called)
             self.assertTrue(mock_stderr.called)
 
-    def test_progress_heartbeat_first_tick_precedes_interval(self):
-        """首跳必须在 first_delay 后触发，而不是等满一个 interval（否则又回到 30 分钟才有第一次提示）。"""
+    def test_first_heartbeat_waits_for_min_steps_then_reports(self):
+        """首报必须等累计步数达到阈值后才发；未达阈值时安静探测，绝不在准备阶段发空 ETA。"""
         from harness.remote.remote_run import ProgressHeartbeat
-        # 默认（未显式指定 first_delay）在 30 分钟周期下解析为 120 秒。
-        self.assertEqual(ProgressHeartbeat("RUN-X", self.root, None, interval_seconds=1800).first_delay_seconds, 120.0)
-        with patch("harness.remote.remote_progress.get_progress") as mock_get, \
-             patch("sys.stderr.write") as mock_stderr:
-            mock_get.return_value = {
+
+        def info(step):
+            return {
                 "run_id": "RUN-HEARTBEAT-TEST",
                 "state": "running",
-                "current_step": 10,
-                "total_steps": 100,
-                "pct": 10.0,
-                "speed_seconds_per_step": 1.0,
+                "current_step": step,
+                "total_steps": 600,
+                "pct": step / 600 * 100.0,
+                "speed_seconds_per_step": 1.0 if step else None,
                 "elapsed_seconds": 10.0,
-                "remaining_seconds": 90.0,
-                "eta_datetime": "2026-10-08T12:00:00+00:00",
+                "remaining_seconds": None,
+                "eta_datetime": "2026-10-08T12:00:00+00:00" if step else None,
                 "metrics": {},
             }
-            # interval 很大，但 first_delay 很小：首跳应在 0.1s 内发生。
-            hb = ProgressHeartbeat("RUN-HEARTBEAT-TEST", self.root, None, interval_seconds=30, first_delay_seconds=0.02)
+
+        captured: list[str] = []
+        values = iter([info(3), info(3), info(12)])
+        last = [info(3)]
+
+        def fake_get(*a, **k):
+            try:
+                last[0] = next(values)
+            except StopIteration:
+                pass
+            return dict(last[0])
+
+        with patch("harness.remote.remote_progress.get_progress", side_effect=fake_get), \
+             patch("harness.remote.remote_run.emit_progress",
+                   side_effect=lambda *a, **k: captured.append(a[2])):
+            hb = ProgressHeartbeat("RUN-HEARTBEAT-TEST", self.root, None, interval_seconds=30,
+                                   first_min_steps=10, first_poll_seconds=0.01, first_timeout_seconds=60)
             hb.start()
             import time
             time.sleep(0.1)
             hb.stop()
-            self.assertTrue(mock_get.called)
-            self.assertTrue(mock_stderr.called)
+        self.assertEqual(len(captured), 1, captured)  # 3 步、3 步时静默，只有到 12 步才发一条
+        self.assertIn("预计完成", captured[0])
 
 
 if __name__ == "__main__":

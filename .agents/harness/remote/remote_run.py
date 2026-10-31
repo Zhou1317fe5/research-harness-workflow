@@ -660,7 +660,13 @@ def emit_progress(run_id: str, stage: str, message: str, **detail) -> None:
 
 
 class ProgressHeartbeat:
-    """在长时间等待 (wait) 期间打印进度心跳：首次在启动后约 2 分钟即汇报，随后每隔固定周期（默认 30 分钟）再报一次，让操作者在模型加载后不久就拿到进度与预计完成时刻。"""
+    """在长时间等待 (wait) 期间打印进度心跳。
+
+    首跳不再按固定时间触发，而是**等观测到累计步数 ≥ first_min_steps（默认 10 步）**后再发第一条
+    带实测 ETA 的心跳——避免在权重加载/CUDA 初始化阶段就发一条没有进度、没有 ETA 的空报告。
+    等待期间以 first_poll_seconds（默认 60s）轻量探测步数；若 first_timeout_seconds（默认 15min）内
+    仍未达阈值，则发一条状态提示（可能仍在准备），之后转入 interval_seconds（默认 30min）常规节奏。
+    """
 
     def __init__(
         self,
@@ -669,24 +675,18 @@ class ProgressHeartbeat:
         profiles: Path | None,
         spec_path: Path | None = None,
         interval_seconds: float = 1800,
-        first_delay_seconds: float | None = None,
+        first_min_steps: int = 10,
+        first_poll_seconds: float = 60,
+        first_timeout_seconds: float = 900,
     ):
         self.run_id = run_id
         self.repo_root = repo_root
         self.profiles = profiles
         self.spec_path = spec_path
         self.interval_seconds = interval_seconds
-        # 首跳延迟：默认取 min(120s, interval)，既保证正式运行 2 分钟内先汇报一次，
-        # 又让测试用极小 interval 时首跳不被拖到 120 秒之后。
-        if interval_seconds <= 0:
-            self.first_delay_seconds = 0.0
-        elif first_delay_seconds is None:
-            self.first_delay_seconds = min(120.0, interval_seconds)
-        elif first_delay_seconds <= 0:
-            # 显式禁用提前首跳：等满一个完整周期后再首报。
-            self.first_delay_seconds = interval_seconds
-        else:
-            self.first_delay_seconds = min(first_delay_seconds, interval_seconds)
+        self.first_min_steps = int(first_min_steps)
+        self.first_poll_seconds = float(first_poll_seconds)
+        self.first_timeout_seconds = float(first_timeout_seconds)
         self._stop_event = threading.Event()
         self._thread = threading.Thread(target=self._run, daemon=True)
 
@@ -703,9 +703,13 @@ class ProgressHeartbeat:
         from harness.remote.remote_progress import format_progress, get_progress
 
         previous = None
-        delay = self.first_delay_seconds
-        while not self._stop_event.wait(timeout=delay):
-            delay = self.interval_seconds
+        started = time.monotonic()
+        warmed = False
+        while True:
+            # 预热期按 first_poll_seconds 轻量探测；首报发出后回到 interval_seconds 常规周期。
+            delay = self.interval_seconds if warmed else self.first_poll_seconds
+            if self._stop_event.wait(timeout=delay):
+                return
             try:
                 info = get_progress(
                     self.run_id,
@@ -727,10 +731,31 @@ class ProgressHeartbeat:
                         info["eta_datetime"] = (datetime.now(timezone.utc) + timedelta(seconds=remaining)).isoformat()
                 if isinstance(step, int):
                     previous = (observed, step)
+                if not warmed:
+                    reached = isinstance(step, int) and step >= self.first_min_steps
+                    terminal = info.get("state") in {"completed", "failed", "aborted"}
+                    timed_out = (observed - started) >= self.first_timeout_seconds
+                    if not (reached or terminal or timed_out):
+                        # 还没累计到阈值步数：安静地继续探测，绝不发空 ETA 首报。
+                        continue
                 msg = format_progress(info, mode="heartbeat")
+                if not warmed and msg and not (isinstance(step, int) and step >= self.first_min_steps):
+                    # 超时或提前终态，但还没到阈值步数：给一次状态提示而非编造 ETA。
+                    if isinstance(step, int) and step > 0:
+                        msg += f"（仅 {step} 步，未达 {self.first_min_steps} 步阈值，ETA 尚为初值）"
+                    else:
+                        msg += "（仍未观测到步数，可能仍在加载权重/初始化 CUDA；暂无可信 ETA）"
                 if msg:
                     emit_progress(self.run_id, "wait", msg, progress=info)
+                warmed = True
             except Exception as exc:
+                if not warmed:
+                    # 预热期单次查询失败不刷屏；到达上限仍失败才给一次明确提示并转入常规周期。
+                    if (time.monotonic() - started) >= self.first_timeout_seconds:
+                        emit_progress(self.run_id, "wait", "进度暂不可用；远端任务未因此停止，继续观察。 ",
+                                      query_error=type(exc).__name__)
+                        warmed = True
+                    continue
                 # One message per heartbeat interval, without secrets or raw
                 # transport stderr. A broken query must not look like silence.
                 emit_progress(self.run_id, "wait", "进度暂不可用；远端任务未因此停止，继续观察。 ",
@@ -768,7 +793,8 @@ def _extract_metrics_from_destination(dest: Path, run_id: str) -> str | None:
 def execute(
     spec_path: Path, *, profiles: Path | None, poll_seconds: float,
     max_wait_seconds: float = 0, heartbeat_seconds: float = 1800,
-    heartbeat_first_seconds: float | None = None,
+    first_heartbeat_min_steps: int = 10, first_heartbeat_poll_seconds: float = 60,
+    first_heartbeat_timeout_seconds: float = 900,
     resume: bool = False, full_output: bool = False,
     launch_only: bool = False, observe_only: bool = False,
 ) -> int:
@@ -823,7 +849,9 @@ def execute(
         if stage == "wait" and heartbeat_seconds > 0:
             heartbeat = ProgressHeartbeat(
                 run_id, REPO_ROOT, profiles, spec_path=spec_path, interval_seconds=heartbeat_seconds,
-                first_delay_seconds=heartbeat_first_seconds,
+                first_min_steps=first_heartbeat_min_steps,
+                first_poll_seconds=first_heartbeat_poll_seconds,
+                first_timeout_seconds=first_heartbeat_timeout_seconds,
             )
             heartbeat.start()
         if stage == "ready":
@@ -832,8 +860,8 @@ def execute(
             emit_progress(run_id, "launch", f"📦 正在打包与分发运行代码 [RunID: {run_id}]...")
         if stage == "wait":
             mins = int(heartbeat_seconds // 60) if heartbeat_seconds > 0 else 30
-            first_mins = int((heartbeat.first_delay_seconds if heartbeat else 0) // 60) or (1 if heartbeat and heartbeat.first_delay_seconds > 0 else 0)
-            first_hint = f"首次约 {first_mins} 分钟汇报，此后每 {mins}m 心跳" if heartbeat_seconds > 0 else "进度心跳已禁用"
+            first_hint = (f"累计跑满 {first_heartbeat_min_steps} 步后汇报首个 ETA（等待期每 {int(first_heartbeat_poll_seconds)}s 探测），"
+                          f"此后每 {mins}m 心跳") if heartbeat_seconds > 0 else "进度心跳已禁用"
             emit_progress(run_id, "wait", f"🚀 远端计算任务已就绪运行 [RunID: {run_id}]，后台监控中 ({first_hint})...")
         try:
             result = rrctl_call([*prefix, stage, *arguments], REPO_ROOT)
@@ -913,8 +941,16 @@ def main() -> int:
         help="周期性进度心跳秒数，默认 1800（30 分钟）；0 表示禁用",
     )
     parser.add_argument(
-        "--heartbeat-first-seconds", type=float, default=120,
-        help="首跳进度心跳延迟秒数，默认 120（启动约 2 分钟后先汇报一次）；0 表示不提前首跳（满一个周期后才首报）",
+        "--first-heartbeat-min-steps", type=int, default=10,
+        help="首个 ETA 心跳的触发阈值：累计观测到至少这么多步后才发首条带 ETA 的心跳（默认 10）；不再按固定时间触发",
+    )
+    parser.add_argument(
+        "--first-heartbeat-poll-seconds", type=float, default=60,
+        help="等待累计到阈值步数期间的轻量探测间隔秒数（默认 60）",
+    )
+    parser.add_argument(
+        "--first-heartbeat-timeout-seconds", type=float, default=900,
+        help="等待累计到阈值步数的上限秒数（默认 900=15min）；超过仍未达阈值则先发一条状态提示，再转入常规周期心跳",
     )
     parser.add_argument("--resume", action="store_true", help="inspect the bound run and continue wait/pull without launching again")
     parser.add_argument("--launch-only", action="store_true", help="run ready and launch, then return without wait/pull")
@@ -926,8 +962,8 @@ def main() -> int:
     parser.add_argument("--execute", action="store_true", help="execute the generated rrctl sequence")
     args = parser.parse_args()
     try:
-        if not math.isfinite(args.poll_seconds) or args.poll_seconds <= 0 or not math.isfinite(args.max_wait_seconds) or args.max_wait_seconds < 0 or not math.isfinite(args.heartbeat_seconds) or args.heartbeat_seconds < 0 or not math.isfinite(args.heartbeat_first_seconds) or args.heartbeat_first_seconds < 0:
-            raise ValueError("poll must be positive and wait/heartbeat/first-heartbeat nonnegative finite seconds")
+        if not math.isfinite(args.poll_seconds) or args.poll_seconds <= 0 or not math.isfinite(args.max_wait_seconds) or args.max_wait_seconds < 0 or not math.isfinite(args.heartbeat_seconds) or args.heartbeat_seconds < 0 or not math.isfinite(args.first_heartbeat_poll_seconds) or args.first_heartbeat_poll_seconds <= 0 or not math.isfinite(args.first_heartbeat_timeout_seconds) or args.first_heartbeat_timeout_seconds <= 0 or isinstance(args.first_heartbeat_min_steps, bool) or args.first_heartbeat_min_steps < 1:
+            raise ValueError("poll must be positive; wait/heartbeat nonnegative finite seconds; first-heartbeat poll/timeout positive finite seconds; min-steps >= 1")
         spec = args.runspec.resolve()
         if args.request:
             if args.resume:
@@ -957,7 +993,10 @@ def main() -> int:
             if args.launch_only and args.resume:
                 raise ValueError("--launch-only cannot be combined with --resume")
             return execute(spec, profiles=profiles, poll_seconds=args.poll_seconds, max_wait_seconds=args.max_wait_seconds,
-                           heartbeat_seconds=args.heartbeat_seconds, heartbeat_first_seconds=args.heartbeat_first_seconds,
+                           heartbeat_seconds=args.heartbeat_seconds,
+                           first_heartbeat_min_steps=args.first_heartbeat_min_steps,
+                           first_heartbeat_poll_seconds=args.first_heartbeat_poll_seconds,
+                           first_heartbeat_timeout_seconds=args.first_heartbeat_timeout_seconds,
                            resume=args.resume, full_output=args.full_output,
                            launch_only=args.launch_only, observe_only=args.observe_only)
         command = [sys.executable, ".agents/harness/remote/remote_run.py", str(spec), "--execute", "--poll-seconds", str(args.poll_seconds),

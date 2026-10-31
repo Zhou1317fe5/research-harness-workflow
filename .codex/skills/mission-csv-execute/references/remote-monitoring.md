@@ -11,8 +11,8 @@
      --total-steps <总步数> --smoke-summary <smoke产物路径>
    ```
    只有 smoke 实际记录了计时字段，才能拆分冷启动与边际耗时。输出会注明估计来源；跨 shot、batch、设备或存储外推须标为近似，不用整次单集 smoke 耗时冒充稳态单步。ETA 仅涵盖计算，不包括回传、核验和审查；没有可靠计时就报告未知，不为凑 ETA 追加 GPU 探针。
-2. **进度心跳（Heartbeat，首次约 2 分钟）**：
-   公共入口 `remote_run.py` 在启动后约 2 分钟即先输出一次结构化 stderr 心跳（默认 `--heartbeat-first-seconds 120`），随后每隔 30 分钟再报一次（默认 `--heartbeat-seconds 1800`），包含计数、速度、已用时间、可用的计算 ETA 与指标。这样模型加载与 CUDA 初始化刚结束就能拿到进度与预计完成时刻，不用空等一个完整周期。后续 ETA 优先用观察区间的实际进展修正；零步数或缺计时仍显示状态，查询失败显式提示而不静默。`--heartbeat-first-seconds 0` 表示不提前首跳（满一个周期后才首报）。
+2. **进度心跳（Heartbeat，首个 ETA 在累计 ≥10 步后）**：
+   首个带 ETA 的心跳**不再按固定时间触发**，而是等观测到累计步数达到阈值（默认 `--first-heartbeat-min-steps 10`）后才发第一条——避免在权重加载/CUDA 初始化阶段就发一条既无进度、又无 ETA 的空报告。等待期间每隔 `--first-heartbeat-poll-seconds`（默认 60s）轻量探测一次步数；若 `--first-heartbeat-timeout-seconds`（默认 900s=15min）内仍未达阈值，则先发一条状态提示（可能仍在准备，不编造 ETA），随后转入常规周期心跳（默认 `--heartbeat-seconds 1800`=30 分钟一次）。之后的 ETA 优先用观察区间的实际进展修正；查询失败显式提示而不静默。判据提醒：`current_step`（progress 的 count）>0 且在增长才证明"真在卡上算"，`设备:` 只是分配的卡号，不代表已在跑。
 3. **秒级即时查询探针（Active Query）**：
    当用户在会话中询问“跑到哪了？”或“预计几点跑完？”时，运行：
    ```bash
