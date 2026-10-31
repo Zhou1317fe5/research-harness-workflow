@@ -80,6 +80,13 @@ python3 .agents/harness/remote/prune_runs.py --host <server_host> \
 3. **不制造无人消费的存证**：核验报告与远端引用唯一的必需消费者是 CSV 的 `artifact_path`（形如 `<server_host>:<absolute_path>`）与轻量摘要；`mission_completion.py` 只认该字符串，**不读 `remote-reference.json`**。除非确有无下游读者的用途，否则禁止为收尾额外生成 `remote-reference.json` 之类的仪式文件。
 
 ### Step 5: 结果入账 (Ingest) 与生命周期流转
+- **入账即时自检（前置拦截）**：INGEST 行完成入账后立刻跑一次入账自检，把契约问题留在入账阶段而不是收尾：
+  ```bash
+  python .codex/skills/mission-csv-execute/scripts/closing_audit.py --stage ingest \
+    --csv issues/<stem>/<stem>.csv --workdir .
+  ```
+  它一次检查 ingest 记录、claim 终态、result-analysis 索引与工作区布局（含嵌套 research_workspace 仓库），
+  发现问题当场修，不留到 closing。
 1. 执行台账刷新命令：
    ```bash
    python3 .agents/harness/records/experiment_records.py build --exp <ExpID>

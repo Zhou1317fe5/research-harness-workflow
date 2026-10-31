@@ -54,6 +54,27 @@ class ClosingAuditTests(unittest.TestCase):
         groups = audit(self.csv, workdir=self.root, handoff_path=self.root / "tasks.handoff.md")
         self.assertIn("handoff", groups)
 
+    def test_ingest_stage_skips_row_terminal_checks(self):
+        write_csv(self.csv, [bad_row(remote_state="ingested", artifact_path="")])
+        groups = audit(self.csv, workdir=self.root, stage="ingest")
+        self.assertNotIn("evidence", groups)
+        self.assertIn("ingest", groups)
+
+    def test_nested_research_workspace_repo_is_flagged(self):
+        workspace = self.root / "research_workspace"
+        (workspace / ".git").mkdir(parents=True)
+        write_csv(self.csv, [bad_row()])
+        groups = audit(self.csv, workdir=self.root, stage="ingest")
+        self.assertTrue(any("nested_research_workspace_repo" in e
+                            for e in groups.get("layout", [])), groups)
+
+    def test_symlinked_research_workspace_is_accepted(self):
+        target = self.root / "main_workspace"
+        target.mkdir()
+        (target / ".git").mkdir()
+        (self.root / "research_workspace").symlink_to(target, target_is_directory=True)
+        self.assertEqual(audit(self.csv, workdir=self.root, stage="ingest").get("layout"), None)
+
 
 if __name__ == "__main__":
     unittest.main()

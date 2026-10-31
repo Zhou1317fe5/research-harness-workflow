@@ -45,6 +45,11 @@
 5. **台账完备性**：
    - 若输入 CSV 缺少 review 行，运行 `ensure_review_row.py` 合成 `REVIEW-01`；
    - 若 notes 包含 `claims:CLAIM-*` 但缺少可读 `claim_ledger:<path>`，先补齐账本，不得裸跑。
+6. **收尾执行纪律（省时硬规则）**：
+   - **命令批量化**：一个 turn 内串多条只读命令，禁止 `sed`/`grep` 单条独占一轮；收尾的耗时大头是模型轮次，不是脚本。
+   - **review.json 只能由脚本产出**：必须由 `run_vision_review.py` / `reviewer_job.py` 生成，禁止手写 JSON（schema 漂移会触发反复重写）。
+   - **一次审计 + 一次修复 + 一次复跑**：用 `closing_audit.py` 拿全量错误，禁止逐错重跑 `final_ready.py`。
+   - **收尾后清理远端大件**：按保留策略执行 `prune_runs.py --older-than-days 7 --apply`（只删 `repo/`、`stage/`，`output/` 与 `control/` 永远保留）。
 
 ## 3. Closing 路由决策 (Closing Route Decision)
 

@@ -29,7 +29,9 @@ def audit(
     skip_row_ids: frozenset[str] = frozenset(),
     handoff_path: Path | None = None,
     claims_path: Path | None = None,
+    stage: str = "closing",
 ) -> dict[str, list[str]]:
+    """stage=closing 跑全部门禁；stage=ingest 只跑入账相关（供 INGEST 行即时自检）。"""
     groups: dict[str, list[str]] = {}
     csv_path = Path(csv_path)
     workdir = Path(workdir)
@@ -38,11 +40,21 @@ def audit(
     except Exception as exc:  # noqa: BLE001 - 统一转成审计输出
         return {"csv": [f"CSV read failed: {exc}"]}
     rows: list[dict[str, str]] = list(result[1]) if result[1] else []
+    if stage == "ingest":
+        from mission_completion import claim_completion_errors, ingest_completion_errors
+        from result_analysis import result_analysis_completion_errors
+
+        groups["ingest"] = list(ingest_completion_errors(csv_path, rows, workdir=workdir))
+        groups["claims"] = list(claim_completion_errors(csv_path, rows, workdir=workdir))
+        groups["analysis"] = list(result_analysis_completion_errors(csv_path, rows, workdir=workdir))
+        groups["layout"] = layout_errors(workdir)
+        return {name: items for name, items in groups.items() if items}
     groups["evidence"] = evidence_completion_errors(
         csv_path, rows, workdir=workdir, skip_row_ids=skip_row_ids
     )
     _, _, deferred_errors, _ = load_csv_deferred(csv_path.resolve(), workdir.resolve())
     groups["deferred"] = list(deferred_errors)
+    groups["layout"] = layout_errors(workdir)
     if handoff_path is not None:
         from check_handoff_contract import check_contract
 
@@ -56,6 +68,22 @@ def audit(
     return {name: items for name, items in groups.items() if items}
 
 
+def layout_errors(workdir: Path) -> list[str]:
+    """工作树内嵌套 research_workspace 仓库会让 git_repo 溯源失效，必须提前拦。"""
+    errors: list[str] = []
+    workspace = Path(workdir) / "research_workspace"
+    if not workspace.is_dir() or workspace.is_symlink():
+        return errors
+    nested_git = workspace / ".git"
+    if nested_git.exists():
+        errors.append(
+            "nested_research_workspace_repo: research_workspace 自带 .git，会让 "
+            "git_repo:research_workspace 溯源失效；请复用主仓的 research_workspace（软链或直接引用），"
+            "不要在工作树内新建独立仓库。"
+        )
+    return errors
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="一次性聚合收尾机械门禁")
     parser.add_argument("--csv", required=True, type=Path)
@@ -63,6 +91,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--skip-rows", default="", help="逗号分隔的行 ID（如仍在进行的 REVIEW 行）")
     parser.add_argument("--handoff", type=Path, default=None)
     parser.add_argument("--claims", type=Path, default=None)
+    parser.add_argument("--stage", choices=("closing", "ingest"), default="closing",
+                        help="ingest=入账即时自检（只跑 ingest/claims/analysis/layout）")
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
 
@@ -73,6 +103,7 @@ def main(argv: list[str] | None = None) -> int:
         skip_row_ids=skip,
         handoff_path=args.handoff,
         claims_path=args.claims,
+        stage=args.stage,
     )
     total = sum(len(items) for items in groups.values())
     if args.json:
