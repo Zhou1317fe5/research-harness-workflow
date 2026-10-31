@@ -53,20 +53,22 @@ def handoff_note_values(notes: str) -> list[str]:
     return [value] if value else []
 
 
-def load_review_notes(csv_path: Path) -> tuple[list[str], list[str]]:
+def load_review_notes(csv_path: Path, *, rows: list[dict[str, str]] | None = None, fieldnames: list[str] | None = None) -> tuple[list[str], list[str]]:
     missing: list[str] = []
-    try:
-        with csv_path.open(encoding="utf-8-sig", newline="") as handle:
-            reader = csv.DictReader(handle)
-            if not reader.fieldnames:
-                return [], ["CSV 没有表头"]
-            if "id" not in reader.fieldnames or "notes" not in reader.fieldnames:
-                return [], ["CSV 缺少 id 或 notes 列"]
-            rows = list(reader)
-        for row in rows:
-            parse_note_tags(row.get("notes") or "")
-    except (OSError, ValueError, csv.Error) as exc:
-        return [], [f"CSV 读取失败: {exc}"]
+    if rows is None or fieldnames is None:
+        try:
+            with csv_path.open(encoding="utf-8-sig", newline="") as handle:
+                reader = csv.DictReader(handle)
+                if not reader.fieldnames:
+                    return [], ["CSV 没有表头"]
+                if "id" not in reader.fieldnames or "notes" not in reader.fieldnames:
+                    return [], ["CSV 缺少 id 或 notes 列"]
+                rows = list(reader)
+                fieldnames = list(reader.fieldnames)
+            for row in rows:
+                parse_note_tags(row.get("notes") or "")
+        except (OSError, ValueError, csv.Error) as exc:
+            return [], [f"CSV 读取失败: {exc}"]
 
     review_notes = [
         str(row.get("notes") or "")
@@ -79,14 +81,15 @@ def load_review_notes(csv_path: Path) -> tuple[list[str], list[str]]:
     return review_notes, missing
 
 
-def load_outcome_contract(csv_path: Path, *, workdir: Path | None = None) -> tuple[dict | None, list[str]]:
-    try:
-        with csv_path.open(encoding="utf-8-sig", newline="") as handle:
-            rows = list(csv.DictReader(handle))
-        for row in rows:
-            parse_note_tags(row.get("notes") or "")
-    except (OSError, ValueError, csv.Error) as exc:
-        return None, [f"CSV read failed while discovering outcome contract: {exc}"]
+def load_outcome_contract(csv_path: Path, *, workdir: Path | None = None, rows: list[dict[str, str]] | None = None) -> tuple[dict | None, list[str]]:
+    if rows is None:
+        try:
+            with csv_path.open(encoding="utf-8-sig", newline="") as handle:
+                rows = list(csv.DictReader(handle))
+            for row in rows:
+                parse_note_tags(row.get("notes") or "")
+        except (OSError, ValueError, csv.Error) as exc:
+            return None, [f"CSV read failed while discovering outcome contract: {exc}"]
 
     values: list[str] = []
     for row in rows:
@@ -107,14 +110,15 @@ def load_outcome_contract(csv_path: Path, *, workdir: Path | None = None) -> tup
     return data, errors
 
 
-def load_review_json(csv_path: Path, *, workdir: Path | None = None) -> tuple[dict | None, list[str]]:
-    try:
-        with csv_path.open(encoding="utf-8-sig", newline="") as handle:
-            rows = list(csv.DictReader(handle))
-        for row in rows:
-            parse_note_tags(row.get("notes") or "")
-    except (OSError, ValueError, csv.Error) as exc:
-        return None, [f"CSV read failed while discovering review JSON: {exc}"]
+def load_review_json(csv_path: Path, *, workdir: Path | None = None, rows: list[dict[str, str]] | None = None) -> tuple[dict | None, list[str]]:
+    if rows is None:
+        try:
+            with csv_path.open(encoding="utf-8-sig", newline="") as handle:
+                rows = list(csv.DictReader(handle))
+            for row in rows:
+                parse_note_tags(row.get("notes") or "")
+        except (OSError, ValueError, csv.Error) as exc:
+            return None, [f"CSV read failed while discovering review JSON: {exc}"]
 
     review_rows = [
         row
@@ -232,9 +236,21 @@ def check_contract(
         missing.append(f"CSV 不存在: {effective_csv_path}")
         return missing
 
-    outcome_contract, outcome_errors = load_outcome_contract(effective_csv_path, workdir=workdir)
+    # 单次读取 CSV：三个 discovery 函数与 deferred 解析共用同一份 rows/fieldnames，
+    # 避免同一文件被反复 open/parse。
+    try:
+        with effective_csv_path.open(encoding="utf-8-sig", newline="") as handle:
+            reader = csv.DictReader(handle)
+            csv_fieldnames = list(reader.fieldnames or [])
+            csv_rows = list(reader)
+    except (OSError, ValueError, csv.Error) as exc:
+        return missing + [f"CSV 读取失败: {exc}"]
+    for row in csv_rows:
+        parse_note_tags(row.get("notes") or "")
+
+    outcome_contract, outcome_errors = load_outcome_contract(effective_csv_path, workdir=workdir, rows=csv_rows)
     missing.extend(outcome_errors)
-    review_json, review_errors = load_review_json(effective_csv_path, workdir=workdir)
+    review_json, review_errors = load_review_json(effective_csv_path, workdir=workdir, rows=csv_rows)
     missing.extend(review_errors)
     missing.extend(validate_handoff_identity(text, review_json))
     if review_json is not None:
@@ -257,7 +273,7 @@ def check_contract(
             )
         )
 
-    review_notes, csv_missing = load_review_notes(effective_csv_path)
+    review_notes, csv_missing = load_review_notes(effective_csv_path, rows=csv_rows, fieldnames=csv_fieldnames)
     missing.extend(csv_missing)
     if review_notes:
         has_handoff_path = any(
@@ -268,7 +284,7 @@ def check_contract(
             missing.append("latest REVIEW notes 未记录 handoff:<path>")
 
     findings, _, deferred_errors, _ = load_csv_deferred(
-        effective_csv_path.resolve(), (workdir or Path.cwd()).resolve()
+        effective_csv_path.resolve(), (workdir or Path.cwd()).resolve(), rows=csv_rows
     )
     missing.extend(deferred_errors)
     open_ids = {

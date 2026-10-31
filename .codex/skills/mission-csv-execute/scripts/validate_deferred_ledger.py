@@ -100,15 +100,16 @@ def validate_ledger_data(
 
 
 def load_csv_deferred(
-    csv_path: Path, workdir: Path
+    csv_path: Path, workdir: Path, *, rows: list[dict[str, str]] | None = None
 ) -> tuple[dict[str, dict], Path | None, list[str], list[dict[str, str]]]:
-    try:
-        with csv_path.open(encoding="utf-8-sig", newline="") as handle:
-            rows = list(csv.DictReader(handle))
-        for row in rows:
-            parse_note_tags(row.get("notes") or "")
-    except (OSError, ValueError, csv.Error) as exc:
-        return {}, None, [f"CSV read failed: {exc}"], []
+    if rows is None:
+        try:
+            with csv_path.open(encoding="utf-8-sig", newline="") as handle:
+                rows = list(csv.DictReader(handle))
+            for row in rows:
+                parse_note_tags(row.get("notes") or "")
+        except (OSError, ValueError, csv.Error) as exc:
+            return {}, None, [f"CSV read failed: {exc}"], []
 
     errors: list[str] = []
     ledger_values: set[str] = set()
