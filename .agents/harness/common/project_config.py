@@ -184,7 +184,7 @@ def load_config(path: Path = DEFAULT_CONFIG, *, pipeline: str | None = None) -> 
                 relative_path(value, f"stage.{field}")
     _validate_artifacts(config.get("artifacts", []), "artifacts")
     records = config.get("records", {})
-    if set(records) - {"summary_glob", "primary_metric", "secondary_metric", "protocol_field", "checkpoint_field", "steps_field", "dimensions"}:
+    if set(records) - {"summary_glob", "primary_metric", "secondary_metric", "protocol_field", "checkpoint_field", "steps_field", "dimensions", "identity_fields"}:
         raise ValueError("unknown records configuration field")
     relative_path(records.get("summary_glob", "summary.json"), "records.summary_glob")
     for key in ("primary_metric", "secondary_metric", "protocol_field", "checkpoint_field", "steps_field"):
@@ -192,7 +192,10 @@ def load_config(path: Path = DEFAULT_CONFIG, *, pipeline: str | None = None) -> 
             raise ValueError(f"records.{key} must be non-empty text")
     dimensions = records.get("dimensions", [])
     if not isinstance(dimensions, list) or any(not isinstance(v, str) or not v for v in dimensions):
-        raise ValueError("records.dimensions must be a string array")
+        raise ValueError("records.dimensions must be a non-empty string array")
+    identity_fields = records.get("identity_fields", [])
+    if not isinstance(identity_fields, list) or any(not isinstance(v, str) for v in identity_fields):
+        raise ValueError("records.identity_fields must be a string array")
     environment = config.get("environment", {})
     if set(environment) - {"variables", "required_modules", "preflight_argv"}:
         raise ValueError("project environment accepts variables, required_modules and preflight_argv")
