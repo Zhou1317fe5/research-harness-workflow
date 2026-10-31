@@ -17,7 +17,6 @@ import json
 import math
 import os
 import re
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -1242,13 +1241,11 @@ def write_exclusive(path: Path, value: dict[str, Any]) -> str:
 
 
 def require_rrctl(executable: str) -> str:
-    resolved = shutil.which(executable)
-    if resolved is None:
-        raise RunSpecBuildError(
-            f"rrctl_unavailable: {executable}; install with "
-            "python -m pip install -e .agents/harness/remote/rrctl"
-        )
-    return resolved
+    # 全仓唯一的 rrctl 解析入口：只认仓内打包 launcher 并通过 doctor 能力核验，
+    # 与 remote_run.resolve_rrctl 一致；不再接受全局 PATH 安装的 rrctl。
+    from harness.remote.remote_run import resolve_rrctl
+
+    return resolve_rrctl()
 
 
 def parser() -> argparse.ArgumentParser:
