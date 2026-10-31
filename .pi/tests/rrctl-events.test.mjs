@@ -417,6 +417,29 @@ test("Pi respawns after the settled tombstone has expired", async (t) => {
 	assert.equal(pi.messages.length, 2);
 });
 
+test("Pi multi-runspec reuses a settled tombstone and still spawns the remaining run", async (t) => {
+	resetRrctlEventsBroker();
+	const root = await fixture(t);
+	await writeFile(join(root, "runspec-b.json"), JSON.stringify({ schema_version: "rrctl.run.v1", run_id: "RUN-B" }));
+	const spawns = [];
+	const pi = await boot(root, "session-multi", spawns);
+
+	// 先让 RUN-A 单独跑完，留下窗口内的 terminal tombstone。
+	const first = await waitOn(pi, root, { runspec: "runspec.json", resume: true });
+	assert.equal(first.details.reused, false);
+	spawns[0].child.finish(0);
+	assert.equal(spawns.length, 1);
+
+	// 多任务里 RUN-A 命中 tombstone 必须复用，RUN-B 必须照常 spawn；不得整体短路饿死 RUN-B。
+	const result = await waitOn(pi, root, { runspecs: ["runspec.json", "runspec-b.json"], resume: true });
+	assert.equal(result.terminate, true);
+	assert.deepEqual(result.details.run_ids, ["RUN-A", "RUN-B"]);
+	assert.deepEqual(result.details.reused, ["RUN-A"]);
+	assert.deepEqual(result.details.spawned, ["RUN-B"]);
+	assert.equal(spawns.length, 2);
+	assert.equal(spawns[1].child.exitCode, null);
+});
+
 function heartbeat(message = "训练进度：10/100，预计剩余 30 分钟", extra = {}) {
 	return Buffer.from(`[rrctl-progress] ${JSON.stringify({ schema_version: "rrctl.progress.v1", run_id: "RUN-A", stage: "wait", message, ...extra })}\n`);
 }

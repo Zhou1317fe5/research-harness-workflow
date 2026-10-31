@@ -335,37 +335,29 @@ export function registerRrctlEvents(pi: ExtensionAPI, options: RrctlEventsOption
 
 				const commandList = runspecList.map((rs) => buildWaitCommand(root, { ...params, runspec: rs }));
 
-				if (commandList.length === 1) {
-					const command = commandList[0];
+				const eventDirectory = join(root, ".pi/rrctl-events");
+				const sessionId = ctx.sessionManager.getSessionId();
+				type ResolvedWait = { runId: string; eventPath: string; logPath: string; status: "settled" | "running" | "spawned" };
+				const resolveCommand = (command: { argv: string[]; runId: string; runspec: string }): ResolvedWait => {
 					const key = `${root}\0${command.runspec}`;
 					const existing = broker.waits.get(key);
 					if (existing) {
 						if (existing.settled) {
 							const age = Date.now() - (existing.settledAt ?? 0);
 							if (existing.exitCode === 0 && age < RRCTL_SETTLED_TOMBSTONE_MS) {
-								return {
-									content: [{ type: "text" as const, text: `Event for RunID ${existing.runId} already delivered; no new observer is spawned.` }],
-									details: { run_id: existing.runId, event_path: existing.eventPath, reused: true },
-									terminate: true as const,
-								};
+								return { runId: existing.runId, eventPath: existing.eventPath, logPath: existing.logPath, status: "settled" };
 							}
 							broker.waits.delete(key);
 						} else if (existing.child.exitCode === null) {
-							return {
-								content: [{ type: "text" as const, text: `Already waiting for RunID ${existing.runId}; no model polling is required.` }],
-								details: { run_id: existing.runId, event_path: existing.eventPath, reused: true },
-								terminate: true as const,
-							};
+							return { runId: existing.runId, eventPath: existing.eventPath, logPath: existing.logPath, status: "running" };
 						} else {
 							broker.waits.delete(key);
 						}
 					}
-					const sessionId = ctx.sessionManager.getSessionId();
 					const digest = createHash("sha256").update(`${sessionId}\0${command.runspec}`).digest("hex").slice(0, 20);
-					const directory = join(root, ".pi/rrctl-events");
-					mkdirSync(directory, { recursive: true, mode: 0o700 });
-					const logPath = join(directory, `${digest}.log`);
-					const eventPath = join(directory, `${digest}.event.json`);
+					mkdirSync(eventDirectory, { recursive: true, mode: 0o700 });
+					const logPath = join(eventDirectory, `${digest}.log`);
+					const eventPath = join(eventDirectory, `${digest}.event.json`);
 					appendFileSync(logPath, "", { mode: 0o600 });
 					const child = spawnChild("python3", command.argv, {
 						cwd: root,
@@ -375,71 +367,46 @@ export function registerRrctlEvents(pi: ExtensionAPI, options: RrctlEventsOption
 					const entry: Waiter = { child, eventPath, logPath, runId: command.runId, root, key, settled: false };
 					broker.waits.set(key, entry);
 					attachObserver(child, entry, logPath, root, key, deliver, settle);
+					return { runId: command.runId, eventPath, logPath, status: "spawned" };
+				};
+
+				const resolved = commandList.map(resolveCommand);
+
+				if (resolved.length === 1) {
+					const only = resolved[0];
+					if (only.status === "settled") {
+						return {
+							content: [{ type: "text" as const, text: `Event for RunID ${only.runId} already delivered; no new observer is spawned.` }],
+							details: { run_id: only.runId, event_path: only.eventPath, reused: true },
+							terminate: true as const,
+						};
+					}
+					if (only.status === "running") {
+						return {
+							content: [{ type: "text" as const, text: `Already waiting for RunID ${only.runId}; no model polling is required.` }],
+							details: { run_id: only.runId, event_path: only.eventPath, reused: true },
+							terminate: true as const,
+						};
+					}
 					return {
-						content: [{ type: "text" as const, text: `Waiting for RunID ${command.runId}; Pi will wake only for terminal state or required attention.` }],
-						details: { run_id: command.runId, event_path: eventPath, log_path: logPath, reused: false },
+						content: [{ type: "text" as const, text: `Waiting for RunID ${only.runId}; Pi will wake only for terminal state or required attention.` }],
+						details: { run_id: only.runId, event_path: only.eventPath, log_path: only.logPath, reused: false },
 						terminate: true as const,
 					};
 				}
 
-				// 多任务并发监听 (multi-runspec concurrent monitoring)
-				for (const command of commandList) {
-					const key = `${root}\0${command.runspec}`;
-					const existing = broker.waits.get(key);
-					if (existing && existing.settled) {
-						const age = Date.now() - (existing.settledAt ?? 0);
-						if (existing.exitCode === 0 && age < RRCTL_SETTLED_TOMBSTONE_MS) {
-							return {
-								content: [{ type: "text" as const, text: `Event for RunID ${existing.runId} already delivered; no new observer is spawned.` }],
-								details: { run_id: existing.runId, event_path: existing.eventPath, reused: true },
-								terminate: true as const,
-							};
-						}
-					}
-				}
-
-				const spawnedRunIds: string[] = [];
-				const reusedRunIds: string[] = [];
-				const eventPaths: string[] = [];
-				const logPaths: string[] = [];
-				const sessionId = ctx.sessionManager.getSessionId();
-				const directory = join(root, ".pi/rrctl-events");
-				mkdirSync(directory, { recursive: true, mode: 0o700 });
-
-				for (const command of commandList) {
-					const key = `${root}\0${command.runspec}`;
-					const existing = broker.waits.get(key);
-					if (existing) {
-						if (!existing.settled && existing.child.exitCode === null) {
-							reusedRunIds.push(command.runId);
-							eventPaths.push(existing.eventPath);
-							logPaths.push(existing.logPath);
-							continue;
-						}
-						broker.waits.delete(key);
-					}
-
-					const digest = createHash("sha256").update(`${sessionId}\0${command.runspec}`).digest("hex").slice(0, 20);
-					const logPath = join(directory, `${digest}.log`);
-					const eventPath = join(directory, `${digest}.event.json`);
-					appendFileSync(logPath, "", { mode: 0o600 });
-					const child = spawnChild("python3", command.argv, {
-						cwd: root,
-						stdio: ["ignore", "pipe", "pipe"],
-						env: process.env,
-					});
-					const entry: Waiter = { child, eventPath, logPath, runId: command.runId, root, key, settled: false };
-					broker.waits.set(key, entry);
-					spawnedRunIds.push(command.runId);
-					eventPaths.push(eventPath);
-					logPaths.push(logPath);
-					attachObserver(child, entry, logPath, root, key, deliver, settle);
-				}
-
-				const allRunIds = commandList.map((c) => c.runId);
+				const allRunIds = resolved.map((item) => item.runId);
+				const spawnedRunIds = resolved.filter((item) => item.status === "spawned").map((item) => item.runId);
+				const reusedRunIds = resolved.filter((item) => item.status !== "spawned").map((item) => item.runId);
 				return {
 					content: [{ type: "text" as const, text: `Waiting concurrently for ${allRunIds.length} RunIDs: [${allRunIds.join(", ")}]; Pi will wake on terminal state or required attention from any task.` }],
-					details: { run_ids: allRunIds, event_paths: eventPaths, log_paths: logPaths, spawned: spawnedRunIds, reused: reusedRunIds },
+					details: {
+						run_ids: allRunIds,
+						event_paths: resolved.map((item) => item.eventPath),
+						log_paths: resolved.map((item) => item.logPath),
+						spawned: spawnedRunIds,
+						reused: reusedRunIds,
+					},
 					terminate: true as const,
 				};
 			} catch (error) {
