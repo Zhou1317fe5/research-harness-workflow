@@ -33,6 +33,10 @@
 6. **科研方向与 Trick 手册领域推断**：
    - 模板自带的 `.codex/skills/mission-csv-execute/references/metric-tricks-arsenal.md` 默认面向计算机视觉。
    - Agent 需分析本项目所处的研究领域（如 NLP/大模型微调、强化学习、多模态、推荐系统、语音、图学习或时间序列等），并在 Phase 2 自动检索并定制该领域的保分 Trick 手册。
+7. **训练/评估进度源逆向探测（progress 契约）**：
+   - 进度心跳与"累计 ≥N 步后报首个 ETA"依赖适配器从 `[adapter].progress_path`（默认 `progress.jsonl`，格式 `jsonl_last`）按 `progress_count_field`（默认 `step`）读出累计步数；没有该文件就出不了 ETA，且 `periodic` 阶段健康检查会因文件缺失判失败。
+   - Agent 必须自动探测本项目是否已有可复用的进度输出：搜索训练循环里的 `tqdm`/`progress`/`step`/`epoch` 打印、`*.jsonl`/`*.csv` 落盘、`callback`/`Logger`，判断能否直接映射出"已处理步数/样本数"及其字段名与文件格式。
+   - 若已有 → 在 Phase 2.2 的 `[adapter]` 中把 `progress_path`/`progress_format`/`progress_count_field` 指向它；若没有 → 在 Phase 2.1 用外层"进度垫片"生成 `progress.jsonl`（见 2.1.1），绝不改核心 Python 源码。
 
 ---
 
@@ -228,6 +232,57 @@ if os.path.exists(log_path):
 ```
 执行赋权：`chmod +x scripts/train.sh scripts/eval.sh`
 
+### 2.1.1 进度垫片：生成 `progress.jsonl`（供进度/ETA 心跳消费）
+
+**为什么需要**：`remote_run.py` 的进度心跳、"累计 ≥N 步后报首个 ETA"完全依赖适配器从 `[adapter].progress_path`（默认 `progress.jsonl`，格式 `jsonl_last`）按 `progress_count_field`（默认 `step`）读出累计步数。**项目若不产出该文件，心跳就拿不到步数，ETA 永远出不来**（只会显示"仍在准备/暂无可信 ETA"）；且 `periodic` 阶段适配器要求该文件存在，缺文件会被健康检查判失败。
+
+**按 Phase 0 探测结果二选一，均不侵入核心 Python 源码**：
+
+1. **项目原生已写进度文件** → 直接在 `project.toml` 的 `[adapter]` 映射，无需垫片：
+   ```toml
+   [adapter]
+   progress_path = "<项目原本的进度文件相对路径>"
+   progress_format = "jsonl_last"   # 若为单对象 json 则用 json
+   progress_count_field = "<该文件里表示已处理步数/样本数的字段名>"
+   ```
+
+2. **项目只在终端打印进度、不落盘** → 在 `scripts/train.sh` 外层加"进度垫片"：把训练输出 `tee` 到 `train.log`，后台按正则增量解析步数与 loss，逐行追加 `progress.jsonl`：
+   ```bash
+   #!/usr/bin/env bash
+   set -euo pipefail
+
+   OUTPUT_DIR="${RRCTL_OUTPUT_ROOT:-$HOME/research-runs/$(basename "$(pwd)")/manual}"
+   mkdir -p "$OUTPUT_DIR/checkpoints"
+   : > "$OUTPUT_DIR/train.log"
+   : > "$OUTPUT_DIR/progress.jsonl"
+
+   # 后台进度垫片：PROGRESS_RE 必须由 Agent 依 Phase 0 探测到的真实日志格式填写（须能取到 step，最好也能取到 total/loss）
+   (
+     tail -n +1 -F "$OUTPUT_DIR/train.log" 2>/dev/null | python3 -u -c '
+   import re, json, sys
+   # 占位示例：匹配形如 "step 123/600 ... loss 0.45"；实际须按本项目日志格式改写
+   pat = re.compile(r"step[=: ]+(?P<step>\d+)(?:/(?P<total>\d+))?.*?loss[=: ]+(?P<loss>[0-9.eE+-]+)", re.I)
+   for line in sys.stdin:
+       m = pat.search(line)
+       if not m:
+           continue
+       rec = {"step": int(m.group("step")), "loss": float(m.group("loss"))}
+       if m.group("total"):
+           rec["total"] = int(m.group("total"))
+       print(json.dumps(rec), flush=True)
+   ' >> "$OUTPUT_DIR/progress.jsonl"
+   ) &
+   TAIL_PID=$!
+   trap 'kill "$TAIL_PID" 2>/dev/null || true' EXIT
+
+   # 原生启动命令，输出同时落 train.log 供垫片解析
+   python tools/train.py --config configs/base.yaml "$@" 2>&1 | tee -a "$OUTPUT_DIR/train.log"
+
+   # <保留 2.1 的权重搬运垫片…>
+   ```
+   - `[adapter]` 相应设为 `progress_path="progress.jsonl"`、`progress_format="jsonl_last"`、`progress_count_field="step"`；日志里能解析出总数就一并写入 `total`（心跳的完成百分比与 ETA 需要它，缺失时 ETA 不可算）。
+   - 正则与字段名必须依 Phase 0 实测日志填写，**禁止保留占位正则上生产**。
+
 ### 2.2 生成 `.agents/harness/config/project.toml`
 写入运行契约与字段映射：
 ```toml
@@ -379,7 +434,17 @@ git -C research_workspace rev-parse --show-toplevel
 
 # 4. 验证 rrctl 就绪状态与远程连接连通性
 rrctl --json doctor
+
+# 5. 验证进度合同可被心跳消费：progress.jsonl 最后一行能解析出 count(step)
+python3 -c "
+import json, sys
+lines = [l for l in open('progress.jsonl', encoding='utf-8') if l.strip()]
+assert lines, 'progress.jsonl 为空或不存在：本项目的进度/ETA 心跳将不可用'
+rec = json.loads(lines[-1]); assert isinstance(rec.get('step'), int), 'progress.jsonl 缺少整数 step 字段'
+print('progress ok, last step =', rec['step'])
+"
 ```
+> 若本项目为确实无法产出可步进进度的纯离线任务，第 5 项无法通过时，必须在 Phase 4 交付报告中**显式声明"该项目的进度/ETA 心跳不可用"**，并说明原因，不得默认它可用。
 
 ---
 
@@ -387,7 +452,7 @@ rrctl --json doctor
 
 完成上述工作后，向用户输出结构化汇报：
 1. **适配画像**：识别到的框架、宿主环境（Codex/Pi）、训练入口、评估入口、主指标。
-2. **已生成资产列表**：列出 `scripts/train.sh`、`scripts/eval.sh`、`project.toml`、`profiles.json`、`.env` 等路径，以及定制后的 `metric-tricks-arsenal.md`（注明所适配的研究领域）。
+2. **已生成资产列表**：列出 `scripts/train.sh`、`scripts/eval.sh`、`project.toml`、`profiles.json`、`.env` 等路径，以及**进度源配置（`progress.jsonl` 的映射或垫片，及所用 `progress_count_field`）**、定制后的 `metric-tricks-arsenal.md`（注明所适配的研究领域）。
 3. **工具与依赖状态**：
    - `Humanizer-zh` 安装状态；
    - 可选工具（`fast-context-mcp` / `smart-search`）接入情况（若未安装，提示用户如需安装 Agent 可协助配置）。
