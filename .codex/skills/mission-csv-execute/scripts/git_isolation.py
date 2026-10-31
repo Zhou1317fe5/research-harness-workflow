@@ -62,6 +62,28 @@ def verify_commit(repo: Path, commit: str, paths: list[Path] | None = None) -> s
     return resolved
 
 
+_GIT_BOUND_PHASES = {"artifact", "analysis", "review", "ingest", "result_analysis"}
+_GIT_BOUND_AREAS = {"artifact", "analysis", "review", "ingest"}
+_GIT_BOUND_ID_PREFIXES = ("RESULT-ANALYSIS", "REVIEW", "ARTIFACT", "INGEST", "ANALYSIS")
+
+
+def _is_git_bound_row(row: dict[str, str]) -> bool:
+    """判断该行是否属于“交付类”行（允许绑定 git_repo 子仓库）。
+
+    不能只看 phase 字面量：项目常用数字 phase（01..07）或自定义词汇。语义判定同时接受
+    area、行 ID 前缀，保证 RESULT-ANALYSIS-01 / REVIEW-01 / INGEST-01 等行在任何 phase
+    词汇下都能通过。
+    """
+    phase = (row.get("phase") or "").strip().lower().replace("-", "_")
+    area = (row.get("area") or "").strip().lower()
+    row_id = (row.get("id") or "").strip().upper()
+    return (
+        phase in _GIT_BOUND_PHASES
+        or area in _GIT_BOUND_AREAS
+        or row_id.startswith(_GIT_BOUND_ID_PREFIXES)
+    )
+
+
 def row_git_errors(csv_path: Path, row: dict[str, str], *, workdir: Path | None = None) -> list[str]:
     if row.get("git_state") != "已提交":
         return []
@@ -78,7 +100,7 @@ def row_git_errors(csv_path: Path, row: dict[str, str], *, workdir: Path | None 
         if tags.get("git_repo"):
             selected = (project / tags["git_repo"]).resolve()
             # 结果行也可关联 RunID；用途决定 Git 命名空间，不能只看 RunID 是否为空。
-            if not selected.is_relative_to(project.resolve()) or row.get("phase") not in {"artifact", "analysis", "review"}:
+            if not selected.is_relative_to(project.resolve()) or not _is_git_bound_row(row):
                 raise ValueError("git_repository_identity_invalid")
             actual = Path(_git(selected, "rev-parse", "--show-toplevel").stdout.decode().strip()).resolve()
             if actual != selected:
