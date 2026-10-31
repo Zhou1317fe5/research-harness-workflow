@@ -37,6 +37,7 @@
    - 进度心跳与"累计 ≥N 步后报首个 ETA"依赖适配器从 `[adapter].progress_path`（默认 `progress.jsonl`，格式 `jsonl_last`）按 `progress_count_field`（默认 `step`）读出累计步数；没有该文件就出不了 ETA，且 `periodic` 阶段健康检查会因文件缺失判失败。
    - Agent 必须自动探测本项目是否已有可复用的进度输出：搜索训练循环里的 `tqdm`/`progress`/`step`/`epoch` 打印、`*.jsonl`/`*.csv` 落盘、`callback`/`Logger`，判断能否直接映射出"已处理步数/样本数"及其字段名与文件格式。
    - 若已有 → 在 Phase 2.2 的 `[adapter]` 中把 `progress_path`/`progress_format`/`progress_count_field` 指向它；若没有 → 在 Phase 2.1 用外层"进度垫片"生成 `progress.jsonl`（见 2.1.1），绝不改核心 Python 源码。
+8. **其它可选能力的接入探测**：进度/评估之外，完成判定、产物入账、输出隔离、多维度/身份字段、环境自检、GPU 分配、退出码语义、超参透传等能力同样依赖项目侧契约。Agent 须按 **Phase 2.6 可选能力接入清单** 逐项探测，并在安装阶段让用户单选"接入/跳过"，未接入项在交付报告中显式声明不可用。
 
 ---
 
@@ -282,6 +283,7 @@ if os.path.exists(log_path):
    ```
    - `[adapter]` 相应设为 `progress_path="progress.jsonl"`、`progress_format="jsonl_last"`、`progress_count_field="step"`；日志里能解析出总数就一并写入 `total`（心跳的完成百分比与 ETA 需要它，缺失时 ETA 不可算）。
    - 正则与字段名必须依 Phase 0 实测日志填写，**禁止保留占位正则上生产**。
+   - 训练进程须行缓冲/实时刷写（`python -u` 或 `flush=True`）；若用 tqdm，建议加 `newline=True` 或对 `\r` 单独处理——否则 `tail` 拿不到整行，进度滞后甚至触发 console stale。
 
 ### 2.2 生成 `.agents/harness/config/project.toml`
 写入运行契约与字段映射：
@@ -416,6 +418,61 @@ chmod 600 .agents/harness/config/profiles.json .agents/harness/config/.env
    将检索提炼的实用 Trick（包含原理说明、触发场景与紧凑 Python 代码片段）写回目标项目的 `.codex/skills/mission-csv-execute/references/metric-tricks-arsenal.md`；
 3. **目的**：确保后续任务在探索期初测指标微亏时，Agent 能够根据专属于该研究方向的保分军火库就地攻坚拉升指标，而不必推翻已确立的核心学术叙事。
 
+### 2.6 可选能力接入清单（安装阶段按需接入，未接入则该能力不可用）
+
+工作流的多数能力**并非开箱即用**，而是依赖项目侧产出特定契约（进度文件、评估摘要、产物/阶段输入输出路径、输入资产、环境变量与模块、CLI 语义、退出码等）。这些能力彼此独立、**可按需启用**：Agent 在 Phase 0 逐项探测，在安装阶段用菜单让用户单选"接入/跳过"，接入一律走**配置映射（映射到项目已有产物）**或**外层垫片（不改源码地生成/搬运产物）**两条路，绝不侵入核心算法代码。
+
+| 能力 | 依赖项目提供的契约 | 未适配的后果 | 可选接入方式（均不改源码） |
+|---|---|---|---|
+| 进度 / ETA 心跳 | `progress_path` 可解析进度文件，含 `progress_count_field`（步数）、可选 `total` 与有限 `loss` | 无进度、无 ETA（心跳只剩"设备+已用"） | 映射已有进度文件 / 2.1.1 垫片 |
+| 进度总数命名 | progress 里表示总量的字段名须落在 generic 识别集（`episodes`/`total_steps`/`max_steps`/`total_epochs`/`epochs`/`total`）之一 | 拿不到 total → 无百分比/无 ETA | 改字段名，或改用 `completion_exact_count` |
+| 进度数值有限性 | `progress_finite_fields`（如 loss）不得为 NaN/Inf | 健康检查判失败 | 修训练稳定性，或调整字段声明 |
+| 完成判定（completion，仅当声明计数阈值） | 若设了 `completion_exact_count` / `completion_min_count`，进度最终 count 须达标（默认无门槛） | 声明了阈值却没跑够 → completion 判失败 | 让项目写出最终 count；或把阈值调成与真实规模一致 |
+| 首步就绪（first_step） | 首条进度即含 `count ≥ first_step_min_count`（默认 1） | 首步健康检查不过，反复等待/告警 | 确保首条进度带 count，或调 `first_step_min_count` |
+| 评估摘要入册 | `summary_path`（且 `records.summary_glob` 指向同一文件）含 `primary_metric` 有限值；**纯训练任务也须在收尾写 summary.json**（可仅含 `complete`/final loss） | CSV 记账失败 / 无指标；纯训练缺 summary 则 completion 阶段失败 | eval.sh 指标脱水垫片写 summary.json；纯训练在收尾写一份最小 summary |
+| 摘要必填/有限字段（仅当声明） | 若声明 `summary_required_fields`（可含 `complete`/`method_contract` 等）与 `summary_finite_fields`，则须存在且有限（默认不要求） | completion 阶段 `AdapterContractError` | 在 summary 中补齐这些字段，或不在契约里声明 |
+| 辅助指标（secondary） | 若声明 `secondary_metric` 则必须存在（未声明则缺失属合法） | 记账字段缺失报错 | 写该字段，或从 `[records]` 去掉 |
+| 多维度记录（仅当配置） | 若在 `[records]` 配置了 `dimensions`/`protocol_field`/`checkpoint_field`/`steps_field`，summary 须含对应字段（默认 `dimensions` 为空、不要求） | 配了维度但 summary 缺字段 → 维度为空/报错 | 在 summary 回显，或在 `[records]` 映射到真实字段；不配则无要求 |
+| 身份一致性 | 若填了 `summary_identity_fields`/`progress_identity_fields`，摘要/进度须回显同值 | `identity_mismatch` 直接判失败 | 通用项目建议**留空**；确需回显才写这些字段 |
+| 流水线阶段输入/产出 | `pipeline.stages[].requires`（阶段前须存在，如 eval 依赖 `checkpoints/best.pt`）、`outputs`（阶段后须存在）、可选 `check_argv`（前置输入检查） | `required input/output missing`，阶段直接失败 | train.sh/eval.sh 把产物写到声明的相对路径，并给出前置检查 |
+| 产物入账（manifest） | `[[artifacts]]` 声明的相对路径文件完成时真实存在，且在输出根内；**不得是符号链接、不得越出输出根**（`confined_path` 会拒） | manifest 校验失败 / 拉取缺件 / 符号链接被拒 | 用 train.sh/eval.sh 把真实文件搬到规范相对路径 |
+| 输出隔离 | 所有产物写在 `RRCTL_OUTPUT_ROOT`（pipeline 已自动注入该变量）之下 | 拉取与记账拿不到产物 | shim 把它当输出目录，或完成时搬运到该根目录 |
+| 输入资产供给（配置项，通常不改代码） | **输入**资产：数据集、预训练骨干权重、用于微调/恢复的起始 checkpoint（注意：训练产出的权重不在此列，走 `pipeline.outputs`/`[[artifacts]]`）；要么远端已具备且路径与代码一致，要么登记 `anchors`（`local_path`+`sha256`+`remote_path`，`remote_path` 不得与生命周期根重叠）由 rrctl 上传落位 | 远端缺该输入文件 → 运行时 FileNotFound | 远端预置，或在 RunSpec/project 里建 `anchors` 清单分发（**不改代码**） |
+| 环境变量 | 代码依赖的 env（数据集根、开关等）须经 `environment.variables` 注入 | 读不到关键 env → 行为错误或崩溃 | 项目配置或 RunSpec 提供 `variables` |
+| 环境自检（ready，仅当声明） | 若声明 `environment.required_modules`，远端 conda 环境须可 import 这些模块；可选 `preflight_argv`（默认不设则不检查模块） | ready preflight 失败，任务起不来 | 选对 conda 环境；补齐 `required_modules`/`preflight_argv`，或不声明 |
+| GPU 分配（通常无需改动） | rrctl 启动时自动注入 `CUDA_VISIBLE_DEVICES=<分配卡>`（`worker.py:397`），进程内 `cuda:0` 即映射到分配卡 | 仅当代码硬编码物理卡号（`torch.cuda.set_device(3)`/`device='cuda:3'` 且无视该变量）时才冲突/OOM | 通常不改；个别硬编码卡号的代码改成读 `CUDA_VISIBLE_DEVICES` 或 CLI 参数 |
+| GPU 利用率门禁 | 若开 `gpu_utilization_policy=required`（配 `gpu_min_percent`/`low_gpu_limit_seconds`），项目须真在卡上有足够利用率 | 纯 CPU 跑 / GPU 利用率低 → 健康检查报警或判失败 | CPU 或低占用任务把 policy 调为 `advisory`/`disabled`，或调阈值 |
+| 健康 stale 阈值 | 若配置了 `console_stale_seconds`/`progress_stale_seconds`，长时间无 console/进度输出会被判 stale | 被误报 unhealthy / 打断观察 | 定期输出心跳或进度，或放宽/不设 stale 阈值 |
+| 致命关键字日志 | `fatal_patterns` 命中的文本（如 OOM/Traceback 关键字）会判失败 | 正常日志里出现被配置的"致命词"被误杀 | 调整 `fatal_patterns`，避免在日志中误打印触发词 |
+| 前台常驻进程语义 | 训练/评估必须**前台阻塞到结束**（`run_pipeline` 以子进程 wait 判定）；不得自我 daemon/后台化后立即返回 | 提前判完成、输出缺失（`required output missing`）或假成功 | train.sh/eval.sh 前台跑，不 `nohup … &` |
+| 输出实时刷写 | 子进程 stdout 需行缓冲/实时刷（如 `python -u`、`flush=True`）；避免 tqdm 仅 `\r` 不换行 | 进度垫片 tail 不到行、console 被判 stale | 用 `-u`/`flush`，tqdm 加 `newline` 或改按 `\r` 解析 |
+| 退出码语义 | 成功跑完 `exit 0`，异常非零退出 | 误判失败 / 吞异常导致假成功 | 修 shim 正确传播退出码，不掩盖异常 |
+| 超参透传 | 学习率/步数等超参走命令行参数，不硬编码默认值 | RunSpec 参数不生效 / 形成"假变更" | 一律用 CLI 传参，不改源码默认值 |
+| 代码提交 / Git 溯源 | 项目须是 git 仓库，参与运行的代码已 **commit**（`base`/`candidate` commit 存在）；未提交改动不进 bundle | 无 commit 无法构建/launch；远端会跑旧代码；PRERUN 变更指纹漏检未提交改动 | 运行前 `git commit`；改动用 commit 固定，再用该 commit 触发 |
+
+> **按改动量分三档（避免误读为"全都要改代码"）**：
+> - **A. 配置 / 环境层，通常不改代码**：进度与摘要的路径/字段名/阈值、identity 留空、`anchors` 输入资产分发、`environment.variables`、`required_modules`、GPU 分配（rrctl 自动注入 `CUDA_VISIBLE_DEVICES`）、`[[artifacts]]`/`pipeline.stages` 声明、health stale/policy、git 提交。
+> - **B. 需项目行为配合，可用外层垫片（不必改核心源码）**：生成 `progress.jsonl`、生成 `summary.json`、前台常驻、输出实时刷写、退出码正确、超参走 CLI、产物写到 `RRCTL_OUTPUT_ROOT`。
+> - **C. 极少数才需改源码**：硬编码物理卡号、硬编码超参默认值、进度字段名不可配置。
+
+> **强制 vs 可选（默认 generic adapter 时，重要）**：真正**永远必须**的只有——`progress_path` 与 `summary_path` 两个文件在 completion 时必须存在且可解析（`confined_path` 的 `must_exist`；纯训练也要写出一份对象 summary），外加"退出码 0 / 前台常驻 / 产物落在 `RRCTL_OUTPUT_ROOT`"这几条运行语义。其余（completion 精确计数、first_step 阈值、`summary_required_fields`/`summary_finite_fields`、多维度、secondary、identity 回显、GPU 利用率门禁、stale、fatal_patterns、额外 artifacts、`environment.variables`、`required_modules`）**都只在 Agent 显式声明/启用时才成为约束**，默认不设/关闭（completion 计数默认无门槛、`gpu_utilization_policy` 默认 `advisory`、stale 默认 `null`、`fatal_patterns` 默认空、`required_modules` 默认空、`dimensions` 默认空、`identity` 默认空）。**不要把可选约束硬加给用户当"必须适配"。**
+
+**安装阶段交互（一次多选，逐项确认）**：
+```text
+以下工作流能力依赖项目侧适配，可分别选择"接入"或"跳过"（跳过的能力在交付报告中会标注为不可用）：
+[1] 进度/ETA 心跳        （映射进度文件 / 加进度垫片）
+[2] 评估指标入册        （eval.sh 指标脱水写 summary.json）
+[3] 多维度与身份字段    （在 summary 回显 / 或留空）
+[4] 产物入账与输出隔离  （产物搬到 RRCTL_OUTPUT_ROOT 规范路径）
+[5] 环境预检与 GPU 分配 （对齐 conda 环境 / 读取分配卡）
+[6] 全部接入（推荐，逐项按上表方式落地）
+可多选，如 "1,2,4,5"。
+```
+- **默认推荐**：低成本项（进度垫片、指标脱水、产物搬运）默认接入；身份强校验（`*_identity_fields`）默认留空，除非项目天然带这些标识。
+- **诚实原则**：任一项未接入，必须在 Phase 4 交付报告中显式标注"该能力不可用"及原因，严禁默认它可用、更不得伪造对应产物。
+
+**不依赖项目代码、无需适配的能力（供 Agent 判定边界，不必向用户索要适配）**：PRERUN/Review 路由与 reviewer、`gate_provenance`、Mission CSV 状态机与 `preflight.py`、closing/handoff 校验（`mission_completion`/`final_ready`/`lint_handoff`/`check_handoff_contract`）、`research-memory`、`workflow_sync`、控制面（`remote_run`/`agent_event_wait`/`rrctl` monitor/transport）等，全部由工作流内部或 Spec/CSV/文档驱动，不需要用户改项目代码。它们唯一与项目相关的前置是"项目是 git 仓库且改动已提交"（见上表"代码提交 / Git 溯源"）与"评估摘要可供记账"（见上表"评估摘要入册"）。
+
 ---
 
 ## Phase 3：确定性门禁自检 (Verification Gates)
@@ -445,6 +502,7 @@ print('progress ok, last step =', rec['step'])
 "
 ```
 > 若本项目为确实无法产出可步进进度的纯离线任务，第 5 项无法通过时，必须在 Phase 4 交付报告中**显式声明"该项目的进度/ETA 心跳不可用"**，并说明原因，不得默认它可用。
+> 若在 Phase 2.6 中接入了"评估指标入册/产物入账"等能力，Phase 3 还须一并验证：`summary.json` 能解析出 `primary_metric`（有限值）、`[[artifacts]]` 声明的文件真实存在且落在输出根内；任何在 2.6 中选择"跳过"的能力，都不得在 Phase 4 报告中标为可用。
 
 ---
 
