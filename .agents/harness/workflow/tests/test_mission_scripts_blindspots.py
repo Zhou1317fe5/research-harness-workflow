@@ -1001,6 +1001,38 @@ class DeferredLedgerTests(unittest.TestCase):
         self.assertTrue(any("deferred_coverage total" in e for e in errors), errors)
         self.assertTrue(any("covered count cannot exceed total" in e for e in errors), errors)
 
+    def test_prose_finding_mention_counts_as_covered(self):
+        # 回归：正文以 DF-001 提及 open finding（非 HTML 注释）时必须计入覆盖数，
+        # 不能算出 0/1 而与 CSV 的 deferred_coverage:1/1 冲突。
+        from check_handoff_contract import check_contract
+
+        self.write_ledger(
+            {"schema_version": 1, "csv": "tasks.csv", "findings": [self.valid_finding()]}
+        )
+        self.write_csv(
+            [
+                self.base_row(
+                    "ISSUE-01",
+                    notes="deferred_ledger:deferred.json; deferred_findings:DF-001",
+                ),
+                self.base_row(
+                    "REVIEW-01",
+                    notes=(
+                        "deferred_ledger:deferred.json; deferred_coverage:1/1; "
+                        "handoff:tasks.handoff.md"
+                    ),
+                ),
+            ]
+        )
+        handoff = self.root / "tasks.handoff.md"
+        handoff.write_text(
+            "# 交工单\n\n## 总结\n完成。\n\n## 对账\n见 DF-001 记录。\n\n"
+            "## 待讨论\n- DF-001：后续跟进\n",
+            encoding="utf-8",
+        )
+        errors = check_contract(handoff, self.path, workdir=self.root)
+        self.assertFalse(any("differs from handoff coverage" in e for e in errors), errors)
+
 
 if __name__ == "__main__":
     unittest.main()

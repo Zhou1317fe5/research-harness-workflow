@@ -288,7 +288,9 @@ def check_contract(
             missing.append(f"handoff missing open deferred finding: {finding_id}")
         latest_notes = review_notes[-1] if review_notes else ""
         coverage_match = COVERAGE_RE.search(latest_notes)
-        expected_covered = len(open_ids & markers)
+        # 覆盖计数必须与放行口径一致：正文提及（mentioned_findings）与 HTML 标记同等计入，
+        # 否则正文写出 DF-001 会被判“已提及但覆盖 0”，逼迫伪造 0 或写隐藏注释。
+        expected_covered = len(open_ids & all_matched)
         expected_total = len(open_ids)
         if not coverage_match:
             missing.append("latest REVIEW notes missing deferred_coverage:<covered>/<open>")
