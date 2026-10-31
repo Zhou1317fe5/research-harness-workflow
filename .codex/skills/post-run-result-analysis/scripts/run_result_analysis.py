@@ -36,6 +36,13 @@ are review-service failures, not a completed analysis.
 
 from __future__ import annotations
 
+import sys as _sys
+from pathlib import Path as _Path
+
+_AGENTS_PATH = str(_Path(__file__).resolve().parents[4] / ".agents")
+if _AGENTS_PATH not in _sys.path:
+    _sys.path.insert(0, _AGENTS_PATH)
+
 import argparse
 import hashlib
 import json
@@ -43,6 +50,8 @@ import subprocess
 import sys
 from pathlib import Path
 from typing import Any
+
+from harness.common.primitives import canonical_json  # noqa: E402
 
 
 SCHEMA_VERSION = "post-run.result-analysis.v1"
@@ -88,9 +97,7 @@ def sha256_bytes(value: bytes) -> str:
     return hashlib.sha256(value).hexdigest()
 
 
-def canonical_json(value: Any) -> bytes:
-    """Match reviewer_job.canonical_json so packet hashes agree."""
-    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+# canonical_json 见 harness.common.primitives
 
 
 def load_csv_targets(csv_path: Path) -> dict[str, set[str]]:

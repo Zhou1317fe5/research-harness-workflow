@@ -55,3 +55,21 @@ def atomic_json(path: Path, value: dict[str, Any]) -> None:
         os.fsync(stream.fileno())
     os.chmod(temporary, 0o600)
     os.replace(temporary, path)
+
+
+def append_error(errors: list[str], code: str, path: str, detail: str) -> None:
+    """标准化追加校验错误项（四段式 code: path: detail）。"""
+    errors.append(f"{code}: {path}: {detail}")
+
+
+def dependency_closure(graph: dict[str, Any], stage_id: str) -> set[str]:
+    """计算有向无环阶段图在指定阶段的上游全部传递依赖集合。"""
+    result: set[str] = set()
+    pending = list(graph.get(stage_id, {}).get("depends_on", []))
+    while pending:
+        dependency = pending.pop()
+        if dependency in result:
+            continue
+        result.add(dependency)
+        pending.extend(graph.get(dependency, {}).get("depends_on", []))
+    return result

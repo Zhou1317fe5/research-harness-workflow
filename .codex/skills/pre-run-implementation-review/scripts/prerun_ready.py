@@ -3,6 +3,13 @@
 
 from __future__ import annotations
 
+import sys as _sys
+from pathlib import Path as _Path
+
+_AGENTS_PATH = str(_Path(__file__).resolve().parents[4] / ".agents")
+if _AGENTS_PATH not in _sys.path:
+    _sys.path.insert(0, _AGENTS_PATH)
+
 import argparse
 import hashlib
 import json
@@ -13,11 +20,12 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from harness.common.primitives import COMMIT_RE, canonical_json  # noqa: E402
+
 
 SCHEMA = "prerun.scientific-review.v1"
 SMOKE_SCHEMA = "prerun.pre-review-smoke.v1"
 REVIEW_MODES = {"scientific_review", "targeted_review"}
-COMMIT_RE = re.compile(r"^[0-9a-f]{40}$")
 SECRET_PATTERNS = (
     re.compile(
         r"(?i)(?:password|passwd|pwd|api[_-]?key|access[_-]?token|secret[_-]?key)"
@@ -52,12 +60,6 @@ PACKET_FIELDS = {
     "critical_values",
     "experiment",
 }
-
-
-def canonical_json(value: Any) -> bytes:
-    return json.dumps(
-        value, ensure_ascii=False, sort_keys=True, separators=(",", ":")
-    ).encode("utf-8")
 
 
 def add_error(errors: list[str], code: str, detail: str) -> None:

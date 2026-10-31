@@ -13,6 +13,8 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).resolve().parents[4] / ".agents"))
 from harness.workflow.mission_state import assert_launchable
 
+from harness.common.primitives import append_error as _error  # noqa: E402
+
 
 SCHEMA_VERSION = "mission.remote-route.v1"
 PRE_RUN_EXCEPTION_SCHEMA = "mission.pre-run-exception.v1"
@@ -48,8 +50,7 @@ def _load_prerun_route():
 ROUTE = _load_prerun_route()
 
 
-def _error(errors: list[str], code: str, path: str, detail: str) -> None:
-    errors.append(f"{code}: {path}: {detail}")
+# _error 见 harness.common.primitives
 
 
 def _non_empty_text(value: Any) -> bool:

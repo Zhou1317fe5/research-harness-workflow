@@ -3,12 +3,21 @@
 
 from __future__ import annotations
 
+import sys as _sys
+from pathlib import Path as _Path
+
+_AGENTS_PATH = str(_Path(__file__).resolve().parents[4] / ".agents")
+if _AGENTS_PATH not in _sys.path:
+    _sys.path.insert(0, _AGENTS_PATH)
+
 import argparse
 import importlib.util
 import json
 import sys
 from pathlib import Path
 from typing import Any
+
+from harness.common.primitives import append_error as _error, dependency_closure as _dependency_closure  # noqa: E402
 
 
 REQUEST_SCHEMA = "mission.stage-flow.v2"
@@ -51,10 +60,6 @@ def _load_prerun_route():
 
 
 ROUTE = _load_prerun_route()
-
-
-def _error(errors: list[str], code: str, path: str, detail: str) -> None:
-    errors.append(f"{code}: {path}: {detail}")
 
 
 def _base(validation: dict[str, Any]) -> dict[str, Any]:
@@ -100,18 +105,6 @@ def _descendants(graph: dict[str, Any], root: str) -> set[str]:
             if any(dependency in result for dependency in config["depends_on"]):
                 result.add(stage)
                 changed = True
-    return result
-
-
-def _dependency_closure(graph: dict[str, Any], stage_id: str) -> set[str]:
-    result: set[str] = set()
-    pending = list(graph[stage_id]["depends_on"])
-    while pending:
-        dependency = pending.pop()
-        if dependency in result:
-            continue
-        result.add(dependency)
-        pending.extend(graph[dependency]["depends_on"])
     return result
 
 

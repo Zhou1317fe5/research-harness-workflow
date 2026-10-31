@@ -3,6 +3,13 @@
 
 from __future__ import annotations
 
+import sys as _sys
+from pathlib import Path as _Path
+
+_AGENTS_PATH = str(_Path(__file__).resolve().parents[4] / ".agents")
+if _AGENTS_PATH not in _sys.path:
+    _sys.path.insert(0, _AGENTS_PATH)
+
 import argparse
 import hashlib
 import json
@@ -11,9 +18,10 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from harness.common.primitives import COMMIT_RE, append_error as _error  # noqa: E402
+
 
 SCHEMA = "prerun.change-route.v1"
-COMMIT_RE = re.compile(r"^[0-9a-f]{40}$")
 NON_RUNTIME_CLASSES = {
     "documentation",
     "review_log",
@@ -87,8 +95,7 @@ def _canonical(value: Any) -> bytes:
     ).encode("utf-8")
 
 
-def _error(errors: list[str], code: str, path: str, detail: str) -> None:
-    errors.append(f"{code}: {path}: {detail}")
+# _error 见 harness.common.primitives
 
 
 def _text(value: Any, path: str, errors: list[str]) -> str:

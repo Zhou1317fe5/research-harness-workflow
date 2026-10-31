@@ -3,15 +3,28 @@
 
 from __future__ import annotations
 
+import sys as _sys
+from pathlib import Path as _Path
+
+_AGENTS_PATH = str(_Path(__file__).resolve().parents[4] / ".agents")
+if _AGENTS_PATH not in _sys.path:
+    _sys.path.insert(0, _AGENTS_PATH)
+
 import copy
 import hashlib
 import json
 import re
 from typing import Any
 
+from harness.common.primitives import (  # noqa: E402
+    COMMIT_RE,
+    append_error as _error,
+    canonical_json,
+    dependency_closure as _dependency_closure,
+)
+
 
 EXECUTION_PLAN_SCHEMA = "prerun.execution-plan.v2"
-COMMIT_RE = re.compile(r"^[0-9a-f]{40}$")
 IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 VALUE_TYPES = {"string", "integer", "number", "boolean", "object", "array"}
 PLAN_FIELDS = {
@@ -37,21 +50,8 @@ LATE_BOUND_FIELDS = {
 }
 
 
-def canonical_json(value: Any) -> bytes:
-    return json.dumps(
-        value,
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-    ).encode("utf-8")
-
-
 def digest_json(value: Any) -> str:
     return hashlib.sha256(canonical_json(value)).hexdigest()
-
-
-def _error(errors: list[str], code: str, path: str, detail: str) -> None:
-    errors.append(f"{code}: {path}: {detail}")
 
 
 def _mapping(value: Any, path: str, errors: list[str]) -> dict[str, Any]:
@@ -153,20 +153,6 @@ def _value_matches(value: Any, expected: str) -> bool:
     if expected == "array":
         return isinstance(value, list)
     return False
-
-
-def _dependency_closure(
-    stage_graph: dict[str, dict[str, Any]], stage: str
-) -> set[str]:
-    result: set[str] = set()
-    pending = list(stage_graph.get(stage, {}).get("depends_on", []))
-    while pending:
-        dependency = pending.pop()
-        if dependency in result:
-            continue
-        result.add(dependency)
-        pending.extend(stage_graph.get(dependency, {}).get("depends_on", []))
-    return result
 
 
 def _validate_stage_graph(

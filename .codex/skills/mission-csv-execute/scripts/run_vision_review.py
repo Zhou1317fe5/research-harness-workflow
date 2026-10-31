@@ -3,6 +3,13 @@
 
 from __future__ import annotations
 
+import sys as _sys
+from pathlib import Path as _Path
+
+_AGENTS_PATH = str(_Path(__file__).resolve().parents[4] / ".agents")
+if _AGENTS_PATH not in _sys.path:
+    _sys.path.insert(0, _AGENTS_PATH)
+
 import argparse
 from argparse import Namespace
 import csv
@@ -19,6 +26,8 @@ from pathlib import Path
 from mission_completion import parse_note_tags, resolve_reference_path
 
 from validate_outcome_contract import load_contract
+
+from harness.common.primitives import canonical_json as _canonical_bytes  # noqa: E402
 
 
 RESULT_KEYS = {
@@ -461,8 +470,7 @@ def render_handoff_identity(text: str, review: dict) -> str:
     return header + "\n\n" + body
 
 
-def _canonical_bytes(value: object) -> bytes:
-    return json.dumps(value, sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+# _canonical_bytes 见 harness.common.primitives
 
 
 # Discover implementation/configuration, not every dataset, checkpoint or old

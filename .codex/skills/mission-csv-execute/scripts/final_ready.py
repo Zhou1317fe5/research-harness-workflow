@@ -3,6 +3,13 @@
 
 from __future__ import annotations
 
+import sys as _sys
+from pathlib import Path as _Path
+
+_AGENTS_PATH = str(_Path(__file__).resolve().parents[4] / ".agents")
+if _AGENTS_PATH not in _sys.path:
+    _sys.path.insert(0, _AGENTS_PATH)
+
 import argparse
 import csv
 import importlib.util
@@ -10,6 +17,8 @@ import json
 import sys
 from pathlib import Path
 from typing import Any
+
+from harness.common.primitives import append_error as _error  # noqa: E402
 
 from mission_completion import (
     evidence_completion_errors,
@@ -43,10 +52,6 @@ def _load_handoff_lint():
 
 
 HANDOFF = _load_handoff_lint()
-
-
-def _error(errors: list[str], code: str, path: str, detail: str) -> None:
-    errors.append(f"{code}: {path}: {detail}")
 
 
 def _resolve_file(value: Any, workdir: Path, field: str, errors: list[str]) -> Path | None:

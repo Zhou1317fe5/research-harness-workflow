@@ -3,6 +3,13 @@
 
 from __future__ import annotations
 
+import sys as _sys
+from pathlib import Path as _Path
+
+_AGENTS_PATH = str(_Path(__file__).resolve().parents[4] / ".agents")
+if _AGENTS_PATH not in _sys.path:
+    _sys.path.insert(0, _AGENTS_PATH)
+
 import argparse
 import csv
 import hashlib
@@ -14,6 +21,8 @@ import tempfile
 from pathlib import Path
 from typing import Any
 from csv_state import file_lock
+
+from harness.common.primitives import canonical_json as _canonical_bytes  # noqa: E402
 
 
 STATE_SCHEMA = "mission.csv-state-update.v1"
@@ -33,12 +42,6 @@ CORE_SUFFIXES = (
 
 class CompactError(ValueError):
     """The artifact root is ambiguous or unsafe to compact."""
-
-
-def _canonical_bytes(value: Any) -> bytes:
-    return json.dumps(
-        value, ensure_ascii=False, sort_keys=True, separators=(",", ":")
-    ).encode("utf-8")
 
 
 def _sha256(path: Path) -> str:
