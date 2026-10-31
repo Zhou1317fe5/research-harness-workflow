@@ -856,6 +856,10 @@ def _health(
     return result
 
 
+# TODO(refactor, optional / known tech-debt): 本函数约 338 行，thin_smoke/official 分支交错 12+ 处，
+# 当前无 bug。仅在“需频繁改动装配逻辑”时再拆：抽出 _extract_common_runspec_base /
+# _build_thin_smoke_spec / _build_official_spec，主函数只做参数校验与按 execution_purpose 分发；
+# 先补“request→canonical_run_spec 快照”测试锁行为，再搬迁。不要为纯整形做大 diff。
 def build_runspec(request: dict[str, Any]) -> dict[str, Any]:
     _reject_unknown(
         request,

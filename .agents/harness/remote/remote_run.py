@@ -37,6 +37,11 @@ from harness.remote.build_rrctl_runspec import (
 )
 
 
+# TODO(refactor, optional / known tech-debt): 本函数约 445 行，是线性门禁流程，当前无 bug。
+# 仅在“需要频繁改动某段”或“需要子段单测”时再拆：按 _validate_run_binding /
+# _validate_isolation_and_resources / _validate_remote_route / _validate_pre_run_exception /
+# _validate_scientific_gate 逐段抽取，先补“整函数输入→输出快照”测试锁行为，再逐段搬迁。
+# 不要为纯整形做大 diff（违背精简与效率优先原则）。
 def validate_mission_launch(spec: dict, *, resume: bool = False, spec_path: Path | None = None) -> None:
     """核对任务绑定；新启动复用路由，恢复只允许观察已绑定的运行。"""
     metadata = spec.get("metadata", {})
