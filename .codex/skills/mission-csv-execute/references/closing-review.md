@@ -33,7 +33,16 @@
    - 对 canonical CSV，所有正式实验行闭环后，优先通过 `evidence-close` 结构化直接入账结项；涉及跨域重要结论争议时，方需运行 `RESULT-ANALYSIS-01`。
 3. **前置未完成行与遗留台账清算**：
    - 若前序存在卡住行、更高轮次取代的重试行或预注册门控跳过行阻碍收工，**必须读取并执行 [references/closing-legacy-cleanup.md](closing-legacy-cleanup.md)** 进行清算，严禁死锁。
-4. **台账完备性**：
+4. **一次聚合审计（禁止一错一停）**：
+   收尾开始与每次修复后，统一运行一次聚合审计，一次性拿到全部门禁错误再批量修复：
+   ```bash
+   python .codex/skills/mission-csv-execute/scripts/closing_audit.py \
+     --csv issues/<stem>/<stem>.csv --workdir . \
+     --handoff issues/<stem>/reviews/handoff.md --claims issues/<stem>/<stem>.claims.json
+   ```
+   它一次覆盖行终态/Git 绑定/ingest/claim/result-analysis、deferred ledger 与 handoff 契约；
+   输出按组归类，有错退出码 1。**严禁每发现一个错误就单独重跑一次 `final_ready.py`/`mission_completion.py`**。
+5. **台账完备性**：
    - 若输入 CSV 缺少 review 行，运行 `ensure_review_row.py` 合成 `REVIEW-01`；
    - 若 notes 包含 `claims:CLAIM-*` 但缺少可读 `claim_ledger:<path>`，先补齐账本，不得裸跑。
 
