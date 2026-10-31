@@ -490,6 +490,44 @@ def _validate_preregistered_read_only_probe(
     return {"candidate_commit": commit, **flags}
 
 
+def _restricted_execution_block(
+    label: str,
+    field: str,
+    record: dict[str, Any] | None,
+    change_result: dict[str, Any] | None,
+    code_changed: bool,
+    owner: str | None,
+) -> tuple[str, list[str]] | None:
+    """Return (reason_code, errors) when a restricted execution is blocked, else None.
+
+    `label` is the reason-code prefix (`pre_review_smoke` / `read_only_probe`);
+    `field` is the request key shown in messages.
+    """
+    if not code_changed or change_result is None:
+        return (
+            f"{label}_change_route_missing",
+            [f"{label}_change_route_missing: change_manifest: changed code and risk route are required"],
+        )
+    if change_result.get("valid") is not True:
+        return ("change_route_invalid", change_result.get("errors", []))
+    if change_result.get("route") != "full_review":
+        return (
+            f"{label}_route_invalid",
+            [f"{label}_route_invalid: change_manifest: full_review required"],
+        )
+    if not record or record["candidate_commit"] != change_result.get("candidate_commit"):
+        return (
+            f"{label}_commit_mismatch",
+            [f"{label}_commit_mismatch: {field}.candidate_commit: must bind change manifest candidate commit"],
+        )
+    if owner == "legacy":
+        return (
+            f"{label}_requires_rrctl",
+            [f"{label}_requires_rrctl: command_owner: legacy is forbidden"],
+        )
+    return None
+
+
 def decide_remote_route(payload: Any) -> dict[str, Any]:
     """Validate a route request and return a stable fail-closed decision."""
     errors: list[str] = []
@@ -833,112 +871,20 @@ def decide_remote_route(payload: Any) -> dict[str, Any]:
             "errors": sorted(errors),
         }
 
-    if execution_purpose == "pre_review_smoke":
-        if not code_changed or change_result is None:
+    if execution_purpose in {"pre_review_smoke", "preregistered_read_only_probe"}:
+        is_smoke = execution_purpose == "pre_review_smoke"
+        label = "pre_review_smoke" if is_smoke else "read_only_probe"
+        field = "pre_review_smoke" if is_smoke else "preregistered_read_only_probe"
+        record = pre_review_smoke if is_smoke else read_only_probe
+        blocked = _restricted_execution_block(label, field, record, change_result, code_changed, owner)
+        if blocked is not None:
+            reason_code, block_errors = blocked
             return {
                 **base,
                 "decision": "blocked",
                 "route": None,
-                "reason_codes": ["pre_review_smoke_change_route_missing"],
-                "errors": [
-                    "pre_review_smoke_change_route_missing: change_manifest: changed code and risk route are required"
-                ],
-            }
-        if change_result.get("valid") is not True:
-            return {
-                **base,
-                "decision": "blocked",
-                "route": None,
-                "reason_codes": ["change_route_invalid"],
-                "errors": change_result.get("errors", []),
-            }
-        if change_result.get("route") != "full_review":
-            return {
-                **base,
-                "decision": "blocked",
-                "route": None,
-                "reason_codes": ["pre_review_smoke_route_invalid"],
-                "errors": [
-                    "pre_review_smoke_route_invalid: change_manifest: full_review required"
-                ],
-            }
-        if (
-            not pre_review_smoke
-            or pre_review_smoke["candidate_commit"]
-            != change_result.get("candidate_commit")
-        ):
-            return {
-                **base,
-                "decision": "blocked",
-                "route": None,
-                "reason_codes": ["pre_review_smoke_commit_mismatch"],
-                "errors": [
-                    "pre_review_smoke_commit_mismatch: pre_review_smoke.candidate_commit: must bind change manifest candidate commit"
-                ],
-            }
-        if owner == "legacy":
-            return {
-                **base,
-                "decision": "blocked",
-                "route": None,
-                "reason_codes": ["pre_review_smoke_requires_rrctl"],
-                "errors": [
-                    "pre_review_smoke_requires_rrctl: command_owner: legacy is forbidden"
-                ],
-            }
-
-    if execution_purpose == "preregistered_read_only_probe":
-        if not code_changed or change_result is None:
-            return {
-                **base,
-                "decision": "blocked",
-                "route": None,
-                "reason_codes": ["read_only_probe_change_route_missing"],
-                "errors": [
-                    "read_only_probe_change_route_missing: change_manifest: changed code and risk route are required"
-                ],
-            }
-        if change_result.get("valid") is not True:
-            return {
-                **base,
-                "decision": "blocked",
-                "route": None,
-                "reason_codes": ["change_route_invalid"],
-                "errors": change_result.get("errors", []),
-            }
-        if change_result.get("route") != "full_review":
-            return {
-                **base,
-                "decision": "blocked",
-                "route": None,
-                "reason_codes": ["read_only_probe_route_invalid"],
-                "errors": [
-                    "read_only_probe_route_invalid: change_manifest: full_review required"
-                ],
-            }
-        if (
-            not read_only_probe
-            or read_only_probe["candidate_commit"]
-            != change_result.get("candidate_commit")
-        ):
-            return {
-                **base,
-                "decision": "blocked",
-                "route": None,
-                "reason_codes": ["read_only_probe_commit_mismatch"],
-                "errors": [
-                    "read_only_probe_commit_mismatch: preregistered_read_only_probe.candidate_commit: must bind change manifest candidate commit"
-                ],
-            }
-        if owner == "legacy":
-            return {
-                **base,
-                "decision": "blocked",
-                "route": None,
-                "reason_codes": ["read_only_probe_requires_rrctl"],
-                "errors": [
-                    "read_only_probe_requires_rrctl: command_owner: legacy is forbidden"
-                ],
+                "reason_codes": [reason_code],
+                "errors": block_errors,
             }
 
     if execution_kind == "local":

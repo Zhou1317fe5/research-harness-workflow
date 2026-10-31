@@ -82,9 +82,7 @@ CSV 的 artifact root 按以下规则确定：
 - **协议委托**：**读取并严格遵循 [references/remote-run.md](references/remote-run.md)**。
 - **调度接口**：
   - 启动统一通过公共入口：`python3 .agents/harness/remote/remote_run.py issues/<stem>/runs/<RunID>/runspec.json --execute`。
-  - **启动前耗时沙盘（Time Sandbox）**：正式全量运行启动前，调用估算工具：
-    `python3 .agents/harness/remote/remote_progress.py --estimate --total-steps <总步数> --smoke-summary <smoke产物路径>`，将预计耗时与 CST 完成时刻在启动汇报中告知用户。
-  - **进度查询与心跳**：`remote_run.py` 内置进度心跳（累计 ≥10 步后先报首个 ETA，此后每 30 分钟一次；等待步数期间每 60s 轻量探测，超 15 分钟仍未达则先给状态提示）；用户即时询问进度时，运行 `python3 .agents/harness/remote/remote_progress.py` 汇报状态。
+  - **时间沙盘、进度心跳与等待纪律**：启动前沙盘估算、进度心跳（累计 ≥10 步后首个 ETA、此后每 30 分钟）、即时进度查询与"禁止轮询/盲等"纪律，统一遵循 [references/remote-monitoring.md](references/remote-monitoring.md)。
 
 ### C. 受限验收（Limited Validation）
 - **触发条件**：目标验证在当前环境下物理不可执行。

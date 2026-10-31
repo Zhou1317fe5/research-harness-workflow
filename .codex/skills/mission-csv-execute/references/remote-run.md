@@ -43,8 +43,7 @@
    公共入口使用仓库内 `.agents/harness/remote/rrctl/rrctl`，不依赖 PATH 指向另一个项目的可编辑安装。普通执行依次 ready、launch、wait、pull；宿主事件等待使用 `--observe-only`，计算终态即交回执行器继续 pull/ingest。二者不改变最终验收要求。
 
 ### Step 3: 长运行监控与透明度
-- **启动前时间沙盘推算**：全量规模启动前，调用 `python3 .agents/harness/remote/remote_progress.py --estimate --total-steps <N> --smoke-summary <path>`，在对话层报备预计总耗时与 CST 完成时刻；
-- **长运行观察与心跳**：遵循 **[references/remote-monitoring.md](remote-monitoring.md)**（内置进度心跳，累计 ≥10 步后先报首个 ETA、此后每 30 分钟一次；秒级 `remote_progress.py` 查询探针，严禁短周期无变化轮询模型）。
+- **时间沙盘 / 心跳 / 等待纪律**：统一遵循 [references/remote-monitoring.md](remote-monitoring.md)（启动前沙盘估算、累计 ≥10 步首个 ETA 与 30 分钟心跳、秒级 `remote_progress.py` 探针、禁止轮询与盲等）。
 
 ### Step 4: 终态确认与最小产物拉取
 1. **终态即报第一铁律**：计算完成唤醒或拉取到 summary 后，执行器的**第一优先级是在终端对话中向用户直接通报核心指标（RunID、评估集数、mIoU、FB-IoU 及对比基线涨跌）**，严禁憋到 CSV 闭环或收尾审查才汇报；
