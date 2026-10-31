@@ -43,7 +43,7 @@
 - **正向最小针对性验证，严禁全套测试循环回归**：修复或实现代码后，只允许对本次改动的文件或用例执行单次针对性最小测试（如 `pytest tests/test_xxx.py -k xxx`），**严禁反复全量运行整套测试套件**或多轮套件狂欢。
 - **执行栈分工**：代码正确性、单元测试、编译与参数链路可在本地或远程 CPU 完成；真实训练、step 级验证、显存与 loss 必须在远程 GPU 验证。
 - **加速计算与本地轻量边界**：声明使用 GPU 等加速设备时，核心数学算子与模型前向必须显式绑定目标设备，严禁在关键路径上将张量无意识脱落至主机 CPU 串行执行；纯 CPU 离线指标聚合直接在本地轻量执行，严禁传回远端 CPU 额外启动运行。
-- **KB 级最小拉取，大数据只留远端**：本地只拉 <100KB 的摘要/状态/日志；严禁把 `*.npz`/`*.npy`、`figure*/`、`adaptation/` 等大数据拉回本地做核验或计数；核验在远端 O(1) 或抽样完成（详见 `mission-csv-execute/references/remote-monitoring.md` §4 与 `remote-run.md` Step 4.1）。
+- **轻量拉取（单文件 ≤10MB），大数据只留远端**：本地只拉单文件 ≤10MB 的摘要/状态/日志（`summary.json`、`progress.jsonl`、`evaluate.log`、manifest 等）；严禁把 `*.npz`/`*.npy`、`figure*/`、`adaptation/` 等大数据拉回本地做核验或计数；核验在远端 O(1) 或抽样完成（详见 `mission-csv-execute/references/remote-monitoring.md` §4 与 `remote-run.md` Step 4.1）。
 - **产物引用用远端绝对直连地址**：`review.md`/`handoff.md` 对大工件只写 `<host>:<absolute_path>`，严禁为引用而拉回本地（详见 `references/remote-monitoring.md` §4）。
 - **禁止前台长阻塞等待**：长跑用 `--launch-only` 秒级启动 + `agent_event_wait`/`rrctl_event_wait`（≤60s 事件）异步推进；查进度用 `remote_progress.py`；确需有界等待 `--max-wait-seconds ≤60`（详见 `references/remote-monitoring.md` §2）。
 - **PRERUN 单次审查 + Blocker 闭环**：运行前审查只做单次定点，Blocker 就地修复并出 `closure.json` 机器放行，严禁二次 full review（详见 `pre-run-implementation-review` skill）。

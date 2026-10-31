@@ -79,14 +79,14 @@ def _verified_pull_file(root: Path, entry: dict[str, Any]) -> bool:
             and sha256_file(path) == entry["sha256"])
 
 
-# KB 级最小拉取的轻/重分层：只有轻量摘要与文本日志进入本地，重负载（数组/目录型
-# 证据）留在远端就地核验。此分层同时被 pull 与 ingest 复用，避免两处口径漂移。
+# 轻量拉取预算：单文件 ≤10MB 的摘要/状态/文本日志进入本地，超过 10MB 的重负载
+# （数组、图集、checkpoint 等）留在远端就地核验。此分层同时被 pull 与 ingest 复用。
 PULL_LIGHT_SUFFIXES = frozenset({".json", ".jsonl", ".log", ".txt", ".yaml", ".yml",
                                  ".csv", ".tsv", ".md"})
 PULL_HEAVY_DIRS = frozenset({"evidence", "figure1", "figure2", "figure3", "figure4",
                              "figure5", "adaptation", "logs", "checkpoints", "masks",
                              "predictions", "artifacts", "raw"})
-PULL_LIGHT_MAX_BYTES = 5 * 1024 * 1024
+PULL_LIGHT_MAX_BYTES = 10 * 1024 * 1024
 
 
 def is_heavy_pull_path(path: str, size: int | None = None) -> bool:

@@ -114,7 +114,7 @@ claim_ledger:<stem>.claims.json; claims:CLAIM-001,CLAIM-004; evidence_level:inte
 ## Ingest 与轻量化产物规则
 
 1. **直接采信官方指标**：生成 `INGEST-*` 或结果入账行时，其验收标准必须直接使用远端官方 `summary.json` / `eval_results.json` 中的指标，**严禁生成要求本地 CPU 逐像素重算（recount）或复现混淆矩阵的验收条件**。若 Spec 中残留此类历史文字，生成器必须自动将其纠正为直接采信官方指标。
-2. **轻量秒级回传**：产物拉取仅限轻量摘要（`summary.json`、`progress.jsonl`、`evaluate.log`，体积 < 100 KB），严禁将成百上千个原始预测掩码（.npz）作为必需拉取产物，避免 SSH 弱网超时卡死。
+2. **轻量秒级回传**：产物拉取仅限轻量摘要（`summary.json`、`progress.jsonl`、`evaluate.log`，单文件 ≤10MB），严禁将成百上千个原始预测掩码（.npz）作为必需拉取产物，避免 SSH 弱网超时卡死。
 3. **GPU 无缝衔接调度**：多运行/多数据集任务之间的前置依赖，仅认远端进程计算完成（`remote_state=completed` / `exit 0`），**严禁将“前序产物拉取到本地”作为后续 GPU 运行的前置门禁**，确保远端 GPU 算力无缝换卡。
 4. **彻底废除数据级 SHA256 验收项**：生成任何任务行（DATA、SMOKE、TRAIN、EVAL、INGEST）时，严禁生成要求计算或核验数据集图像/掩码 SHA256 的验收项；即使 Spec 残留此类字眼，转换引擎自动过滤掉这些要求，数据集只验路径存在与基本格式。
 5. **Smoke 极小化约束**：生成 `SMOKE-*` 行时，验收标准必须限定为极小切片（<= 20 个样本或 1~10 步），严禁生成包含全量数据集遍历、全池特征提取或全量哈希的 Smoke 任务。
