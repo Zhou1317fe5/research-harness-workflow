@@ -12,6 +12,16 @@ Supports three review kinds:
 
 from __future__ import annotations
 
+# 直接运行脚本与通过包导入使用同一实现。
+if __name__ == "__main__":
+    import sys as _sys
+    from pathlib import Path as _Path
+
+    _sys.path.insert(0, str(_Path(__file__).resolve().parents[1]))
+    from harness.reviewer_job import main as _main
+
+    raise SystemExit(_main())
+
 import argparse
 import fcntl
 import glob
@@ -29,6 +39,8 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+from harness.common.primitives import atomic_json, canonical_json, now, sha256_bytes  # noqa: E402
 
 
 def _load_review_model():
@@ -128,8 +140,7 @@ def closing_output_schema() -> dict[str, Any]:
     })}
 
 
-def now() -> str:
-    return datetime.now(timezone.utc).isoformat()
+# now() 见 harness.common.primitives
 
 
 def _utc_plus(seconds: float) -> str:
@@ -242,26 +253,7 @@ def _parse_retry_after_seconds(text: str) -> float | None:
     return None
 
 
-def canonical_json(value: Any) -> bytes:
-    return json.dumps(
-        value, ensure_ascii=False, sort_keys=True, separators=(",", ":")
-    ).encode("utf-8")
-
-
-def sha256_bytes(value: bytes) -> str:
-    return hashlib.sha256(value).hexdigest()
-
-
-def atomic_json(path: Path, value: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-    with temporary.open("w", encoding="utf-8") as stream:
-        json.dump(value, stream, ensure_ascii=False, indent=2, sort_keys=True)
-        stream.write("\n")
-        stream.flush()
-        os.fsync(stream.fileno())
-    os.chmod(temporary, 0o600)
-    os.replace(temporary, path)
+# canonical_json / sha256_bytes / atomic_json 见 harness.common.primitives
 
 
 def load_object(path: Path, label: str) -> dict[str, Any]:

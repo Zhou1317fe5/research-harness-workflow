@@ -3,6 +3,16 @@
 
 from __future__ import annotations
 
+# 直接运行脚本与通过包导入使用同一实现。
+if __name__ == "__main__":
+    import sys as _sys
+    from pathlib import Path as _Path
+
+    _sys.path.insert(0, str(_Path(__file__).resolve().parents[2]))
+    from harness.remote.agent_event_wait import main as _main
+
+    raise SystemExit(_main())
+
 import argparse
 import fcntl
 import hashlib
@@ -18,27 +28,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from harness.common.primitives import atomic_json, now  # noqa: E402
+
 
 SCHEMA = "rrctl.agent-event-wait.v1"
 THREAD_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$")
 PROGRESS_PREFIX = b"[rrctl-progress] "
 CODEX_PROGRESS_INTERVAL_SECONDS = 1800
-
-
-def now() -> str:
-    return datetime.now(timezone.utc).isoformat()
-
-
-def atomic_json(path: Path, value: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-    with temporary.open("w", encoding="utf-8") as stream:
-        json.dump(value, stream, ensure_ascii=False, indent=2, sort_keys=True)
-        stream.write("\n")
-        stream.flush()
-        os.fsync(stream.fileno())
-    os.chmod(temporary, 0o600)
-    os.replace(temporary, path)
 
 
 def load_json(path: Path) -> dict[str, Any]:

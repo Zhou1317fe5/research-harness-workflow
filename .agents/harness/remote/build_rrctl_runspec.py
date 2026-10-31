@@ -23,6 +23,8 @@ import tempfile
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+from harness.common.primitives import COMMIT_RE, canonical_json as _canonical_bytes  # noqa: E402
+
 REQUEST_SCHEMA = "mission.rrctl-request.v1"
 RUN_SCHEMA = "rrctl.run.v1"
 GATE_PROVENANCE_SCHEMA = "prerun.gate-provenance.v3"
@@ -42,7 +44,7 @@ review_model = _importlib_util.module_from_spec(_review_model_spec)
 _review_model_spec.loader.exec_module(review_model)
 EXPECTED_REVIEW_MODEL = review_model.REVIEW_MODEL
 _normalize_review_model = review_model.normalize_model_identity
-COMMIT_RE = re.compile(r"^[0-9a-f]{40}$")
+# COMMIT_RE 见 harness.common.primitives
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 SECRET_KEY_RE = re.compile(
@@ -242,15 +244,6 @@ def _contains_secret_data(value: Any) -> bool:
         "private key-----",
     )
     return any(marker in lowered for marker in markers)
-
-
-def _canonical_bytes(value: Any) -> bytes:
-    return json.dumps(
-        value,
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-    ).encode("utf-8")
 
 
 def _validate_generic_contract(contract: dict[str, Any]) -> None:
