@@ -1,8 +1,8 @@
 import { createHash } from "node:crypto";
 import process from "node:process";
-import { mkdirSync, readFileSync, renameSync, writeFileSync, appendFileSync } from "node:fs";
+import { mkdirSync, readFileSync, readdirSync, existsSync, renameSync, writeFileSync, appendFileSync } from "node:fs";
 import { StringDecoder } from "node:string_decoder";
-import { dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { dirname, isAbsolute, join, basename, relative, resolve } from "node:path";
 import { spawn, type ChildProcess } from "node:child_process";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
@@ -89,6 +89,29 @@ function projectRoot(cwd: string): string | undefined {
 	}
 }
 
+/** 同仓 worktree 根目录（<project>-worktrees/<name>）：共享 .git，是合法的任务承载目录。 */
+function siblingWorktreeRoots(root: string): string[] {
+	const parent = dirname(root);
+	const base = basename(root);
+	const marker = "-worktrees";
+	if (!base.endsWith(marker)) return [];
+	const prefix = base.slice(0, -marker.length);
+	try {
+		return readdirSync(join(parent, base))
+			.filter((name) => !name.startsWith("."))
+			.map((name) => join(parent, base, name))
+			.filter((candidate) => existsSync(join(candidate, ".agents/harness/remote/remote_run.py")));
+	} catch {
+		return [];
+	}
+}
+
+/** 路径必须落在主项目根或任一同仓 worktree 内（Pi cwd 是主仓而任务在 worktree 是常态）。 */
+function insideProject(root: string, path: string): boolean {
+	const roots = [root, ...siblingWorktreeRoots(root)];
+	return roots.some((candidate) => inside(candidate, path));
+}
+
 function inside(root: string, path: string): boolean {
 	const value = relative(root, path);
 	return value === "" || (!value.startsWith("..") && !isAbsolute(value));
@@ -103,7 +126,7 @@ function atomicJson(path: string, value: unknown): void {
 export function buildWaitCommand(root: string, params: Params): { argv: string[]; runId: string; runspec: string } {
 	if (!params.runspec) throw new Error("runspec is required");
 	const runspec = resolve(root, params.runspec);
-	if (!inside(root, runspec)) throw new Error("runspec must stay inside the project root");
+	if (!insideProject(root, runspec)) throw new Error("runspec must stay inside the project root or a sibling worktree");
 	const spec = JSON.parse(readFileSync(runspec, "utf8"));
 	if (spec?.schema_version !== "rrctl.run.v1" || typeof spec.run_id !== "string" || !spec.run_id) {
 		throw new Error("expected a valid rrctl.run.v1 RunSpec");
@@ -115,7 +138,7 @@ export function buildWaitCommand(root: string, params: Params): { argv: string[]
 	if (params.resume) argv.push("--resume");
 	if (params.profiles) {
 		const profiles = resolve(root, params.profiles);
-		if (!inside(root, profiles)) throw new Error("profiles must stay inside the project root");
+		if (!insideProject(root, profiles)) throw new Error("profiles must stay inside the project root or a sibling worktree");
 		argv.push("--profiles", profiles);
 	}
 	return { argv, runId: spec.run_id, runspec };
