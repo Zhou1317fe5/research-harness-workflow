@@ -191,6 +191,7 @@ def validate_mission_launch(spec: dict, *, resume: bool = False, spec_path: Path
 
     change = metadata.get("change_manifest")
     gate = metadata.get("gate_provenance")
+    gate_normalized = False
     pre_run_exception = metadata.get("pre_run_exception")
     if gate is not None:
         try:
@@ -198,6 +199,7 @@ def validate_mission_launch(spec: dict, *, resume: bool = False, spec_path: Path
                 gate, source_commit=commit, repo_root=repo,
                 allow_legacy_resume=resume,
             )
+            gate_normalized = True
         except RunSpecBuildError as exc:
             raise ValueError(str(exc)) from exc
     request = {
@@ -408,12 +410,15 @@ def validate_mission_launch(spec: dict, *, resume: bool = False, spec_path: Path
                 raise ValueError(f"authorized blocker closure is not verifiable: {exc}") from exc
     if needs_review or (gate is not None and not restricted):
         try:
-            gate = _gate_provenance(
-                gate, source_commit=commit, repo_root=repo,
-                allow_legacy_resume=resume,
-            )
+            if not gate_normalized:
+                gate = _gate_provenance(
+                    gate, source_commit=commit, repo_root=repo,
+                    allow_legacy_resume=resume,
+                )
+                gate_normalized = True
         except RunSpecBuildError as exc:
             raise ValueError(str(exc)) from exc
+        assert gate is not None  # needs_review 且 gate 缺失时上面已抛错；此处必为归一化后的 gate。
         # 一个正式矩阵的科学审查由唯一的 PRERUN 行承担：运行行用 prereview:<row-id>
         # （或 depends_on:PRERUN-REVIEW-*）声明其 gate；仍保留 gated_run 精确匹配语义。
         declared_gate = str(tags.get("prereview", "")).strip()
