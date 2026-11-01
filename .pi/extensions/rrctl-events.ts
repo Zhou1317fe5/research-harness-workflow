@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import process from "node:process";
 import { mkdirSync, readFileSync, readdirSync, existsSync, renameSync, writeFileSync, appendFileSync } from "node:fs";
 import { StringDecoder } from "node:string_decoder";
-import { dirname, isAbsolute, join, basename, relative, resolve } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { spawn, type ChildProcess } from "node:child_process";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
@@ -89,17 +89,18 @@ function projectRoot(cwd: string): string | undefined {
 	}
 }
 
-/** 同仓 worktree 根目录（<project>-worktrees/<name>）：共享 .git，是合法的任务承载目录。 */
+/** 同仓 worktree 根目录（兄弟目录 <root>-worktrees/<name>）：共享 .git，是合法的任务承载目录。
+ *
+ * 注意方向：Pi cwd 是主仓（如 /home/zhou/cdfss-dinov3），worktrees 目录是**它的兄弟**
+ * （/home/zhou/cdfss-dinov3-worktrees），不是它自身以 -worktrees 结尾——方向反了会静默
+ * 返回空集，runspec 全被拒（实测两会话 5 次 rejected）。
+ */
 function siblingWorktreeRoots(root: string): string[] {
-	const parent = dirname(root);
-	const base = basename(root);
-	const marker = "-worktrees";
-	if (!base.endsWith(marker)) return [];
-	const prefix = base.slice(0, -marker.length);
+	const worktreesDir = `${root}-worktrees`;
 	try {
-		return readdirSync(join(parent, base))
+		return readdirSync(worktreesDir)
 			.filter((name) => !name.startsWith("."))
-			.map((name) => join(parent, base, name))
+			.map((name) => join(worktreesDir, name))
 			.filter((candidate) => existsSync(join(candidate, ".agents/harness/remote/remote_run.py")));
 	} catch {
 		return [];
