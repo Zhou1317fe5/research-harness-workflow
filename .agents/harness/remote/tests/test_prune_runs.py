@@ -96,3 +96,42 @@ class SelectionTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class LocalStateTests(unittest.TestCase):
+    def test_prune_local_state_only_touches_runid_dirs(self):
+        import os
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            os.environ["RRCTL_STATE_ROOT"] = tmp
+            try:
+                run_id = "RUN-20261101-demo-smoke1"
+                for sub in ("runs", "client-results", "specs"):
+                    (Path(tmp) / sub / run_id).mkdir(parents=True)
+                    (Path(tmp) / sub / run_id / "keep.txt").write_text("x")
+                (Path(tmp) / "specs" / "RUN-other").mkdir(parents=True)
+                removed = prune_runs.prune_local_state([run_id], apply=True)
+                self.assertEqual(len(removed), 3)
+                for sub in ("runs", "client-results", "specs"):
+                    self.assertFalse((Path(tmp) / sub / run_id).exists())
+                self.assertTrue((Path(tmp) / "specs" / "RUN-other").exists())
+            finally:
+                os.environ.pop("RRCTL_STATE_ROOT", None)
+
+    def test_prune_local_state_dry_run_keeps_files(self):
+        import os
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            os.environ["RRCTL_STATE_ROOT"] = tmp
+            try:
+                run_id = "RUN-20261101-demo2"
+                (Path(tmp) / "runs" / run_id).mkdir(parents=True)
+                removed = prune_runs.prune_local_state([run_id], apply=False)
+                self.assertEqual(len(removed), 1)
+                self.assertTrue((Path(tmp) / "runs" / run_id).exists())
+            finally:
+                os.environ.pop("RRCTL_STATE_ROOT", None)
+
+    def test_non_run_idents_rejected(self):
+        import io
+        self.assertEqual(prune_runs.main(["--local-state", "--run-ids", "../etc"]), 2)

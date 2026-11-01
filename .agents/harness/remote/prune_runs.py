@@ -15,9 +15,12 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import re
 import shlex
 import subprocess
 import sys
+from pathlib import Path
 from typing import Any
 
 DEFAULT_TARGETS = ("repo", "stage")
@@ -114,20 +117,65 @@ def run_remote(host: str, script: str, *, timeout: float) -> str:
     return completed.stdout
 
 
+def prune_local_state(run_ids: list[str], *, apply: bool) -> list[str]:
+    """清理本地 rrctl 运行时索引（~/.local/state/rrctl/{runs,client-results,specs}/<RunID>）。
+
+    安全网拦截内联 rm 的场景：失败 run 重跑前的本地索引残留（run_already_indexed 锁）。
+    只删精确 RunID 名下的三个子目录，绝不动 specs 之外的其他内容。
+    """
+    import shutil
+    state_root = Path(os.environ.get("RRCTL_STATE_ROOT", Path.home() / ".local/state/rrctl"))
+    removed: list[str] = []
+    for run_id in run_ids:
+        for sub in ("runs", "client-results", "specs"):
+            target = state_root / sub / run_id
+            if not target.exists():
+                continue
+            resolved = target.resolve()
+            if state_root.resolve() not in resolved.parents:
+                continue  # 越界防御：只删 state_root 一层子目录
+            if apply:
+                shutil.rmtree(resolved)
+            removed.append(str(resolved))
+    return removed
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="清理远端 run 目录的可重建大件（保留 output/control）")
-    parser.add_argument("--host", required=True, help="ssh 主机别名（如 eve）")
-    parser.add_argument("--root", required=True, help="远端 runs 根目录（RUN-* 的父目录）")
+    parser.add_argument("--host", default=None, help="ssh 主机别名（如 eve）；--local-state 模式可省略")
+    parser.add_argument("--root", default=None, help="远端 runs 根目录（RUN-* 的父目录）；--local-state 模式可省略")
     parser.add_argument("--stem", default=None, help="只处理 run_id 含该子串的 run")
     parser.add_argument("--keep", type=int, default=None, help="按 mtime 保留最新 N 个，其余纳入清理")
     parser.add_argument("--older-than-days", type=float, default=None, help="只清理早于 N 天的 run")
     parser.add_argument("--targets", default=",".join(DEFAULT_TARGETS), help="要删除的顶层子目录，默认 repo,stage")
     parser.add_argument("--failed", action="store_true",
                         help="失败/中止的 run 整目录删除（含 output/，因其无证据价值）；成功 run 仍只清 targets")
+    parser.add_argument("--local-state", action="store_true",
+                        help="清理本地 ~/.local/state/rrctl/{runs,client-results,specs}/<RunID> 索引"
+                             "（失败 run 重跑前 run_already_indexed 锁的解法）；与 --run-ids 搭配")
+    parser.add_argument("--run-ids", default=None, help="逗号分隔的 RunID（--local-state 模式必填）")
     parser.add_argument("--apply", action="store_true", help="真正删除；缺省仅列出计划")
     parser.add_argument("--timeout", type=float, default=120.0)
     parser.add_argument("--json", action="store_true", help="输出 JSON 摘要")
     args = parser.parse_args(argv)
+
+    if args.local_state:
+        if not args.run_ids:
+            print("prune rejected: --local-state 需要 --run-ids", file=sys.stderr)
+            return 2
+        run_ids = [item.strip() for item in args.run_ids.split(",") if item.strip()]
+        if not all(re.fullmatch(r"RUN-[A-Za-z0-9._\-]+", item) for item in run_ids):
+            print("prune rejected: run_ids_must_be_RUN_idents", file=sys.stderr)
+            return 2
+        removed = prune_local_state(run_ids, apply=args.apply)
+        mode = "APPLIED" if args.apply else "DRY-RUN"
+        for item in removed:
+            print(f"  {item}")
+        print(f"{mode}: 本地索引清理 {len(removed)} 项（runs/client-results/specs 下精确 RunID）")
+        return 0
+    if not args.host or not args.root:
+        print("prune rejected: 远端模式需要 --host 与 --root（或改用 --local-state）", file=sys.stderr)
+        return 2
 
     try:
         targets = validate_targets(args.targets)
