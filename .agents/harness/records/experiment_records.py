@@ -36,6 +36,15 @@ EXPERIMENTS = REPO_ROOT / "research_workspace" / "experiments"
 LEDGER = REPO_ROOT / "research_workspace" / "EXPERIMENTS.csv"
 GENERATOR = ".agents/harness/records/experiment_records.py"
 
+
+def _within_workspace(path: Path, project_root: Path) -> bool:
+    """research_workspace 允许是软链到主仓的共享真源：resolve 后落在 project_root 或同一 research_workspace 真源内即合法。"""
+    resolved = Path(path).resolve()
+    if resolved.is_relative_to(project_root):
+        return True
+    shared = (project_root / "research_workspace").resolve()
+    return resolved.is_relative_to(shared)
+
 # 默认待补字段；从机器事实明确投影后移除对应项。
 PENDING_FIELDS = ("parent", "metrics.protocol", "metrics.baseline_id", "outcome")
 RESULT_ANALYSIS_OUTCOMES = frozenset({
@@ -807,8 +816,8 @@ def cmd_build(args, *, repo_root: Path | None = None) -> int:
     project_root = (repo_root or REPO_ROOT).resolve()
     artifacts_root = project_root / "remote_artifacts"
     experiments_root = project_root / "research_workspace" / "experiments"
-    if (not artifacts_root.resolve().is_relative_to(project_root)
-            or not experiments_root.resolve().is_relative_to(project_root)):
+    if (not _within_workspace(artifacts_root, project_root)
+            or not _within_workspace(experiments_root, project_root)):
         raise ValueError("record projection paths outside project root")
     proj = csv_projection(project_root)
     config_path = Path(getattr(args, "config", DEFAULT_CONFIG))
@@ -821,7 +830,7 @@ def cmd_build(args, *, repo_root: Path | None = None) -> int:
     written = skipped = 0
     for exp_id in targets:
         out = experiments_root / identifier(exp_id) / "record.json"
-        if not out.resolve().is_relative_to(project_root):
+        if not _within_workspace(out, project_root):
             raise ValueError(f"record output outside project root: {out}")
         # 无参模式保持只补建；显式选择实验才自动刷新，--force 保留批量兼容。
         if out.exists() and not args.exp and not args.force:
@@ -890,12 +899,12 @@ def cmd_derive(args, *, repo_root: Path | None = None) -> int:
     project_root = (repo_root or REPO_ROOT).resolve()
     experiments_root = project_root / "research_workspace" / "experiments"
     ledger_path = project_root / "research_workspace" / "EXPERIMENTS.csv"
-    if (not experiments_root.resolve().is_relative_to(project_root)
-            or not ledger_path.resolve().is_relative_to(project_root)):
+    if (not _within_workspace(experiments_root, project_root)
+            or not _within_workspace(ledger_path, project_root)):
         raise ValueError("records paths outside project root")
     rows = []
     for rec_path in sorted(experiments_root.glob("*/record.json")):
-        if not rec_path.resolve().is_relative_to(project_root):
+        if not rec_path.resolve().is_relative_to(experiments_root.resolve()):
             raise ValueError(f"record path outside project root: {rec_path}")
         r = json.loads(rec_path.read_text(encoding="utf-8"))
         rows.append(record_index_row(r))
@@ -1159,10 +1168,11 @@ def main() -> int:
     b.add_argument("--force", action="store_true", help="无参模式也刷新已有的生成器 record；不绕过格式校验")
     b.set_defaults(func=cmd_build)
     d = sub.add_parser("derive", help="从 record.json 派生 EXPERIMENTS.csv")
+    d.add_argument("--repo-root", type=Path, default=None, help="项目根（默认按脚本位置定位）")
     d.set_defaults(func=cmd_derive)
     args = ap.parse_args()
     try:
-        return args.func(args)
+        return args.func(args, repo_root=getattr(args, "repo_root", None))
     except (OSError, ValueError, KeyError, AdapterContractError) as exc:
         print(json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False), file=sys.stderr)
         return 2

@@ -351,7 +351,18 @@ def _record_completion_errors(csv_path: Path, row: dict[str, str], *, workdir: P
         if (any(record.get("metrics", {}).get(key) != expected["metrics"][key]
                 for key in ("protocol", "ours_metric")) or pending_actual != pending_expected):
             raise ValueError("ingest_record_projection_mismatch")
-        with (workdir / "research_workspace/EXPERIMENTS.csv").open(encoding="utf-8-sig", newline="") as stream:
+        index_path = workdir / "research_workspace/EXPERIMENTS.csv"
+        if not index_path.is_file() or not any(
+                item.get("ExpID") == exp_id
+                for item in csv.DictReader(index_path.open(encoding="utf-8-sig", newline=""))):
+            # EXPERIMENTS.csv 缺失或未含本实验：自动派生（单一真源，幂等），失败才报错。
+            derive = subprocess.run(
+                [sys.executable, str(workdir / ".agents/harness/records/experiment_records.py"),
+                 "derive", "--repo-root", str(workdir)],
+                capture_output=True, text=True, timeout=120)
+            if derive.returncode != 0 and not index_path.is_file():
+                raise ValueError(f"ingest_index_derive_failed: {derive.stderr.strip()[:200]}")
+        with index_path.open(encoding="utf-8-sig", newline="") as stream:
             index = [item for item in csv.DictReader(stream) if item.get("ExpID") == exp_id]
         if len(index) != 1 or any(index[0].get(key) != str(value) for key, value in record_index_row(record).items()):
             raise ValueError("ingest_index_missing_or_stale")
