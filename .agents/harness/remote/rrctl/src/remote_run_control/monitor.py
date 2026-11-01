@@ -226,6 +226,13 @@ class Monitor:
                     phase = "periodic"
                     self.data["phase"] = phase
                     self.heartbeat()
+                    # 切入 periodic 后立即做一次周期检查：periodic poll 间隔可达 600s，
+                    # 若沿用长间隔，health-latest/periodic.json 要 10 分钟后才首写，
+                    # 期间所有 health 读取者（进度心跳等）拿不到 progress.count。
+                    self.check(phase)
+                    next_check = self.clock() + getattr(self.spec.health, phase).poll_interval_seconds
+                    next_heartbeat = self.clock() + HEARTBEAT_SECONDS
+                    continue
                 next_check = self.clock() + getattr(self.spec.health, phase).poll_interval_seconds
                 next_heartbeat = self.clock() + HEARTBEAT_SECONDS
             if self.clock() >= next_heartbeat:
@@ -479,6 +486,10 @@ def read_health(control_root: Path, phase: str) -> dict[str, Any]:
     }
     try:
         cached = _cache(spec, control_root, observed["binding"], phase)
+        if cached is None and phase == "periodic":
+            # periodic 首写前回退 first_step 缓存：切换瞬间 periodic.json 尚不存在，
+            # first_step healthy 缓存里已含最新 progress.count，回退避免出现无 progress 空窗。
+            cached = _cache(spec, control_root, observed["binding"], "first_step")
         if cached:
             result.update(cached["result"])
             result["observed_at"] = cached["at"]
