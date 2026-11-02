@@ -626,15 +626,19 @@ def _assert_write_context(csv_path: Path, row: dict[str, str]) -> None:
     # 用 branch --show-current 而非 rev-parse --abbrev-ref HEAD：
     # 后者在尚无 commit 的仓库上失败，会让断言被静默跳过。
     current = _git(["branch", "--show-current"], Path(csv_repo))
-    worktree_branch = _git(["branch", "--show-current"], csv_path.parent.resolve())
-    if current is None and worktree_branch is None:
+    if current == declared:
         return
-    if current != declared and worktree_branch != declared:
-        raise StateUpdateError(
-            "write_context_branch_mismatch: "
-            f"当前分支 {current}，但该行 branch 字段为 {declared}；"
-            "先 checkout 目标分支再写状态"
-        )
+    # mission 的命名分支常由隔离工作树持有（同一分支不能在两处 checkout），
+    # 此时主工作区必然停在别的分支。只有声明分支真被本仓库某个工作树 checkout
+    # 时才算合法写上下文，拼写错误或空分支仍会被拦住。
+    worktrees = _git(["worktree", "list", "--porcelain"], Path(csv_repo)) or ""
+    if any(line == f"branch refs/heads/{declared}" for line in worktrees.splitlines()):
+        return
+    raise StateUpdateError(
+        "write_context_branch_mismatch: "
+        f"当前分支 {current}，但该行 branch 字段为 {declared}；"
+        "先 checkout 目标分支再写状态"
+    )
 
 
 def apply_update(

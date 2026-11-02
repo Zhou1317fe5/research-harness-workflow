@@ -148,6 +148,29 @@ class ProgressAndCommitAdviceTests(unittest.TestCase):
         self.assertTrue(after["ok"])
         self.assertEqual(after["csv_sha256"], before["csv_sha256"])
 
+    def test_assert_write_context_allows_branch_in_linked_worktree(self):
+        import subprocess
+        subprocess.run(["git", "init", "-b", "main"], cwd=self.root, check=True, capture_output=True)
+        subprocess.run(["git", "config", "user.name", "Test"], cwd=self.root, check=True, capture_output=True)
+        subprocess.run(["git", "config", "user.email", "test@test.local"], cwd=self.root, check=True, capture_output=True)
+        (self.root / "README.md").write_text("hello")
+        subprocess.run(["git", "add", "README.md"], cwd=self.root, check=True, capture_output=True)
+        subprocess.run(["git", "commit", "-m", "init"], cwd=self.root, check=True, capture_output=True)
+
+        wt_dir = Path(tempfile.mkdtemp(prefix="wt-test-"))
+        subprocess.run(["git", "worktree", "add", "-b", "feature/wt-branch", str(wt_dir)], cwd=self.root, check=True, capture_output=True)
+        self.addCleanup(lambda: subprocess.run(["git", "worktree", "remove", "--force", str(wt_dir)], cwd=self.root, capture_output=True))
+
+        from csv_state import _assert_write_context, StateUpdateError
+        row = {"branch": "feature/wt-branch"}
+        # 声明分支被工作树持有：主仓处于 main 时仍放行
+        _assert_write_context(self.path, row)
+
+        # 拼写错误或未检出分支仍严厉拦截
+        with self.assertRaises(StateUpdateError) as ctx:
+            _assert_write_context(self.path, {"branch": "feature/non-existent"})
+        self.assertIn("write_context_branch_mismatch", str(ctx.exception))
+
 
 if __name__ == "__main__":
     unittest.main()
