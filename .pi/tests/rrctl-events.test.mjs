@@ -604,3 +604,23 @@ test("Pi rrctl wait supports multiple runspecs concurrently and streams heartbea
 	assert.match(pi.messages[0].text, /RunID RUN-A/);
 	assert.match(pi.messages[0].text, /Compute is terminal/);
 });
+
+test("Pi rrctl wait deduplicates observers by runId across different runspec paths", async (t) => {
+	resetRrctlEventsBroker();
+	const root = await fixture(t);
+	// 两个不同路径的 runspec 文件具有相同的 run_id
+	await writeFile(join(root, "runspec-alias.json"), JSON.stringify({ schema_version: "rrctl.run.v1", run_id: "RUN-A" }));
+	const spawns = [];
+	const pi = await boot(root, "session-alias", spawns);
+
+	// 同一次调用中传入两个相同 RunID 的不同路径，只 spawn 一个
+	const result = await waitOn(pi, root, { runspecs: ["runspec.json", "runspec-alias.json"], resume: true });
+	assert.equal(spawns.length, 1);
+	assert.equal(result.details.run_id, "RUN-A");
+
+	// 后续轮次再次用别名路径调用，复用已有运行中 observer 而非重复 spawn
+	const secondResult = await waitOn(pi, root, { runspecs: ["runspec-alias.json"], resume: true });
+	assert.equal(spawns.length, 1);
+	assert.equal(secondResult.details.run_id, "RUN-A");
+	assert.equal(secondResult.details.reused, true);
+});

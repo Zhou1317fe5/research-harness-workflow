@@ -359,11 +359,19 @@ export function registerRrctlEvents(pi: ExtensionAPI, options: RrctlEventsOption
 
 				const commandList = runspecList.map((rs) => buildWaitCommand(root, { ...params, runspec: rs }));
 
+				// 同一 RunID 无论通过主仓路径还是 worktree 路径传入，均按 RunID 唯一聚合
+				const seenRunIds = new Set<string>();
+				const uniqueCommandList = commandList.filter((cmd) => {
+					if (seenRunIds.has(cmd.runId)) return false;
+					seenRunIds.add(cmd.runId);
+					return true;
+				});
+
 				const eventDirectory = join(root, ".pi/rrctl-events");
 				const sessionId = ctx.sessionManager.getSessionId();
 				type ResolvedWait = { runId: string; eventPath: string; logPath: string; status: "settled" | "running" | "spawned" };
 				const resolveCommand = (command: { argv: string[]; runId: string; runspec: string }): ResolvedWait => {
-					const key = `${root}\0${command.runspec}`;
+					const key = `${root}\0${command.runId}`;
 					const existing = broker.waits.get(key);
 					if (existing) {
 						if (existing.settled) {
@@ -394,7 +402,7 @@ export function registerRrctlEvents(pi: ExtensionAPI, options: RrctlEventsOption
 					return { runId: command.runId, eventPath, logPath, status: "spawned" };
 				};
 
-				const resolved = commandList.map(resolveCommand);
+				const resolved = uniqueCommandList.map(resolveCommand);
 
 				if (resolved.length === 1) {
 					const only = resolved[0];
